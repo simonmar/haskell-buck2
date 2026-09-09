@@ -140,3 +140,22 @@ and run your tests:
 buck2 test //...
 ```
 
+# Build modes
+
+The Buck2 build system has two build modes:
+
+  * `dev`: the default, builds everything with `-O0` and dynamic linking. This is intended to give you the quickest edit-compile-test turnaround.
+  * `opt`: enable `-O2` and link statically. This takes longer but the code runs faster.
+
+To build with `opt`, use `-m opt`, e.g.
+
+```
+buck2 build //some/target -m opt
+```
+
+There are other build options that can be selected in a similar way, such as `-m prof` to enable profiling. See `constraints/BUCK` for details.
+
+# Acknowledgments
+
+Most of the code and modifications to the standard Buck2 prelude were
+developed with the help of Claude Code.
