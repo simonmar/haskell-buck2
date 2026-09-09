@@ -163,3 +163,16 @@ There are other build options that can be selected in a similar way, such as `-m
 
 Most of the code and modifications to the standard Buck2 prelude were
 developed with the help of Claude Code.
+
+The Haskell support already in the Buck2 prelude was developed by Meta
+and is in production use internally for building
+[Glean](https://glean.software). This project just fixes a few things
+and adds some wrappers that make it more suitable for external use.
+
+# Related projects
+
+[Tweag](https://tweag.io) also worked on a [Haskell integration for
+Buck2](https://www.youtube.com/watch?v=bbFnrTAIK9Q). This project has
+nothing in common with theirs, except for the shared upstream prelude
+code. Tweag's integration is more sophisticated and was aimed at using
+Buck2's improved scalability to build large Haskell projects.
