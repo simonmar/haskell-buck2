@@ -1,12 +1,12 @@
 # Buck2 build system for Haskell projects
 
-This is a version of the Buck2 prelude with a few tweaks (that will
+This is a version of the [Buck2 prelude](https://github.com/facebook/buck2/tree/main/prelude) with a few tweaks (that will
 hopefully be upstreamed at some point) and some supporting tooling to
-enable Haskell projects to be built with Buck2.
+enable Haskell projects to be built with [Buck2](https://buck2.build/).
 
 Why might you want to do that compared with, say, just using Cabal to
-build your code? Well, first off let me be clear that you *still* need
-Cabal, because this build system doesn't know how to solve package
+build your code? Well, first off let me be clear that you *still need
+Cabal*, because this build system doesn't know how to solve package
 dependencies or build them. But once you've built your package
 dependencies using Cabal, you can use Buck2 for your edit-compile-test
 loop, and in many ways it's a more pleasant experience than using
@@ -80,7 +80,11 @@ Next ask Cabal to build your dependencies:
 cabal build all --only-dependencies --enable-tests
 ```
 
-And set up the Buck2 build:
+And set up the Buck2 build. This script is going to analyse Cabal's
+build plan and create Buck2 `haskell_prebuilt_library()` declarations
+for all the external Haskell libraries that your project depends
+on. It will also fish out the GHC version from Cabal and tell Buck2
+about your Haskell toolchain.
 
 ```
 python3 buck2/gen-haskell-prebuilt.py
