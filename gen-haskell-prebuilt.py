@@ -345,11 +345,15 @@ def get_root_dep_ids():
         plan = json.load(f)
 
     install_plan = plan['install-plan']
-    local_ids = {c['id'] for c in install_plan if c.get('style') == 'local'}
+    # 'inplace' packages are Hackage packages that depend on a local one and
+    # so are built in-place by cabal rather than installed in the store: they
+    # have to be built by buck2 too (from source), so they are not roots
+    # themselves, but everything they depend on from the store is.
+    local_ids = {c['id'] for c in install_plan if c.get('style') in ('local', 'inplace')}
 
     root = set()
     for c in install_plan:
-        if c.get('style') != 'local':
+        if c.get('style') not in ('local', 'inplace'):
             continue
         for uid in c.get('depends', []):
             if uid not in local_ids:
@@ -598,7 +602,7 @@ def main():
     # resolved build). More than one actually in use means something more
     # confusing is going on than this script can safely guess its way
     # through - worth a human looking, not a silent pick.
-    used_roots = {db for _, db in packages.values() if db in STORE_DBS}
+    used_roots = {db for val in packages.values() if val is not None for _, db in [val] if db in STORE_DBS}
     if len(used_roots) > 1:
         print(f"ERROR: packages resolved from more than one cabal store "
               f"directory: {sorted(used_roots)} - expected at most one",
