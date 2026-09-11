@@ -107,6 +107,15 @@ def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_v
 
     # Expose only the packages we depend on directly
     for lib in haskell_direct_deps_lib_infos:
+        if lib.id:
+            # Resolve by unit id rather than by name: unambiguous even when
+            # another version of the same package is visible in another
+            # package db (e.g. GHC's global db vs. a cabal-store rebuild of a
+            # boot package such as time or directory, or a global Cabal
+            # vs. one built from source here).
+            exposed_package_args.add("-package-id", lib.id)
+            continue
+
         pkg_name = lib.name
         if specify_pkg_version:
             pkg_name += "-{}".format(lib.version)
