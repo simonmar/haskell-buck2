@@ -301,12 +301,13 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
     ctx.actions.run(
         run_cmd,
         category = "haskell_compile_" + artifact_suffix.replace("-", "_"),
-        # We can't use no_outputs_cleanup because GHC's recompilation checking
-        # is based on file timestamps, and Buck doesn't maintain timestamps when
-        # artifacts may come from RE.
-        # TODO: enable this for GHC 9.4 which tracks file changes using hashes
-        # not timestamps.
-        # no_outputs_cleanup = True,
+        # Keep the previous run's -odir/-hidir so that `ghc --make` can do its
+        # own recompilation checking and only rebuild the modules whose
+        # sources or imported interfaces changed, rather than the whole
+        # package. GHC >= 9.4 tracks file changes with hashes rather than
+        # timestamps, so this is safe even though Buck doesn't preserve
+        # timestamps on artifacts.
+        no_outputs_cleanup = True,
         env = {"LD_LIBRARY_PATH": cmd_args(native_shared_libs_dir)} if native_shared_libs_dir != None else {},
     )
 
