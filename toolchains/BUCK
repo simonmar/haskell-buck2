@@ -23,7 +23,7 @@ haskell_toolchain(
     compiler = "ghc-" + GHC_VERSION,
     packager = "ghc-pkg-" + GHC_VERSION,
     haddock = "haddock",
-    compiler_flags = ["-O"],
+    compiler_flags = [],
     linker_flags = [],
     # Under asan, GHC's own process needs the ASAN runtime already loaded
     # before Template Haskell dlopen's an asan-instrumented dependency
