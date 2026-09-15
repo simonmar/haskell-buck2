@@ -849,7 +849,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     indexing_tsets = {}
     sub_targets = {}
 
-    libname = repr(ctx.label.path).replace("//", "_").replace("/", "_").removesuffix("_") + "_" + ctx.label.name
+    libname = repr(ctx.label.path).replace("//", "_").replace("/", "_") + "_" + ctx.label.name
     pkgname = libname.replace("_", "-")
 
     native_shared_libs_dir = _native_shared_libs_dir(ctx.actions, libname, shared_library_infos)
