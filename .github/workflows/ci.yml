@@ -8,12 +8,16 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ghc-version: ['9.6.7', '9.8.4', '9.10.3', '9.12.4', '9.14.1']
     steps:
       - uses: actions/checkout@v4
 
       - uses: haskell-actions/setup@v2
         with:
-          ghc-version: '9.6.7'
+          ghc-version: ${{ matrix.ghc-version }}
           cabal-version: '3.14.2.0'
 
       - name: Install buck2
