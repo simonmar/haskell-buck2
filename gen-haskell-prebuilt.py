@@ -398,8 +398,7 @@ def generate_tools_file(tool_paths):
     ]
     for tool in BUILD_TOOLS:
         rel = tool_paths.get(tool)
-        if rel is not None:
-            lines.append(f'{tool.upper()} = "third-party/haskell/{rel}"')
+        lines.append(f'{tool.upper()} = "third-party/haskell/{rel or "missing"}"')
 
     tools_path = os.path.join(TARGET_DIR, 'tools.bzl')
     with open(tools_path, 'w') as f:
