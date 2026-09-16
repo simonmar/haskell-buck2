@@ -20,9 +20,18 @@ jobs:
           ghc-version: ${{ matrix.ghc-version }}
           cabal-version: '3.14.2.0'
 
+      # Pinned, not `latest`: the `latest` tag is a rolling nightly, and
+      # buck2 core's builtin API drifts against whatever prelude/ snapshot
+      # is checked into this repo - confirmed directly, `latest` (as of
+      # 2026-09-16, built from the 2026-09-15 nightly) fails to even
+      # *load* prelude//cxx/link.bzl ("Unexpected parameter named
+      # `eager_materialization_enabled`"), while the 2026-09-01 dated
+      # release still builds and tests this repo's example/ cleanly in
+      # both dev and opt mode. Bump this tag deliberately, together with
+      # prelude/, rather than letting it silently float.
       - name: Install buck2
         run: |
-          curl -fL https://github.com/facebook/buck2/releases/download/latest/buck2-x86_64-unknown-linux-gnu.zst -o /tmp/buck2.zst
+          curl -fL https://github.com/facebook/buck2/releases/download/2026-09-01/buck2-x86_64-unknown-linux-gnu.zst -o /tmp/buck2.zst
           zstd -d /tmp/buck2.zst -o /usr/local/bin/buck2
           chmod +x /usr/local/bin/buck2
           buck2 --version
