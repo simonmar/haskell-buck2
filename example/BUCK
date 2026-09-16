@@ -1,0 +1,29 @@
+load("//buck2:cxx.bzl", "cxx_library")
+load("//buck2:haskell.bzl", "haskell_library", "haskell_test")
+
+cxx_library(
+    name = "shim",
+    srcs = ["cbits/shim.cpp"],
+    exported_headers = {"shim.h": "cbits/shim.h"},
+    visibility = ["PUBLIC"],
+)
+
+haskell_library(
+    name = "example",
+    srcs = [
+        "Example/TH.hs",
+        "Example/Point.hsc",
+        "Example/Lib.hs",
+    ],
+    packages = ["template-haskell"],
+    deps = [":shim"],
+    fb_haskell = False,
+    visibility = ["PUBLIC"],
+)
+
+haskell_test(
+    name = "example-test",
+    srcs = {"Main.hs": "test/Main.hs"},
+    deps = [":example"],
+    fb_haskell = False,
+)

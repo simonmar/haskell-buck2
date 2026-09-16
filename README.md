@@ -159,6 +159,28 @@ buck2 build //some/target -m opt
 
 There are other build options that can be selected in a similar way, such as `-m prof` to enable profiling. See `constraints/BUCK` for details.
 
+# Testing this repo
+
+`example/` is a small, self-contained Cabal package used to test-drive
+this repo's own Buck2 support: a library with a Template Haskell
+splice, an `.hsc` file (hsc2hs), and C++ code linked in via FFI
+(`cxx-sources`), plus a `cabal test` test-suite exercising all three.
+
+To try it locally:
+
+```
+example/setup.sh
+cd example
+buck2 build //...          # dev
+buck2 test //...
+buck2 build -m opt //...   # opt
+buck2 test -m opt //...
+```
+
+`.github/workflows/ci.yml` runs the same steps (plus the plain `cabal
+build --only-dependencies` this all depends on) on every push and pull
+request, in both `dev` and `opt` mode.
+
 # Acknowledgments
 
 Most of the code and modifications to the standard Buck2 prelude were

@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: haskell-actions/setup@v2
+        with:
+          ghc-version: '9.6.7'
+          cabal-version: '3.14.2.0'
+
+      - name: Install buck2
+        run: |
+          curl -fL https://github.com/facebook/buck2/releases/download/latest/buck2-x86_64-unknown-linux-gnu.zst -o /tmp/buck2.zst
+          zstd -d /tmp/buck2.zst -o /usr/local/bin/buck2
+          chmod +x /usr/local/bin/buck2
+          buck2 --version
+
+      # example/ is a fixture Cabal package (TemplateHaskell, an .hsc
+      # file, and C++/FFI via cxx-sources) used to test-drive this repo's
+      # own buck2 support end to end, the same way the README describes
+      # a real consumer using it - cloning this repo as `buck2/` inside
+      # their own Cabal project. Here it's already checked out (this repo
+      # *is* the checkout), so a symlink stands in for the clone.
+      - name: Point example/ at this checkout's buck2/ prelude
+        run: ln -sfn "$(pwd)" example/buck2
+
+      - name: cabal build --only-dependencies (also generates dist-newstyle/cache/plan.json for gen-haskell-prebuilt.py)
+        working-directory: example
+        run: |
+          cabal update
+          cabal build all --only-dependencies --enable-tests
+
+      - name: Generate haskell_prebuilt_library() rules
+        working-directory: example
+        run: python3 buck2/gen-haskell-prebuilt.py
+
+      - name: buck2 build (dev)
+        working-directory: example
+        run: buck2 build //...
+
+      - name: buck2 test (dev)
+        working-directory: example
+        run: buck2 test //...
+
+      - name: buck2 build (opt)
+        working-directory: example
+        run: buck2 build -m opt //...
+
+      - name: buck2 test (opt)
+        working-directory: example
+        run: buck2 test -m opt //...

@@ -1,0 +1,8 @@
+load("//buck2:cfg_constructor_if_standalone.bzl", "cfg_constructor_if_standalone", "dev_modifiers_if_standalone")
+load("@prelude//cfg/modifier/set_cfg_modifiers.bzl", "set_cfg_modifiers")
+
+cfg_constructor_if_standalone()
+
+set_cfg_modifiers(
+    cfg_modifiers = dev_modifiers_if_standalone(),
+)
