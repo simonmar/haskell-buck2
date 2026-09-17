@@ -5,18 +5,40 @@ cxx_library(
     name = "shim",
     srcs = ["cbits/shim.cpp"],
     exported_headers = {"shim.h": "cbits/shim.h"},
+    # Real C++ (std::function, exceptions/RTTI under the hood) needs
+    # libstdc++ itself - normally invisible, since a *shared* build
+    # (`-m dev`'s default link_style) picks it up automatically via
+    # lib_shim.so's own recorded DT_NEEDED, and `-m opt`'s `-O3` happens
+    # to optimize this particular exception path away entirely. A
+    # *static* link with unoptimized C++ (confirmed via `-m prof`, the
+    # first build mode combining the two) has no such luck: the final
+    # link is `ghc -pgml gcc` linking libshim.a directly, and plain `gcc`
+    # never auto-adds libstdc++ the way `g++` would - same reasoning as
+    # the generated `rts` prebuilt_library's own `-lc -lm -lrt -ldl`.
+    exported_linker_flags = ["-lstdc++"],
+    visibility = ["PUBLIC"],
+)
+
+# The Buck2 Haskell prelude has a limitation on TemplateHaskell use
+# when profiling: TH splices cannot refer to other modules in the same
+# library. Hence the separate library for Example.TH, which is used in
+# a splice in Example.Lib.
+haskell_library(
+    name = "example-th",
+    srcs = ["Example/TH.hs"],
+    packages = ["template-haskell"],
+    fb_haskell = False,
     visibility = ["PUBLIC"],
 )
 
 haskell_library(
     name = "example",
     srcs = [
-        "Example/TH.hs",
         "Example/Point.hsc",
         "Example/Lib.hs",
     ],
-    packages = ["template-haskell"],
-    deps = [":shim"],
+    packages = ["template-haskell", "safe"],
+    deps = [":example-th", ":shim"],
     fb_haskell = False,
     visibility = ["PUBLIC"],
 )

@@ -11,6 +11,7 @@ library
       Example.Lib
   build-depends:
       base >=4 && <5
+    , safe
     , template-haskell
   default-extensions: TemplateHaskell, ForeignFunctionInterface
   include-dirs: cbits

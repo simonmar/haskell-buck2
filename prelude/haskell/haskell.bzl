@@ -625,6 +625,18 @@ def _build_haskell_lib(
     # The non-profiling artifacts are also needed to build the package for
     # profiling, so it should be passed when `enable_profiling` is True.
     non_profiling_hlib: [HaskellLibBuildOutput, None] = None,
+    # The non-profiled "shared" sibling already built earlier in the same
+    # haskell_library_impl loop (only meaningful when `enable_profiling`
+    # is True and `link_style != "shared"` - a profiled compile can never
+    # produce its own, since GHC doesn't support `-prof -dynamic-too`).
+    # Passed through to `own_shared_lib` below for exactly the reason
+    # that param's own doc comment describes: without *some* dynamic way
+    # for GHC's internal interpreter to load this package for a TH
+    # splice, it falls back to the profiled static archive being
+    # registered here - which that interpreter can never load either
+    # (confirmed directly: "unknown symbol `enterFunCCS'", a profiled-
+    # RTS-only symbol its own unprofiled RTS never links in).
+    non_profiling_shared_lib: [Artifact, None] = None,
     # When True (only meaningful when link_style != "shared", and never
     # combined with enable_profiling - shared doesn't support profiling),
     # additionally derive a "shared" sibling from this same compile's
@@ -740,6 +752,33 @@ def _build_haskell_lib(
     # this package's own conf is what *other* packages doing Template
     # Haskell will actually load).
     own_shared_lib = None
+    if non_profiling_shared_lib != None and link_style == LinkStyle("static"):
+        # Only fires for the canonical "static" link style, mirroring
+        # `build_shared_too`'s own `link_style == LinkStyle("static")`
+        # guard above - `haskell_library_impl`'s own loop calls this
+        # function once per (link_style, enable_profiling) pair, and
+        # "static"/"static_pic" would otherwise both try to declare the
+        # exact same alias path below (confirmed directly: "Multiple
+        # artifacts ... declared at the same output location"). One
+        # alias is enough for both dbs to reference, same as `lib-shared`
+        # itself is already shared between them.
+        #
+        # `_make_package` derives the *profiled* registration's "extra-
+        # libraries:" name by appending "_p" to this same `libname` - so
+        # GHC, when dlopen-ing this package's dynamic way for a TH
+        # splice, looks for "lib<libname>_p<suffix>", not the plain
+        # "lib<libname><suffix>" this target actually built (confirmed
+        # directly: without this alias, GHC's own missing-file warning
+        # names exactly that "_p"-suffixed filename). A profiled *shared*
+        # library can never exist (GHC doesn't support `-prof` + shared),
+        # so there's no real content difference to alias around - this
+        # symlink just gives the one real, non-profiled `.so` the second
+        # name GHC will actually go looking for.
+        own_shared_lib = ctx.actions.declare_output(
+            paths.join("lib-shared", "lib" + libname + "_p" + dynamic_lib_suffix),
+            has_content_based_path = False,
+        )
+        ctx.actions.symlink_file(own_shared_lib.as_output(), non_profiling_shared_lib)
     shared_output = None
     if dynamic_too:
         shared_libfile = "lib" + libname + dynamic_lib_suffix
@@ -931,6 +970,15 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 # build_shared_too branch of this same iteration.
                 continue
 
+            # The "shared" sibling built during the `enable_profiling =
+            # False` pass (this same loop, already completed by the time
+            # the `True` pass reaches here) - passed on so the *profiled*
+            # pass's own package registration can still point GHC's
+            # internal interpreter at a dynamic way to load this package,
+            # same as the non-profiled case already does for itself (see
+            # `own_shared_lib`'s own doc comment on `_make_package`).
+            non_profiling_shared = non_profiling_hlib.get(LinkStyle("shared"))
+
             hlib_build_out, derived_shared = _build_haskell_lib(
                 ctx,
                 libname,
@@ -941,6 +989,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 enable_profiling = enable_profiling,
                 native_shared_libs_dir = native_shared_libs_dir,
                 non_profiling_hlib = non_profiling_hlib.get(link_style),
+                non_profiling_shared_lib = non_profiling_shared.libs[0] if (enable_profiling and non_profiling_shared) else None,
                 build_shared_too = (build_shared_too and link_style == LinkStyle("static") and not enable_profiling),
             )
             if not enable_profiling:
@@ -1144,6 +1193,12 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         [haskell_toolchain.compiler] + ["-o", output.as_output()] + [haskell_toolchain.linker_flags] + [ctx.attrs.linker_flags],
         hidden = compiled.stubs,
     )
+
+    # Without this, GHC will link the non-profiled RTS which leads to
+    # duplicate symbols. We already do this at compile-time in
+    # compile.bzl:compile_args.
+    if enable_profiling:
+        link.add("-prof")
 
     link_args = cmd_args("-package-env=-")
 

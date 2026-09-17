@@ -520,7 +520,13 @@ def generate_buck_file(packages):
         dyn_lib_dirs = info.get('dynamic-library-dirs', '').split() or lib_dirs
         hs_libs      = info.get('hs-libraries', '').split()
 
+        # We don't list profiled libraries for the RTS, the GHC driver
+        # already links the correct flavour. It's not clear why it works
+        # for the non-profiled libs.
+        is_rts = info.get('name', pkg_name(uid)) == 'rts'
+
         static_libs = []
+        profiled_static_libs = []
         shared_libs = {}
         for stem in hs_libs:
             for d in lib_dirs:
@@ -532,6 +538,29 @@ def generate_buck_file(packages):
                     break
             else:
                 print(f"  WARNING: .a not found for {stem}", file=sys.stderr)
+
+            # Profiled static archive (`lib<stem>_p.a`), sitting right
+            # next to the vanilla one whenever this package was resolved
+            # from a `cabal build all --only-dependencies --enable-
+            # profiling` run (Cabal bundles both into the same store
+            # entry by default - `--enable-profiling` doesn't imply
+            # `--disable-library-vanilla` - and GHC's own boot packages
+            # ship both unconditionally). Feeds haskell_prebuilt_library()'s
+            # profiled_static_libs/pic_profiled_static_libs, which is what
+            # buck2's `-m prof` build mode actually links against (see
+            # haskell.bzl's _PROF_ENABLED/_BUILD_MODE_LINK_STYLE) - a
+            # plain (non-profiling) `--only-dependencies` run just won't
+            # have one, which is fine: `-m prof` isn't expected to work
+            # until this script is re-run against a profiling-enabled
+            # dependency build.
+            if not is_rts:
+                for d in lib_dirs:
+                    src = os.path.join(d, f"lib{stem}_p.a")
+                    if os.path.exists(src):
+                        rel = abs_to_rel(src)
+                        if rel:
+                            profiled_static_libs.append(rel)
+                        break
 
             soname = f"lib{stem}-ghc{GHC_VERSION}.so"
             for d in list(dict.fromkeys(dyn_lib_dirs + lib_dirs)):
@@ -577,6 +606,19 @@ def generate_buck_file(packages):
             lines.append('    ],')
         else:
             lines.append('    static_libs = [],')
+        if profiled_static_libs:
+            # No separate PIC-profiled filename convention exists (unlike
+            # vanilla static vs shared) - the same `_p.a` covers both
+            # attrs, same as it does for GHC's own non-prebuilt library
+            # compiles (see haskell.bzl's static_lib_suffix comment).
+            lines.append('    profiled_static_libs = [')
+            for p in profiled_static_libs:
+                lines.append(f'        {p!r},')
+            lines.append('    ],')
+            lines.append('    pic_profiled_static_libs = [')
+            for p in profiled_static_libs:
+                lines.append(f'        {p!r},')
+            lines.append('    ],')
         if shared_libs:
             lines.append('    shared_libs = {')
             for soname, p in sorted(shared_libs.items()):

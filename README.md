@@ -163,8 +163,11 @@ There are other build options that can be selected in a similar way, such as `-m
 
 `example/` is a small, self-contained Cabal package used to test-drive
 this repo's own Buck2 support: a library with a Template Haskell
-splice, an `.hsc` file (hsc2hs), and C++ code linked in via FFI
-(`cxx-sources`), plus a `cabal test` test-suite exercising all three.
+splice, an `.hsc` file (hsc2hs), C++ code linked in via FFI
+(`cxx-sources`), and a dependency on a real Hackage package (`safe`, to
+exercise `gen-haskell-prebuilt.py`'s cabal-store support, as opposed to
+GHC's own bundled packages) - plus a `cabal test` test-suite exercising
+all of it.
 
 To try it locally:
 
@@ -175,11 +178,39 @@ buck2 build //...          # dev
 buck2 test //...
 buck2 build -m opt //...   # opt
 buck2 test -m opt //...
+buck2 build -m prof //...  # profiling
+buck2 test -m prof //...
 ```
 
 `.github/workflows/ci.yml` runs the same steps (plus the plain `cabal
 build --only-dependencies` this all depends on) on every push and pull
-request, in both `dev` and `opt` mode.
+request, in `dev`, `opt` and `prof` mode.
+
+# Limitations
+
+**Template Haskell and `prof`**: a module that defines a splice must
+live in a *different* `haskell_library()` from any module that uses
+it, when profiling (`-m prof`). If not, the build will likely complain
+about a link error or a missing object file at compile-time.
+
+The situation with Template Haskell and profiling is complex, as is
+the reason for this limitation.
+
+* Without `-fexternal-interpreter`: GHC loads object code at
+  compile-time into its own process. Since GHC is iself a
+  dynamically-linked non-profiled executable, the objects it loads
+  must be shared, non-profiled, objects. So we have to build all the
+  dependencies of the current packages as shared libraries. This is
+  fine, except for the current package: GHC expects to find the
+  `.dyn_o` objects for the current package in the current `-odir`. But
+  Buck2 doesn't work this way: it builds the two instances of the
+  package separately. It's not clear if this is easily fixable.
+
+* With `-fexternal-interpreter`, we could load the profiled non-shared
+  objects. However, this method uses the RTS runtime linker, which is
+  known to have some limitations and can't load some objects,
+  particularly on certain architectures. This is the main reason that
+  GHC switched to dynamic linking. So we don't go this route.
 
 # Acknowledgments
 

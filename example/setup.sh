@@ -9,7 +9,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 
 ln -sfn "$(cd .. && pwd)" buck2
 
-cabal build all --only-dependencies --enable-tests
+# --enable-profiling also builds the plain (non-profiled) way by default
+# (it doesn't imply --disable-library-vanilla) - one dependency build
+# covers dev/opt *and* prof, rather than needing a second pass.
+cabal build all --only-dependencies --enable-tests --enable-profiling
 python3 buck2/gen-haskell-prebuilt.py
 
 cat <<'EOF'
@@ -20,4 +23,6 @@ Done. Now try:
   buck2 test //...
   buck2 build -m opt //...   # opt
   buck2 test -m opt //...
+  buck2 build -m prof //...  # profiling
+  buck2 test -m prof //...
 EOF

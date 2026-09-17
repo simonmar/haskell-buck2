@@ -50,6 +50,7 @@ def cfg_constructor_if_standalone():
         aliases = struct(
             dev = "root//buck2/constraints:dev",
             opt = "root//buck2/constraints:opt",
+            prof = "root//buck2/constraints:prof",
         ),
         extra_data = struct(),
     )

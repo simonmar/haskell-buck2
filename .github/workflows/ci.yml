@@ -45,11 +45,14 @@ jobs:
       - name: Point example/ at this checkout's buck2/ prelude
         run: ln -sfn "$(pwd)" example/buck2
 
+      # --enable-profiling also builds the plain (non-profiled) way by
+      # default (it doesn't imply --disable-library-vanilla), so this one
+      # dependency build covers dev/opt *and* prof - see setup.sh.
       - name: cabal build --only-dependencies (also generates dist-newstyle/cache/plan.json for gen-haskell-prebuilt.py)
         working-directory: example
         run: |
           cabal update
-          cabal build all --only-dependencies --enable-tests
+          cabal build all --only-dependencies --enable-tests --enable-profiling
 
       - name: Generate haskell_prebuilt_library() rules
         working-directory: example
@@ -70,3 +73,11 @@ jobs:
       - name: buck2 test (opt)
         working-directory: example
         run: buck2 test -m opt //...
+
+      - name: buck2 build (prof)
+        working-directory: example
+        run: buck2 build -m prof //...
+
+      - name: buck2 test (prof)
+        working-directory: example
+        run: buck2 test -m prof //...
