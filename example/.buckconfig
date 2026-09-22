@@ -18,6 +18,5 @@
     target:toolchains//...->prelude//platforms:default \
     target:third-party-haskell//...->prelude//platforms:default
 
-
 [build]
-  execution_platforms = prelude//platforms:default
+  execution_platforms = root//buck2/platforms:exec
