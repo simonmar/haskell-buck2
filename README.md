@@ -41,7 +41,7 @@ Next, create a `.buckconfig` containing
   root = .
   prelude = buck2/prelude
   toolchains = buck2/toolchains
-  third-party = third-party
+  third-party-haskell = third-party/haskell
   none = none
 
 [cell_aliases]
@@ -55,7 +55,7 @@ Next, create a `.buckconfig` containing
   target_platform_detector_spec = target:root//...->prelude//platforms:default \
     target:prelude//...->prelude//platforms:default \
     target:toolchains//...->prelude//platforms:default \
-    target:third-party//...->prelude//platforms:default
+    target:third-party-haskell//...->prelude//platforms:default
 
 [build]
   execution_platforms = prelude//platforms:default
