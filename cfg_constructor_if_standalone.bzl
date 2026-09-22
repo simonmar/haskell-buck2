@@ -55,14 +55,17 @@ def cfg_constructor_if_standalone():
         extra_data = struct(),
     )
 
-# `dev` is the default build mode when no -m flag is given - but only
-# when standalone (same reasoning as cfg_constructor_if_standalone()
-# above); when nested, an empty list is the no-op equivalent of "don't
-# call this at all", since set_cfg_modifiers() itself has no comparable
-# once-per-project restriction (it's package-scoped, not project-wide) -
-# unlike set_cfg_constructor(), calling it with `[]` when nested is
-# harmless.
+# `dev` is the default build mode when no -m flag is given, and `clang`
+# is defaulted on too (see the root PACKAGE file's own comment - every
+# machine building this project today lands on clang via
+# system_cxx_toolchain()'s $PATH auto-detection, so this is just always
+# true rather than a per-environment override) - but only when standalone
+# (same reasoning as cfg_constructor_if_standalone() above); when nested,
+# an empty list is the no-op equivalent of "don't call this at all",
+# since set_cfg_modifiers() itself has no comparable once-per-project
+# restriction (it's package-scoped, not project-wide) - unlike
+# set_cfg_constructor(), calling it with `[]` when nested is harmless.
 def dev_modifiers_if_standalone():
     if get_cell_name() != "root":
         return []
-    return ["root//buck2/constraints:dev"]
+    return ["root//buck2/constraints:dev", "root//buck2/constraints:clang"]
