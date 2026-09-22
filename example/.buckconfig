@@ -2,7 +2,7 @@
   root = .
   prelude = buck2/prelude
   toolchains = buck2/toolchains
-  third-party-haskell = third-party-haskell
+  third-party-haskell = third-party/haskell
   none = none
 
 [cell_aliases]
