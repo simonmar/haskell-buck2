@@ -142,6 +142,23 @@ def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: 
     compile_args.add("-no-link", "-i")
     compile_args.add("-package-env=-")
 
+    # Without this, GHC's own implicit global package db (always loaded,
+    # independent of anything passed via -package-db below) leaks in
+    # alongside the deps get_packages_info() computes - normally harmless
+    # (nothing there collides with an ordinary project's own package
+    # names), but GHC ships boot libraries under names a project can
+    # itself build from source under the same name (e.g. `Cabal`,
+    # `Cabal-syntax`) - then both the boot copy (auto-exposed globally)
+    # and this target's own explicitly `-package-id`-exposed one export
+    # the same module name, and GHC fails with "Ambiguous module name"
+    # for any of that module's importers, even though the -package-id
+    # given to *this* compile is perfectly unambiguous on its own.
+    # get_packages_info() already computes exactly the exposure set this
+    # compile needs (direct deps + base, see its own comment) - with
+    # `-hide-all-packages` GHC uses only that, ignoring the global db's
+    # own default exposure entirely.
+    compile_args.add("-hide-all-packages")
+
     if enable_profiling:
         compile_args.add("-prof")
 
