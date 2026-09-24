@@ -27,7 +27,6 @@ haskell_library(
     name = "example-th",
     srcs = ["Example/TH.hs"],
     packages = ["template-haskell"],
-    fb_haskell = False,
     visibility = ["PUBLIC"],
 )
 
@@ -39,7 +38,6 @@ haskell_library(
     ],
     packages = ["template-haskell", "safe"],
     deps = [":example-th", ":shim"],
-    fb_haskell = False,
     visibility = ["PUBLIC"],
 )
 
@@ -47,5 +45,4 @@ haskell_test(
     name = "example-test",
     srcs = {"Main.hs": "test/Main.hs"},
     deps = [":example"],
-    fb_haskell = False,
 )

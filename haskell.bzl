@@ -4,12 +4,6 @@
 #   - package deps: `packages = ["text", ...]` instead of explicit
 #     `"@third-party-haskell//:text"` entries in `deps`.
 #   - a standard set of packages (base, rts) added to every target.
-#   - the fb-haskell extension set enabled by default, so individual
-#     rules don't need to repeat it. Pass fb_haskell = False for a
-#     package that doesn't import that common stanza (e.g. mangle,
-#     which declares its own minimal default-extensions) -
-#     compiler_flags is then used as-is instead of appended to
-#     FB_HASKELL_EXTENSIONS.
 #   - hsc2hs: any `.hsc` file in `srcs` is automatically preprocessed, with
 #     include paths derived from `deps` (see buck2/hsc2hs.bzl) - so a `.hsc`
 #     file that needs a C++ dependency's headers just needs that dependency
@@ -30,38 +24,6 @@ load("//buck2:hsc2hs.bzl", "hsc2hs")
 
 # Packages implicitly needed by every Haskell target.
 AUTO_PACKAGES = ["base", "rts"]
-
-# Extensions enabled by the `fb-haskell` common stanza in glean.cabal.in.
-FB_HASKELL_EXTENSIONS = [
-    "-XHaskell2010",
-    "-XBangPatterns",
-    "-XBinaryLiterals",
-    "-XDataKinds",
-    "-XDeriveDataTypeable",
-    "-XDeriveGeneric",
-    "-XEmptyCase",
-    "-XExistentialQuantification",
-    "-XFlexibleContexts",
-    "-XFlexibleInstances",
-    "-XGADTs",
-    "-XGeneralizedNewtypeDeriving",
-    "-XLambdaCase",
-    "-XMultiParamTypeClasses",
-    "-XMultiWayIf",
-    "-XNamedFieldPuns",
-    "-XNoMonomorphismRestriction",
-    "-XOverloadedStrings",
-    "-XPatternSynonyms",
-    "-XRankNTypes",
-    "-XRecordWildCards",
-    "-XScopedTypeVariables",
-    "-XStandaloneDeriving",
-    "-XTupleSections",
-    "-XTypeFamilies",
-    "-XTypeSynonymInstances",
-    "-XNondecreasingIndentation",
-    "-XTypeOperators",
-]
 
 def _package_deps(packages):
     all_pkgs = {p: None for p in (AUTO_PACKAGES + packages)}
@@ -342,7 +304,6 @@ def haskell_library(
         packages = [],
         deps = [],
         compiler_flags = [],
-        fb_haskell = True,
         # Extra -C-style flags for every .hsc file in `srcs` (see
         # hsc2hs.bzl's `extra_flags`) - the buck2 equivalent of Cabal's
         # per-library `hsc2hs-options` field.
@@ -358,12 +319,11 @@ def haskell_library(
     # (see `_BUILD_MODE_PREFERRED_LINKAGE`'s own comment for why "both, by
     # default" was real, measurable wasted work in `dev` mode specifically).
     all_deps = deps + _package_deps(packages)
-    all_compiler_flags = (FB_HASKELL_EXTENSIONS + compiler_flags) if fb_haskell else compiler_flags
     kwargs.setdefault("preferred_linkage", _BUILD_MODE_PREFERRED_LINKAGE)
     native.haskell_library(
         name = name,
         srcs = _resolve_srcs(name, srcs, all_deps, hsc_flags),
-        compiler_flags = all_compiler_flags + _BUILD_MODE_HASKELL_FLAGS,
+        compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS,
         deps = all_deps,
         **kwargs
     )
@@ -374,12 +334,10 @@ def haskell_binary(
         packages = [],
         deps = [],
         compiler_flags = [],
-        fb_haskell = True,
         hsc_flags = [],
         linker_flags = [],
         **kwargs):
     all_deps = deps + _package_deps(packages)
-    all_compiler_flags = (FB_HASKELL_EXTENSIONS + compiler_flags) if fb_haskell else compiler_flags
     kwargs.setdefault("link_style", _BUILD_MODE_LINK_STYLE)
     kwargs.setdefault("enable_profiling", _PROF_ENABLED)
     kwargs.setdefault("exec_compatible_with", _BUILD_MODE_EXEC_COMPATIBLE_WITH)
@@ -396,19 +354,9 @@ def haskell_binary(
         # (`-optl-...` during a compile-only invocation, `-optc-...` when
         # nothing needs the C compiler), so adding both everywhere is the
         # faithful equivalent, not redundant belt-and-braces.
-        compiler_flags = all_compiler_flags + _BUILD_MODE_HASKELL_FLAGS + _ASAN_LINKER_FLAGS,
+        compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS + _ASAN_LINKER_FLAGS,
         deps = all_deps,
-        # Every Cabal executable/test-suite gets `-threaded -rtsopts` for
-        # free via glean.cabal.in's `common exe` stanza - not opt-in, so
-        # this shouldn't be either. Without it, anything that blocks its
-        # main thread in a synchronous FFI/subprocess call while needing a
-        # background thread to make progress concurrently (e.g. an
-        # embedded Warp server servicing a request while `callCommand`
-        # waits on an external tool - see glean-snapshot-{,codemarkup-}
-        # haskell) hangs until it times out, even though it compiles and
-        # links fine. Merged with, not replaced by, a caller's own
-        # `linker_flags` (e.g. gleancli's `-with-rtsopts=-I0`).
-        linker_flags = ["-threaded", "-rtsopts"] + _ASAN_LINKER_FLAGS + linker_flags,
+        linker_flags = _ASAN_LINKER_FLAGS + linker_flags,
         **kwargs
     )
 
