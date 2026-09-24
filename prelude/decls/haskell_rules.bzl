@@ -174,6 +174,7 @@ haskell_library = prelude_rule(
         haskell_common.srcs_arg()
         | haskell_common.compiler_flags_arg()
         | haskell_common.deps_arg()
+        | haskell_common.exported_linker_flags_arg()
         | native_common.link_whole(link_whole_type = attrs.bool(default = False))
         | native_common.preferred_linkage(preferred_linkage_type = attrs.enum(Linkage.values()))
         | {

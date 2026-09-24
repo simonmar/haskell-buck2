@@ -608,7 +608,10 @@ def _link_haskell_shared_lib(
     return (
         lib,
         LinkedObject(output = lib, unstripped_output = lib),
-        LinkInfos(default = LinkInfo(linkables = [SharedLibLinkable(lib = lib)])),
+        LinkInfos(default = LinkInfo(
+            pre_flags = ctx.attrs.exported_linker_flags,
+            linkables = [SharedLibLinkable(lib = lib)],
+        )),
     )
 
 def _build_haskell_lib(
@@ -709,6 +712,7 @@ def _build_haskell_lib(
         libs = [lib] + (archive.external_objects if archive.archive_contents_type == ArchiveContentsType("thin") else [])
         link_infos = LinkInfos(
             default = LinkInfo(
+                pre_flags = ctx.attrs.exported_linker_flags,
                 linkables = [
                     ArchiveLinkable(
                         archive = archive,
