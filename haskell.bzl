@@ -412,7 +412,7 @@ def haskell_binary(
         **kwargs
     )
 
-# Cabal's test-suites (glean.cabal.in) are all `type: exitcode-stdio-1.0` -
+# Cabal's test-suites are all `type: exitcode-stdio-1.0` -
 # a plain executable, exit code is the result - so `buck2 test` support
 # needs nothing Haskell-specific: this builds the exact same
 # haskell_binary() `name` would (so `buck2 run :name` is unaffected), plus
@@ -441,22 +441,29 @@ def haskell_binary(
 # from 226)" - 226 = 0xE2, a UTF-8 lead byte). `C.UTF-8` is a glibc
 # locale alias needing no locale-generation step, so it's available
 # without depending on whatever locales happen to be installed.
-def haskell_test(name, test_args = [], test_env = {}, **kwargs):
+def haskell_test(name, test_args = [], test_env = {}, cwd = None, **kwargs):
     bin = name + "-bin"
     haskell_binary(name = bin, **kwargs)
+    test_target = ":" + bin
+    args = test_args
+
+    if cwd != None:
+        test_target = "//buck2:run_in_cwd"
+        args = [cwd, "$(exe :" + bin + ")"] + test_args
+
     native.sh_test(
         name = name,
-        test = ":" + bin,
-        args = test_args,
+        test = test_target,
+        args = args,
         env = {"LANG": "C.UTF-8"} | test_env,
-        # `test_args`'s own `$(exe ...)` macros (e.g. clang-index,
-        # hie-indexer - see buck2/platforms/BUCK) are resolved for
-        # *this* target, not the `:bin` haskell_binary() above - it's
-        # this sh_test() whose own exec_compatible_with governs which
-        # execution platform those tools get built under, so the same
-        # build-mode-inheriting default needs to be set here too, not
-        # just on haskell_binary() (which already gets it via its own
-        # kwargs.setdefault, but that's a separate target from this
-        # one).
+        # `args`'s own `$(exe ...)` macros (the cd-wrapper case just
+        # above, or test_args' own e.g. clang-index, hie-indexer - see
+        # buck2/platforms/BUCK) are resolved for *this* target, not the
+        # `:bin` haskell_binary() above - it's this sh_test() whose own
+        # exec_compatible_with governs which execution platform those
+        # tools get built under, so the same build-mode-inheriting
+        # default needs to be set here too, not just on haskell_binary()
+        # (which already gets it via its own kwargs.setdefault, but
+        # that's a separate target from this one).
         exec_compatible_with = _BUILD_MODE_EXEC_COMPATIBLE_WITH,
     )
