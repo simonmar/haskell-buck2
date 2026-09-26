@@ -1,98 +1,122 @@
 # Buck2 build system for Haskell projects
 
-This is a version of the [Buck2 prelude](https://github.com/facebook/buck2/tree/main/prelude) with a few tweaks (that will
-hopefully be upstreamed at some point) and some supporting tooling to
-enable Haskell projects to be built with [Buck2](https://buck2.build/).
+Short summary: you can use [Buck2](https://buck2.build) as the build system for your Cabal
+project. There is support for auto-generating the `BUCK` files from
+the `.cabal` files for a complete Cabal project, and once generated
+you can use `buck2` to build, rebuild, and run the tests for the whole
+project or individual components.
 
-Why might you want to do that compared with, say, just using Cabal to
-build your code? Well, first off let me be clear that you *still need
-Cabal*, because this build system doesn't know how to solve package
-dependencies or build them. But once you've built your package
-dependencies using Cabal, you can use Buck2 for your edit-compile-test
-loop, and in many ways it's a more pleasant experience than using
-Cabal because:
+# Why?
 
-* It's much faster than Cabal
+(skip this section if you know why you want buck2)
+
+Why might you want to use `buck2` as the build system compared with
+just using `cabal`? Well, first off let me be clear that you *still
+need Cabal*, because the Buck2 support doesn't know how to solve
+package dependencies or build them. So the workflow consists of first
+running `cabal` to solve and build the dependencies, but once you've
+done that you can switch to `buck2` for building. The idea is that
+`buck2` is a more pleasant experience because:
+
+* It's faster than Cabal (TODO: measure)
+
+* It supports different build modes out of the box: the default is to
+  build in `dev` mode (unoptimised with dynamic linking) but adding
+  `-m opt` gives you optimisation and static linking.
+
 * It's much more extensible than Cabal. If you have anything that
   needs to be generated as part of your build, or any non-standard
   tooling, then hooking that up using Buck2 is far easier than Cabal.
   Furthermore Buck2 knows how to rebuild things correctly when
   either the build system or the code generator components change.
-* It works a lot better when you have C/C++ components in your project, because
+
+* It works a lot better than Cabal when you have non-Haskell code (e.g. C/C++ or Rust) in your project, because
   * Buck2 understands dependencies between C/C++ source files and header files (Cabal doesn't), so when you modify a C/C++ header the correct things are rebuilt.
   * Buck2 builds C/C++ files in parallel (Cabal doesn't)
-* You can integrate remote caching and execution (although I haven't tried that).
 
-The main disadvantage of course is that you have to maintain
-additional build instructions in the form of `BUCK` files for your
-project, which duplicate some of what is in your `.cabal` file. In the
-future I hope to be able to generate the `BUCK` files from the
-`.cabal` file, but how to do that in the presence of custom build
-stuff is an open question.
+* You can use remote execution and caching (currently untested).
+
+Finally, if you have an existing codebase using Buck2 then this is the
+basis of something that could "buckify" Cabal packages to integrate
+into your build system. It needs a bit of work to be suitable for that
+use case, though: `cabal buck2` builds all the external dependencies
+and installs them in the Cabal store, whereas to integrate with an
+existing build system you would want to satisfy those external
+dependencies from the build system itself.
+
+# What is this repo?
+
+This is a version of the [Buck2
+prelude](https://github.com/facebook/buck2/tree/main/prelude) with a
+few tweaks (that will hopefully be upstreamed at some point).
+
+You also need a modified version of `cabal-install` (see below) that
+supports the `cabal buck2` command.
+
+# How complete is it?
+
+I've used it to build the Cabal project itself, consisting of about 16
+packages and a few thousand source files. It can also build
+[Glean](https://glean.software), which has some complex build
+requirements including custom codegen, FFI & hsc2hs.
+
+There are a few [limitations](#limitations), however.
 
 # How to use it
 
-First, clone this repo as `buck2/` in your Cabal project
-
-Next, create a `.buckconfig` containing
-
-```
-[cells]
-  root = .
-  prelude = buck2/prelude
-  toolchains = buck2/toolchains
-  third-party-haskell = third-party/haskell
-  none = none
-
-[cell_aliases]
-  config = prelude
-  ovr_config = prelude
-  fbcode = none
-  fbsource = none
-  buck = none
-
-[parser]
-  target_platform_detector_spec = target:root//...->prelude//platforms:default \
-    target:prelude//...->prelude//platforms:default \
-    target:toolchains//...->prelude//platforms:default \
-    target:third-party-haskell//...->prelude//platforms:default
-
-[build]
-  execution_platforms = prelude//platforms:default
-```
-
-Next, create `PACKAGE` containing
+Build a modified version of `cabal-install` that has the `cabal buck2`
+command:
 
 ```
-load("//buck2:cfg_constructor_if_standalone.bzl", "cfg_constructor_if_standalone", "dev_modifiers_if_standalone")
-load("@prelude//cfg/modifier/set_cfg_modifiers.bzl", "set_cfg_modifiers")
-
-cfg_constructor_if_standalone()
-
-set_cfg_modifiers(
-    cfg_modifiers = dev_modifiers_if_standalone(),
-)
+git clone https://github.com/simonmar/cabal.git -b buck2
+cd cabal
+cabal install cabal-install
 ```
 
-Next ask Cabal to build your dependencies:
+Next, clone this repo as `buck2` in the root of your Cabal project.
 
 ```
-cabal build all --only-dependencies --enable-tests
+cd <my-project>
+git clone https://github.com/simonmar/haskell-buck2.git buck2
 ```
 
-And set up the Buck2 build. This script is going to analyse Cabal's
-build plan and create Buck2 `haskell_prebuilt_library()` declarations
-for all the external Haskell libraries that your project depends
-on. It will also fish out the GHC version from Cabal and tell Buck2
-about your Haskell toolchain.
+Next, build dependencies and set up the buck2 build system:
 
 ```
-python3 buck2/gen-haskell-prebuilt.py
+cabal buck2 --enable-tests
 ```
 
-Next, create `BUCK` file(s) containing your build targets. These
-should go in the same directory as your source files. For example, the
-`BUCK` file for a simple Haskell library might look something like
+This will generate some files, notably
+
+* `BUCK` and `BUCK.cabal.bzl` in each package, these are the Buck2 build targets
+* `third-party/haskell`: tells Buck2 about all the prebuilt package dependencies, either in the Cabal store or in GHC's package DB. In here we also record the GHC version you're using, and the paths to any tool dependencies.
+
+Then build your code:
+
+```
+buck2 build //...
+```
+
+The `//...` is Buck2's syntax for "all targets recursively below the
+current directory". For more details see [Target
+Pattern](https://buck2.build/docs/concepts/target_pattern/) in the
+Buck2 docs.
+
+Next you can run your tests:
+
+```
+buck2 test //...
+```
+
+# Custom `BUCK` files
+
+`cabal buck2` will generate all the `BUCK` files if they don't exist,
+but you can also write your own if you want (`cabal buck2` won't
+overwrite them).
+
+The `BUCK` file usually goes in the same directory as your source
+files. For example, the `BUCK` file for a simple Haskell library might
+look something like
 
 ```
 load("//buck2:haskell.bzl", "haskell_library")
@@ -132,18 +156,6 @@ haskell_test(
 
 You can find docs on how to write `BUCK` files in the Buck2 docs, e.g. [haskell_library](https://buck2.build/docs/prelude/rules/haskell/haskell_library/).
 
-Then build your code:
-
-```
-buck2 build //...
-```
-
-and run your tests:
-
-```
-buck2 test //...
-```
-
 # Build modes
 
 The Buck2 build system has two build modes:
@@ -154,7 +166,7 @@ The Buck2 build system has two build modes:
 To build with `opt`, use `-m opt`, e.g.
 
 ```
-buck2 build //some/target -m opt
+buck2 build my-package:my-program -m opt
 ```
 
 There are other build options that can be selected in a similar way, such as `-m prof` to enable profiling. See `constraints/BUCK` for details.
@@ -188,10 +200,27 @@ request, in `dev`, `opt` and `prof` mode.
 
 # Limitations
 
-**Template Haskell and `prof`**: a module that defines a splice must
-live in a *different* `haskell_library()` from any module that uses
-it, when profiling (`-m prof`). If not, the build will likely complain
-about a link error or a missing object file at compile-time.
+## Builds currently use `--make`
+
+The current Buck2 prelude uses `ghc --make` to build each component
+(library, executable). Ideally we should expose the full per-module
+dependencies to Buck2 so that it can exploit parallelism across
+packages for faster builds/rebuilds. It's entirely possible to do
+this, indeed the functionality already exists in [Tweag's Haskell/Buck2
+integration](https://github.com/tweag/buck2-haskell).
+
+## Custom build type
+
+The `cabal buck2` command doesn't run the actual `Setup.hs` code for a
+package with the (legacy) Custom build type. If you rely on this, use
+Hooks instead.
+
+## **Template Haskell and `prof`**
+
+A module that defines a splice must live in a *different*
+`haskell_library()` from any module that uses it, when profiling (`-m
+prof`). If not, the build will likely complain about a link error or a
+missing object file at compile-time.
 
 The situation with Template Haskell and profiling is complex, as is
 the reason for this limitation.
@@ -212,10 +241,49 @@ the reason for this limitation.
   particularly on certain architectures. This is the main reason that
   GHC switched to dynamic linking. So we don't go this route.
 
+## No support for Cabal's `foreign-library`
+
+Nothing fundamental blocking this, it's just a TODO.
+
+## Preprocessors like `hspec-discover`
+
+The `hspec-discover` preprocessor is designed to be invoked by GHC via
+the `-pgmF` flag to specify a custom preprocessor. The problem is that
+`hspec-discover` searches the filesystem to find other source files;
+these other source files amount to implicit inputs to the compilation,
+but when using Buck2 all inputs must be explicit (this is so that
+compilation steps can be executed remotely).
+
+To build an `hspec-discover` test with Buck2, you have to run the
+preprocessor using a `genrule()` that takes all the source files as an
+input. For example, if your test is in `test/Spec.hs`:
+
+```
+filegroup(
+    name = "srcs",
+    srcs = glob(["**/*.hs"])
+)
+
+genrule(
+    name = 'spec-gen',
+    cmd = "$(location third-party-haskell//:hspec-discover-exe) $(location :srcs)/test/Spec.hs test/Spec.hs ${OUT}",
+    out = "test/Spec.hs"
+)
+
+haskell_test(
+    name = 'spec',
+    srcs = {
+        'Main.hs': ':spec-gen',
+        ...
+    },
+    ...
+)
+```
+
 # Acknowledgments
 
 Most of the code and modifications to the standard Buck2 prelude were
-developed with the help of Claude Code.
+developed with the help of Claude Code using Claude Sonnet 5.
 
 The Haskell support already in the Buck2 prelude was developed by Meta
 and is in production use internally for building
