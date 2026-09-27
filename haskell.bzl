@@ -397,7 +397,7 @@ def haskell_test(name, test_args = [], test_env = {}, cwd = None, **kwargs):
 
     if cwd != None:
         test_target = "//buck2:run_in_cwd"
-        args = [cwd, "$(exe :" + bin + ")"] + test_args
+        args = [cwd, "$(exe_target :" + bin + ")"] + test_args
 
     native.sh_test(
         name = name,
