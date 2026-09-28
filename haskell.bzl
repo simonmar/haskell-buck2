@@ -29,13 +29,21 @@ def _package_deps(packages):
     all_pkgs = {p: None for p in (AUTO_PACKAGES + packages)}
     return [("@third-party-haskell//:" + p) for p in sorted(all_pkgs.keys())]
 
-# Build modes (buck2.md TODO "we should support different build modes"),
-# selected via `buck2 build ... -m root//buck2/constraints:opt` (`dev` is
-# the default - see the root PACKAGE file). `dev` matches this migration's
-# original, only behaviour (shared libs, no optimisation - fast to
-# rebuild); `opt` is what an actual deployed `glean` binary wants (a single
-# static binary, optimised). Centralized here rather than passed by each
-# BUCK file, the same reasoning as FB_HASKELL_EXTENSIONS above - one place
+def _cabal_macros_include_flags(cabal_component):
+    if cabal_component == None:
+        return []
+    pkg, component = cabal_component
+    autogen_dir = "cabal-buck2/autogen" if pkg == "." else pkg + "/cabal-buck2/autogen"
+    label = "//" + autogen_dir + ":" + component + "-cabal-macros"
+    return ["-optP-include", "-optP$(location " + label + ")"]
+
+# Build modes selected via `buck2 build ... -m
+# root//buck2/constraints:opt` (`dev` is the default - see the root
+# PACKAGE file). `dev` matches this migration's original, only
+# behaviour (shared libs, no optimisation - fast to rebuild); `opt` is
+# what an actual deployed `glean` binary wants (a single static
+# binary, optimised). Centralized here rather than passed by each BUCK
+# file, the same reasoning as FB_HASKELL_EXTENSIONS above - one place
 # to change, automatically applied to every haskell_library()/
 # haskell_binary() in the tree.
 #
@@ -102,17 +110,8 @@ _BUILD_MODE_PREFERRED_LINKAGE = select({
     }),
 })
 
-# The `-dynamic-too`/native-shared-libs-symlink-tree machinery this
-# section used to force on unconditionally (via a `dynamic_too = True`
-# kwarg here) is now driven entirely by `haskell_toolchain.dynamic_ghc`
-# instead - a LOCAL FORK in `buck2/prelude/haskell/{toolchain,haskell}
-# .bzl` (see buck2.md) auto-detected per GHC installation by buck2/
-# gen-haskell-prebuilt.py (`ghc --info`'s own `("GHC Dynamic",...)`
-# report), not hardcoded here. No kwarg needed any more - the prelude's
-# own `haskell_library_impl`/`haskell_binary_impl` read the toolchain
-# directly. Kept for reference, since the *reasoning* for why this
-# needs to be on whenever GHC itself is dynamically linked is still the
-# same as when this was a hardcoded `True`:
+# Why the toolchain needs to know whether GHC was linked dynamically
+# (dynamic_ghc):
 #
 # 1. Template Haskell splices need every package loadable the *dynamic*
 #    way: a dynamically-linked `ghc` binary's internal splice
@@ -187,11 +186,7 @@ _PROF_ENABLED = select({
     "DEFAULT": False,
 })
 
-# Matches glean.cabal.in's `common exe`: `if flag(asan) ghc-options:
-# -optc-fsanitize=address -optl-fsanitize=address` - only executables
-# (haskell_binary(), below) link a C/C++ runtime that asan instruments,
-# so (matching Cabal's own `common exe`, never applied to a library
-# component) this is only added there, not in haskell_library().
+# Linker flags enabled when building with ASAN
 _ASAN_LINKER_FLAGS = select({
     "root//buck2/constraints:asan": ["-optc-fsanitize=address", "-optl-fsanitize=address"],
     "DEFAULT": [],
@@ -278,6 +273,13 @@ def haskell_library(
         # hsc2hs.bzl's `extra_flags`) - the buck2 equivalent of Cabal's
         # per-library `hsc2hs-options` field.
         hsc_flags = [],
+        # `cabal_component = (pkg, component)` causes this component's
+        # `cabal_macros.h` file to be included when `{-# LANGUAGE CPP #-}`
+        # is on, which provides access to the MIN_VERSION_pkg(x,y,z) macros
+        # amongst other things. However, GHC also provides the MIN_VERSION
+        # macros by default, so unless you need anything else from
+        # cabal_macros.h there's no need to use this.
+        cabal_component = None,
         **kwargs):
     # No `link_style` here - unlike haskell_binary(), haskell_library()
     # doesn't take one at all: a library builds whichever output styles its
@@ -293,7 +295,7 @@ def haskell_library(
     native.haskell_library(
         name = name,
         srcs = _resolve_srcs(name, srcs, all_deps, hsc_flags),
-        compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS,
+        compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS + _cabal_macros_include_flags(cabal_component),
         deps = all_deps,
         **kwargs
     )
@@ -306,6 +308,7 @@ def haskell_binary(
         compiler_flags = [],
         hsc_flags = [],
         linker_flags = [],
+        cabal_component = None,  # see haskell_library()
         **kwargs):
     all_deps = deps + _package_deps(packages)
     kwargs.setdefault("link_style", _BUILD_MODE_LINK_STYLE)
@@ -323,7 +326,7 @@ def haskell_binary(
         # (`-optl-...` during a compile-only invocation, `-optc-...` when
         # nothing needs the C compiler), so adding both everywhere is the
         # faithful equivalent, not redundant belt-and-braces.
-        compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS + _ASAN_LINKER_FLAGS,
+        compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS + _ASAN_LINKER_FLAGS + _cabal_macros_include_flags(cabal_component),
         deps = all_deps,
         linker_flags = _ASAN_LINKER_FLAGS + linker_flags,
         **kwargs
@@ -334,19 +337,14 @@ def haskell_binary(
 # needs nothing Haskell-specific: this builds the exact same
 # haskell_binary() `name` would (so `buck2 run :name` is unaffected), plus
 # a same-named `:name-test` native.sh_test() wrapping it, which is enough
-# for `buck2 test :name-test` to work with zero .buckconfig changes (see
-# buck2.md's "buck test" entry for why a plain sh_test() wrapper was
-# chosen over writing a bespoke rule - a custom rule would still need this
-# same two-target shape under the hood, since a rule can't invoke another
-# rule's impl inline, so it would just mean re-implementing sh_test's own
-# ExternalRunnerTestInfo wiring ourselves for no functional gain).
+# for `buck2 test :name-test` to work with zero .buckconfig changes.
 #
 # `test_args`/`test_env` cover the one real wrinkle: a test-suite that
 # shells out to another buck2-built tool (e.g. glean-clang's clang-index)
 # needs that tool's location passed in explicitly via a `$(exe ...)`
 # string-parameter macro, rather than relying on it being on `$PATH` -
 # more hermetic than this migration's own earlier practice of manually
-# prepending PATH by hand to reproduce these runs (see buck2.md).
+# prepending PATH by hand to reproduce these runs.
 #
 # `LANG` defaults to a UTF-8 locale: unlike `buck2 run` (which inherits
 # the caller's shell environment, `LANG` included), `buck2 test` runs

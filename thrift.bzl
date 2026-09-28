@@ -44,19 +44,20 @@ _GEN_PREFIX = "gen-hs2"
 # "."; see also Thrift.Compiler.parseThriftFileE: `baseDir </> path`, and
 # FilePath.(</>) only ignores baseDir when `path` is already absolute).
 #
-# A directory named directly on the command line (a plain "-I some/dir"
-# string, or a glob'd filegroup covering "everything in this package") is
-# a bad fit for that: a plain path can't tell "this cell built standalone"
-# apart from "this cell built nested inside another project at a different
-# filesystem depth" (see buck2.md's hsthrift-cell entry), and a glob'd
-# directory isn't hermetic - remote execution materializes only an
-# action's *declared* inputs, not whatever real files happen to sit next
-# to the main one in the source tree (which is also what made a shared
-# "thrift" symlink inside both lib/ and tests/ - see thrift/BUCK at the
-# cell root - actively break: Buck2 saw one input (a glob covering the
-# symlink itself) wanting it to be a leaf/symlink, and another input
-# (an explicit thrift_file reference reached *through* it) wanting the
-# same path to be a real directory, and refused to merge the two).
+# A directory named directly on the command line (a plain "-I
+# some/dir" string, or a glob'd filegroup covering "everything in this
+# package") is a bad fit for that: a plain path can't tell "this cell
+# built standalone" apart from "this cell built nested inside another
+# project at a different filesystem depth", and a glob'd directory
+# isn't hermetic - remote execution materializes only an action's
+# *declared* inputs, not whatever real files happen to sit next to the
+# main one in the source tree (which is also what made a shared
+# "thrift" symlink inside both lib/ and tests/ - see thrift/BUCK at
+# the cell root - actively break: Buck2 saw one input (a glob covering
+# the symlink itself) wanting it to be a leaf/symlink, and another
+# input (an explicit thrift_file reference reached *through* it)
+# wanting the same path to be a real directory, and refused to merge
+# the two).
 #
 # So instead: every file an `include` statement might ever need is reached
 # through `deps` - other thrift_srcs_export()/thrift_library() targets,

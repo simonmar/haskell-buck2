@@ -29,17 +29,10 @@ load(
 load("@prelude//cfg/modifier/common.bzl", "MODIFIER_METADATA_KEY")
 
 def cfg_constructor_if_standalone():
-    # get_cell_name() gives the name of *this* PACKAGE file's own cell -
-    # "root" when this checkout's own .buckconfig is the outermost one
-    # (genuinely standalone), or "hsthrift" when nested inside another
-    # project's cell graph (see buck2.md's hsthrift-cell entry for why
-    # cell names are global to whichever project is outermost - that's
-    # exactly what makes this check correct: a plain read_config() flag
-    # in this project's own .buckconfig does *not* work here, since a
-    # cell's own .buckconfig is still consulted for ordinary config
-    # values even when nested, unlike the special-cased [cells] section -
-    # confirmed directly, the first version of this check used that and
-    # it read as true (and hard-errored the nested build) either way.
+    # get_cell_name() gives the name of *this* PACKAGE file's own cell
+    # - "root" when this checkout's own .buckconfig is the outermost
+    # one (genuinely standalone), or the name of the cell when nested
+    # inside another project's cell graph.
     if get_cell_name() != "root":
         return
 
