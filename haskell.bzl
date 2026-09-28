@@ -29,6 +29,14 @@ def _package_deps(packages):
     all_pkgs = {p: None for p in (AUTO_PACKAGES + packages)}
     return [("@third-party-haskell//:" + p) for p in sorted(all_pkgs.keys())]
 
+def _cabal_macros_include_flags(cabal_component):
+    if cabal_component == None:
+        return []
+    pkg, component = cabal_component
+    autogen_dir = "cabal-buck2/autogen" if pkg == "." else pkg + "/cabal-buck2/autogen"
+    label = "//" + autogen_dir + ":" + component + "-cabal-macros"
+    return ["-optP-include", "-optP$(location " + label + ")"]
+
 # Build modes (buck2.md TODO "we should support different build modes"),
 # selected via `buck2 build ... -m root//buck2/constraints:opt` (`dev` is
 # the default - see the root PACKAGE file). `dev` matches this migration's
@@ -278,6 +286,13 @@ def haskell_library(
         # hsc2hs.bzl's `extra_flags`) - the buck2 equivalent of Cabal's
         # per-library `hsc2hs-options` field.
         hsc_flags = [],
+        # `cabal_component = (pkg, component)` causes this component's
+        # `cabal_macros.h` file to be included when `{-# LANGUAGE CPP #-}`
+        # is on, which provides access to the MIN_VERSION_pkg(x,y,z) macros
+        # amongst other things. However, GHC also provides the MIN_VERSION
+        # macros by default, so unless you need anything else from
+        # cabal_macros.h there's no need to use this.
+        cabal_component = None,
         **kwargs):
     # No `link_style` here - unlike haskell_binary(), haskell_library()
     # doesn't take one at all: a library builds whichever output styles its
@@ -293,7 +308,7 @@ def haskell_library(
     native.haskell_library(
         name = name,
         srcs = _resolve_srcs(name, srcs, all_deps, hsc_flags),
-        compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS,
+        compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS + _cabal_macros_include_flags(cabal_component),
         deps = all_deps,
         **kwargs
     )
@@ -306,6 +321,7 @@ def haskell_binary(
         compiler_flags = [],
         hsc_flags = [],
         linker_flags = [],
+        cabal_component = None,  # see haskell_library()
         **kwargs):
     all_deps = deps + _package_deps(packages)
     kwargs.setdefault("link_style", _BUILD_MODE_LINK_STYLE)
@@ -323,7 +339,7 @@ def haskell_binary(
         # (`-optl-...` during a compile-only invocation, `-optc-...` when
         # nothing needs the C compiler), so adding both everywhere is the
         # faithful equivalent, not redundant belt-and-braces.
-        compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS + _ASAN_LINKER_FLAGS,
+        compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS + _ASAN_LINKER_FLAGS + _cabal_macros_include_flags(cabal_component),
         deps = all_deps,
         linker_flags = _ASAN_LINKER_FLAGS + linker_flags,
         **kwargs

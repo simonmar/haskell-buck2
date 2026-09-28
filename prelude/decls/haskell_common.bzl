@@ -38,8 +38,11 @@ def _deps_arg():
 
 def _compiler_flags_arg():
     return {
+        # attrs.arg(), not attrs.string(): lets a flag carry a
+        # `$(location ...)`/`$(exe ...)` macro that resolves to a real
+        # dependency edge.
         "compiler_flags": attrs.list(
-            attrs.string(),
+            attrs.arg(),
             default = [],
             doc = """
     Flags to pass to the Haskell compiler when compiling this rule's sources.
