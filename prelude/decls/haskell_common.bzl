@@ -50,6 +50,24 @@ def _compiler_flags_arg():
         ),
     }
 
+def _build_tool_depends_arg():
+    return {
+        "build_tool_depends": attrs.list(
+            attrs.dep(),
+            default = [],
+            doc = """
+    Executables (haskell_binary(), export_exe(), or anything else with a
+    single default output) that this rule's own GHC invocation needs
+    reachable via PATH by bare name. The executables can then be used
+    with -pgmL or -pgmF flags for example, either as a command-line
+    arg or in a {-# OPTIONS_GHC ... #-} pragma.
+
+    The build_tool_depends attribute is used to implement Cabal's
+    build-tool-depends: field.
+""",
+        ),
+    }
+
 def _exported_linker_flags_arg():
     return {
         "exported_linker_flags": attrs.list(
@@ -66,4 +84,5 @@ haskell_common = struct(
     deps_arg = _deps_arg,
     compiler_flags_arg = _compiler_flags_arg,
     exported_linker_flags_arg = _exported_linker_flags_arg,
+    build_tool_depends_arg = _build_tool_depends_arg,
 )
