@@ -211,7 +211,23 @@ and 641 source files (one package, `hackage-security`, is not part of
 the project but has to be built locally nonetheless because it depends
 on `Cabal-syntax` which *is* part of the project).
 
-## Clean build
+Buck2 shines when it comes to rebuilds: the dependency graph is cached
+in memory, and it knows when build steps can be omitted because the
+inputs haven't changed.
+
+![Buck2 vs Cabal build times](perf-chart.svg)
+
+**Caveats**
+
+* Results tend to be +/- a few seconds from run to run
+* I didn't dig into the results in any detail
+* It's just one set of data points. Different projects and different choices of edits could give different results. However, I did perform a similar
+experiment with the [persistent](github.com/yesodweb/persistent)
+project, and got similar results.
+
+## Raw results and details
+
+### Clean build
 
 * Optimised:
   * Default Cabal build: **280s**
@@ -227,7 +243,7 @@ on `Cabal-syntax` which *is* part of the project).
     * `cabal buck2 --enable-tests --enable-benchmarks && buck2 build //... -m dev`
     * Cabal is using `-dynamic-too` for libraries, while Buck2 is building everything purely dynamic.
 
-## Edit + rebuild
+### Edit + rebuild
 
 Next I made a single edit (added an extension to
 `Language.Haskell.Extension`) and rebuilt everything:
@@ -239,15 +255,6 @@ Next I made a single edit (added an extension to
 * Unoptimised / dynamic:
   * Cabal: **85s**
   * Buck2: **55s**
-
-I didn't dig further into these results, and it's just one data point,
-so do take it with a pinch of salt (however, I did perform a similar
-experiment with the [persistent](github.com/yesodweb/persistent)
-project, and obtained similar results).
-
-Buck2 shines when it comes to rebuilds: the dependency graph is cached
-in memory, and it knows when build steps can be omitted because the
-inputs haven't changed.
 
 # Limitations
 
