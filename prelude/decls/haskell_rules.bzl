@@ -51,6 +51,7 @@ haskell_binary = prelude_rule(
         | haskell_common.srcs_arg()
         | haskell_common.compiler_flags_arg()
         | haskell_common.deps_arg()
+        | haskell_common.build_tool_depends_arg()
         | {
             "deps_query": attrs.option(attrs.query(), default = None),
             "enable_profiling": attrs.bool(default = False),
@@ -175,6 +176,7 @@ haskell_library = prelude_rule(
         | haskell_common.compiler_flags_arg()
         | haskell_common.deps_arg()
         | haskell_common.exported_linker_flags_arg()
+        | haskell_common.build_tool_depends_arg()
         | native_common.link_whole(link_whole_type = attrs.bool(default = False))
         | native_common.preferred_linkage(preferred_linkage_type = attrs.enum(Linkage.values()))
         | {

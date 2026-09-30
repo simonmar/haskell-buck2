@@ -308,11 +308,26 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
     # build-action time rather than baking absolute host paths into .bzl
     # or BUCK files (see toolchains/BUCK's `compiler`/`packager`).
     run_cmd = compile_cmd
-    if haskell_toolchain.compile_env:
-        env_exports = "".join([
-            'export {}="{}"; '.format(name, value)
-            for name, value in haskell_toolchain.compile_env.items()
-        ])
+    env_exports = "".join([
+        'export {}="{}"; '.format(name, value)
+        for name, value in haskell_toolchain.compile_env.items()
+    ]) if haskell_toolchain.compile_env else ""
+
+    build_tool_dirs = {
+        dep[DefaultInfo].default_outputs[0].basename: dep[DefaultInfo].default_outputs[0]
+        for dep in ctx.attrs.build_tool_depends
+    }
+    if build_tool_dirs:
+        build_tool_bin_dir = ctx.actions.symlinked_dir(
+            artifact_suffix + "-build-tool-depends",
+            build_tool_dirs,
+            has_content_based_path = False,
+        )
+        run_cmd = cmd_args(
+            ["sh", "-c", env_exports + 'export PATH="$PATH:$1"; shift; exec "$@"', "sh", build_tool_bin_dir],
+            compile_cmd,
+        )
+    elif haskell_toolchain.compile_env:
         run_cmd = cmd_args(["sh", "-c", env_exports + 'exec "$@"', "sh"], compile_cmd)
 
     ctx.actions.run(
