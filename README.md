@@ -58,7 +58,7 @@ supports the `cabal buck2` command.
 # How complete is it?
 
 I've used it to build a few largish projects, in particular the Cabal
-project itself which consists of about 16 packages and a few thousand
+project itself which consists of about 16 packages and a few hundred
 source files. It can also build [Glean](https://glean.software), which
 has some complex build requirements including custom codegen, FFI &
 hsc2hs.
