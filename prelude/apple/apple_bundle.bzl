@@ -26,6 +26,7 @@ load(
 load("@prelude//apple/user:apple_selected_debug_path_file.bzl", "SELECTED_DEBUG_PATH_FILE_NAME")
 load("@prelude//apple/user:apple_selective_debugging.bzl", "AppleSelectiveDebuggingInfo")
 load("@prelude//apple/validation:required_reasons.bzl", "get_required_reasons_validator_output")
+load("@prelude//apple/validation:swiftmodule_change_analysis.bzl", "get_swiftmodule_change_analysis_output")
 load(
     "@prelude//cxx:cxx_transitive_diagnostics.bzl",
     "cxx_transitive_diagnostics_combine",
@@ -52,13 +53,19 @@ load(
     "UnstrippedLinkOutputInfo",
     "make_link_command_debug_output_json_info",
 )
+load("@prelude//target_stats:target_stats.bzl", "target_stats_aggregate_providers_and_subtargets")
 load("@prelude//utils:arglike.bzl", "ArgLike")
 load("@prelude//utils:lazy.bzl", "lazy")
 load(
     "@prelude//utils:utils.bzl",
     "flatten",
 )
-load("@prelude//xplugins:debug_artifacts.bzl", "xplugins_get_debug_artifacts_info", "xplugins_get_debug_artifacts_subtargets")
+load(
+    "@prelude//xplugins:debug_artifacts.bzl",
+    "xplugins_get_debug_artifacts_info",
+    "xplugins_get_debug_artifacts_subtargets",
+    "xplugins_get_function_mapping_manifest_info",
+)
 load(":apple_bundle_destination.bzl", "AppleBundleDestination")
 load(
     ":apple_bundle_part.bzl",
@@ -423,7 +430,13 @@ def apple_bundle_impl(ctx: AnalysisContext) -> list[Provider]:
     sub_targets["linker-maps"] = [DefaultInfo(default_output = linker_maps_directory)]
 
     xplugins_debug_info = xplugins_get_debug_artifacts_info(ctx, deps_with_binary)
-    sub_targets["xplugins"] = xplugins_get_debug_artifacts_subtargets(ctx.actions, xplugins_debug_info)
+    app_binary = get_default_binary_dep(ctx.attrs.binary) if ctx.attrs.extension == "app" and xplugins_debug_info else None
+    xplugins_function_mapping_manifest_info = xplugins_get_function_mapping_manifest_info(
+        ctx.actions,
+        app_binary.label if app_binary else None,
+        xplugins_debug_info,
+    )
+    sub_targets["xplugins"] = xplugins_get_debug_artifacts_subtargets(xplugins_function_mapping_manifest_info)
 
     link_cmd_debug_file, link_cmd_debug_info = _link_command_debug_data(ctx.actions, deps_with_binary)
     sub_targets["linker.command"] = [DefaultInfo(default_outputs = filter(None, [link_cmd_debug_file]))]
@@ -431,7 +444,11 @@ def apple_bundle_impl(ctx: AnalysisContext) -> list[Provider]:
     # dsyms
     dsym_input_binary_arg = _get_dsym_input_binary_arg(ctx, binary_outputs, primary_binary_path_arg)
     binary_dsym_artifacts = _get_bundle_binary_dsym_artifacts(ctx, binary_outputs, dsym_input_binary_arg)
-    dep_dsym_artifacts = flatten([info.dsyms for info in deps_debuggable_infos])
+    # The same dSYM can reach a bundle through multiple dependency paths.
+    dep_dsym_artifacts = set()
+    for info in deps_debuggable_infos:
+        dep_dsym_artifacts.update(info.dsyms)
+    dep_dsym_artifacts = list(dep_dsym_artifacts)
 
     dsym_artifacts = binary_dsym_artifacts + dep_dsym_artifacts
     if dsym_artifacts:
@@ -512,6 +529,9 @@ def apple_bundle_impl(ctx: AnalysisContext) -> list[Provider]:
     mod_dep_graph_subtargets, mod_dep_graph_info = _modularization_dep_graph_data(ctx, deps_with_binary)
     sub_targets.update(mod_dep_graph_subtargets)
 
+    target_stats_providers, target_stats_subtargets = target_stats_aggregate_providers_and_subtargets(ctx, deps = deps_with_binary)
+    sub_targets.update(target_stats_subtargets)
+
     bundle_and_dsym_info_json = {
         "bundle": bundle,
         "dsym": dsym_json_info.json_object,
@@ -556,6 +576,8 @@ def apple_bundle_impl(ctx: AnalysisContext) -> list[Provider]:
     )
     sub_targets["check"] = [DefaultInfo(default_output = None, other_outputs = transitive_diagnostic_artifacts)]
 
+    sub_targets["swiftmodule-change-analysis"] = [DefaultInfo(default_output = get_swiftmodule_change_analysis_output(ctx, deps_with_binary))]
+
     providers = (
         [
             DefaultInfo(default_output = bundle, sub_targets = sub_targets),
@@ -592,11 +614,13 @@ def apple_bundle_impl(ctx: AnalysisContext) -> list[Provider]:
             mod_dep_graph_info,
             info_plist_info,
         ]
+        + target_stats_providers
         + bundle_result.providers
         + validation_providers
     )
     if xplugins_debug_info:
         providers.append(xplugins_debug_info)
+    providers.append(xplugins_function_mapping_manifest_info)
 
     return providers
 

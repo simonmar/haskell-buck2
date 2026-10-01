@@ -38,6 +38,10 @@
 %% please dialyzer
 -export([ok_group/1, fail_group/1]).
 
+-export_type([
+    shared_state/0
+]).
+
 -import(common_util, [unicode_characters_to_list/1]).
 
 %% For tests purposes
@@ -51,10 +55,6 @@
 %% -----------------------------------------------------------------------------
 %%            Types
 %% -----------------------------------------------------------------------------
-
--export_type([
-    shared_state/0
-]).
 
 -type tree_node() :: cth_tpx_test_tree:tree_node().
 -type group_path() :: cth_tpx_test_tree:group_path().
@@ -293,10 +293,8 @@ post_init_per_suite(Suite, _Config, {skip, {failed, _} = Reason} = Error, HookSt
     end);
 post_init_per_suite(Suite, _Config, {skip, Reason} = Error, HookState) ->
     on_shared_state(HookState, ?FUNCTION_NAME, Error, fun(State) ->
-        % In this case the init_per_suite returns with a {skip, Reason}
-        % It then passed fine.
         Desc = fmt_init_or_end(Suite, init_per_suite, Reason, ~"SKIPPED"),
-        {Error, add_result(?INIT_PER_SUITE, passed, Desc, State)}
+        {Error, add_result(?INIT_PER_SUITE, skipped, Desc, State)}
     end);
 post_init_per_suite(Suite, _Config, {fail, Reason} = Error, HookState) ->
     on_shared_state(HookState, ?FUNCTION_NAME, Error, fun(State) ->
@@ -610,7 +608,7 @@ method_name(Method, Groups) ->
             MethodName0 ->
                 atom_to_list(MethodName0)
         end,
-    cth_tpx_test_tree:qualified_name(Groups, MethodName).
+    common_util:qualified_name(Groups, MethodName).
 
 -spec pre_end_per_testcase(ct_suite(), ct_testname(), ct_config(), hook_state()) -> {ct_config(), hook_state()}.
 pre_end_per_testcase(_Suite, TC, Config, HookState) ->

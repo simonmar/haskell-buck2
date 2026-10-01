@@ -9,7 +9,14 @@
 -module(cth_tpx_test_tree).
 -compile([warn_missing_spec_all]).
 
--include("method_ids.hrl").
+%% Public API
+-export([
+    new_node/1,
+    new_leaf/1,
+
+    register_result/4,
+    collect_results/3
+]).
 
 -export_type([
     tree/0,
@@ -27,16 +34,7 @@
     method_id/0
 ]).
 
-%% Public API
--export([
-    qualified_name/2,
-
-    new_node/1,
-    new_leaf/1,
-
-    register_result/4,
-    collect_results/3
-]).
+-include("method_ids.hrl").
 
 -import(common_util, [unicode_characters_to_list/1]).
 
@@ -92,19 +90,6 @@
     main := collected_method_result(),
     ends := [collected_method_result()]
 }.
-
--doc """
-Gets the name for a testcase in a given group-path
-The groups order expected here is [leaf_group, ...., root_group]
-""".
--spec qualified_name(Groups, TestCase) -> string() when
-    Groups :: group_path(),
-    TestCase :: name().
-qualified_name(Groups, TestCase) ->
-    StringGroups = [atom_to_list(Group) || Group <- Groups],
-    JoinedGroups = string:join(lists:reverse(StringGroups), ":"),
-    Raw = io_lib:format("~ts.~ts", [JoinedGroups, TestCase]),
-    unicode_characters_to_list(Raw).
 
 %% Tree creation and update
 
@@ -202,7 +187,7 @@ Provides a result for a given specific requested_result.
     TestCase :: atom(),
     CollectedStdOut :: ct_stdout:collected_stdout().
 collect_result(TreeResult, Groups, TestCase, CollectedStdOut) ->
-    QualifiedName = qualified_name(lists:reverse(Groups), TestCase),
+    QualifiedName = common_util:qualified_name(lists:reverse(Groups), TestCase),
     LeafResult = collect_result(TreeResult, [], [], Groups, TestCase, QualifiedName, CollectedStdOut),
     #{ends := EndsResults, main := MainResult} = LeafResult,
     MainResultWithEndFailure = report_end_failure(EndsResults, MainResult),
@@ -380,12 +365,14 @@ get_missing_result(Inits, QualifiedName, CollectedStdOut) ->
     handle_skipped_result(Inits, MainResult, CollectedStdOut).
 
 -doc """
-Generates an user informative message in the case of the missing result by attempting to find the right init to blame.
+Attributes a test case that left no result of its own, or that reports itself as
+`skipped`, to the init that is responsible for it.
 
-Notice that an Erlang test-result can be `skipped` if it is either skipped by the user or was skipped because of an init failure.
-As `skipped` is an error state in tpx, if it was skipped by the user, the test is reported as omitted, which is not an error state.
-In the case where it is skipped because of init failure, it is reported as failed with appropriate user message reporting
-to the init to be blamed.
+`Inits` runs innermost first, and the first one that did not pass is the one blamed: the
+case takes that init's outcome, with a message naming the init and quoting its details.
+`failed`, `timeout`, `infra_failure`, and `skipped` therefore carry through as
+themselves; an `omitted` init is blamed as a failure. When every init passed,
+`MainResult` stands.
 """.
 -spec handle_skipped_result(Inits, MainResult, CollectedStdOut) -> collected_method_result() when
     Inits :: [collected_method_result()],
@@ -435,7 +422,17 @@ handle_skipped_result([Init | Inits], MainResult = #{name := Name}, CollectedStd
         passed ->
             handle_skipped_result(Inits, MainResult, CollectedStdOut);
         skipped ->
-            handle_skipped_result(Inits, MainResult, CollectedStdOut);
+            #{
+                name => Name,
+                outcome => skipped,
+                details =>
+                    io_lib:format(
+                        ~"Skipped because init ~ts was skipped, with reason:\n ~ts",
+                        [maps:get(name, Init), maps:get(details, Init)]
+                    ),
+
+                std_out => InitStdOut
+            };
         omitted ->
             #{
                 name => Name,

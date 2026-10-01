@@ -7,6 +7,7 @@
 # above-listed licenses.
 
 load("@prelude//:is_full_meta_repo.bzl", "is_full_meta_repo")
+load("@prelude//cxx:compile.bzl", "compiler_info_with_toolchain_argsfiles")
 load(
     "@prelude//cxx:cxx_toolchain_types.bzl",
     "AsCompilerInfo",
@@ -129,6 +130,7 @@ def cxx_toolchain_impl(ctx):
     cuda_info = (
         CudaCompilerInfo(
             compiler = ctx.attrs.cuda_compiler[RunInfo],
+            compiler_for_dryrun = ctx.attrs.cuda_compiler_for_dryrun[RunInfo] if ctx.attrs.cuda_compiler_for_dryrun else None,
             compiler_type = ctx.attrs.cuda_compiler_type or ctx.attrs.compiler_type,
             compiler_flags = cmd_args(ctx.attrs.cuda_compiler_flags),
             preprocessor_flags = cmd_args(ctx.attrs.cuda_preprocessor_flags),
@@ -168,6 +170,24 @@ def cxx_toolchain_impl(ctx):
         if ctx.attrs.rc_compiler
         else None
     )
+
+    c_info = compiler_info_with_toolchain_argsfiles(ctx.actions, "c", CCompilerInfo, c_info)
+    objc_info = compiler_info_with_toolchain_argsfiles(ctx.actions, "objc", ObjcCompilerInfo, objc_info)
+    cxx_info = compiler_info_with_toolchain_argsfiles(
+        ctx.actions,
+        "cxx",
+        CxxCompilerInfo,
+        cxx_info,
+        # Only the cxx info can be precompiled for C++20 modules.
+        precompile_filter = ctx.attrs.internal_tools[CxxInternalTools].filter_argsfile,
+    )
+    objcxx_info = compiler_info_with_toolchain_argsfiles(ctx.actions, "objcxx", ObjcxxCompilerInfo, objcxx_info)
+    asm_info = compiler_info_with_toolchain_argsfiles(ctx.actions, "asm", AsmCompilerInfo, asm_info)
+    as_info = compiler_info_with_toolchain_argsfiles(ctx.actions, "as", AsCompilerInfo, as_info)
+    cuda_info = compiler_info_with_toolchain_argsfiles(ctx.actions, "cuda", CudaCompilerInfo, cuda_info)
+    hip_info = compiler_info_with_toolchain_argsfiles(ctx.actions, "hip", HipCompilerInfo, hip_info)
+    cvtres_info = compiler_info_with_toolchain_argsfiles(ctx.actions, "cvtres", CvtresCompilerInfo, cvtres_info)
+    rc_info = compiler_info_with_toolchain_argsfiles(ctx.actions, "rc", RcCompilerInfo, rc_info)
 
     linker_type = LinkerType(ctx.attrs.linker_type)
     linker_info = LinkerInfo(
@@ -228,13 +248,13 @@ def cxx_toolchain_impl(ctx):
     utilities_info = BinaryUtilitiesInfo(
         bolt = ctx.attrs.bolt[RunInfo] if ctx.attrs.bolt else None,
         custom_tools = {name: dep[RunInfo] for name, dep in ctx.attrs.custom_tools.items()},
+        elf_stamp = ctx.attrs.elf_stamp[RunInfo] if ctx.attrs.elf_stamp else None,
         nm = ctx.attrs.nm[RunInfo],
         objcopy = ctx.attrs.objcopy_for_shared_library_interface[RunInfo],
         objdump = ctx.attrs.objdump[RunInfo] if ctx.attrs.objdump else None,
         ranlib = ctx.attrs.ranlib[RunInfo] if ctx.attrs.ranlib else None,
         strip = ctx.attrs.strip[RunInfo],
         dwp = ctx.attrs.dwp[RunInfo] if ctx.attrs.dwp else None,
-        bolt_msdk = None,
     )
 
     strip_flags_info = StripFlagsInfo(
@@ -314,12 +334,14 @@ def cxx_toolchain_extra_attributes(is_toolchain_rule):
         "compiler_flavor_flags": attrs.dict(key = attrs.string(), value = attrs.list(attrs.string()), default = {}),
         "cpp_dep_tracking_mode": attrs.enum(DepTrackingMode.values(), default = "makefile"),
         "cuda_compiler": attrs.option(dep_type(providers = [RunInfo]), default = None),
+        "cuda_compiler_for_dryrun": attrs.option(dep_type(providers = [RunInfo]), default = None),
         "cuda_dep_tracking_mode": attrs.enum(DepTrackingMode.values(), default = "makefile"),
         "custom_tools": attrs.dict(key = attrs.string(), value = dep_type(providers = [RunInfo]), default = {}),
         "cvtres_compiler": attrs.option(dep_type(providers = [RunInfo]), default = None),
         "cxx_compiler": dep_type(providers = [RunInfo]),
         "default_deps": attrs.list(dep_type(), default = []),
         "dwp": attrs.option(dep_type(providers = [RunInfo]), default = None),
+        "elf_stamp": attrs.option(dep_type(providers = [RunInfo]), default = None),
         "gcno_files": attrs.bool(default = False),
         "generate_gc_sections": attrs.bool(default = False),
         "generate_linker_maps": attrs.bool(default = False),

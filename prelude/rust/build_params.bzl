@@ -56,7 +56,15 @@ Emit = enum(
     "llvm-ir",
     "llvm-ir-noopt",
     "obj",
+    # A real link, performed by rustc: non-AUL binaries and dylibs/cdylibs,
+    # proc macros (which rustc itself loads), and staticlib bundling (not a
+    # true link, but like one in that it pulls together all dependencies).
     "link",
+    # The crate's static-library-shaped artifact. For `rlib` crates this is
+    # the rlib itself. For `bin` crates (AUL only) rustc compiles exactly as
+    # for `link`, but the extraction wrapper captures the objects it would
+    # have handed the linker.
+    "rlib",
     "dep-info",
     "mir",
     "expand",  # pseudo emit alias for -Zunpretty=expanded
@@ -94,6 +102,9 @@ def dep_metadata_of_emit(emit: Emit) -> MetadataKind:
         Emit("llvm-ir-noopt"): MetadataKind("full"),
         Emit("obj"): MetadataKind("full"),
         Emit("link"): MetadataKind("link"),
+        # rlibs are consumed as archives by cxx-driven links, never loaded by
+        # a downstream rustc link, so their deps never need real object code.
+        Emit("rlib"): MetadataKind("full"),
         Emit("mir"): MetadataKind("full"),
         Emit("metadata-fast"): MetadataKind("fast"),
         Emit("clippy"): MetadataKind("fast"),

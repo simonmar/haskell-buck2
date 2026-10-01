@@ -14,6 +14,7 @@ load(
 load("@prelude//:paths.bzl", "paths")
 load(
     "@prelude//cxx:cxx_bolt.bzl",
+    "PRE_BOLT_SUFFIX",
     "bolt",
     "cxx_use_bolt",
 )
@@ -132,6 +133,7 @@ def cxx_gnu_dist_link(
     # This action will only happen if split_dwarf is enabled via the toolchain.
     dwp_tool_available: bool = True,
     executable_link: bool = True,
+    build_info_json: Artifact | None = None,
 ) -> LinkedObject:
     """
     Perform a distributed thin-lto link into the supplied output
@@ -163,6 +165,9 @@ def cxx_gnu_dist_link(
     normalized_identifier = identifier.replace("[", "_").replace("]", "_").replace(" ", "_") if identifier != None else None
 
     enable_late_build_info_stamping = executable_link and cxx_stamp_build_info(ctx)
+
+    # Unlike the plain link, a `None` (no preference) narrows to `False` here,
+    # because this also feeds `bolt` and `strip_object`, which take a plain bool.
     enable_cache_upload = opts.allow_cache_upload or enable_late_build_info_stamping
 
     link_action_execution_properties = get_action_execution_attributes(opts.link_execution_preference)
@@ -823,7 +828,7 @@ def cxx_gnu_dist_link(
         split_debug_output = None
 
     if dwp_tool_available:
-        dwp_output = ctx.actions.declare_output(output.short_path.removesuffix("-wrapper") + ".dwp", has_content_based_path = False)
+        dwp_output = ctx.actions.declare_output(output.short_path.removesuffix(PRE_BOLT_SUFFIX) + ".dwp", has_content_based_path = False)
 
         def dynamic_run_dwp_action(ctx: AnalysisContext, artifacts, outputs):
             plan = artifacts[link_plan_out].read_json()
@@ -881,7 +886,16 @@ def cxx_gnu_dist_link(
         strip_args = opts.strip_args_factory(ctx) if opts.strip_args_factory else cmd_args()
         final_output = strip_object(ctx, cxx_toolchain, final_output, strip_args, category_suffix, allow_cache_upload = enable_cache_upload)
 
-    final_output = stamp_build_info(ctx, final_output, links = opts.links) if executable_link else final_output
+    final_output = (
+        stamp_build_info(
+            ctx,
+            final_output,
+            links = opts.links,
+            build_info_json = build_info_json,
+        )
+        if executable_link
+        else final_output
+    )
 
     return LinkedObject(
         output = final_output,

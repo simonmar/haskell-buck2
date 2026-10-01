@@ -22,8 +22,8 @@ load(
     "create_abi",
     "create_java_library_providers",
     "create_native_providers",
-    "derive_compiling_deps",
     "generate_java_classpath_snapshot",
+    "get_compiling_deps_tset",
     "make_compile_outputs",
     "to_list",
 )
@@ -52,6 +52,8 @@ load(
 load("@prelude//jvm:cd_jar_creator_util.bzl", "postprocess_jar")
 load("@prelude//jvm:nullsafe.bzl", "get_nullsafe_info")
 load("@prelude//linking:shared_libraries.bzl", "SharedLibraryInfo")
+load("@prelude//target_stats:target_stats.bzl", "CycleMode", "target_stats_providers_and_subtargets")
+load("@prelude//target_stats:target_stats_config.bzl", "TARGET_STATS_ENABLED")
 load("@prelude//utils:expect.bzl", "expect")
 load("@prelude//utils:label_provider.bzl", "LabelInfo")
 
@@ -165,7 +167,7 @@ def _build_classpath(
     classpath_args_projection: str,
     additional_classpath_entries_list: list[Artifact],
 ) -> [cmd_args, None]:
-    compiling_deps_tset = derive_compiling_deps(actions, None, deps)
+    compiling_deps_tset = get_compiling_deps_tset(actions, deps)
 
     if additional_classpath_entries or compiling_deps_tset or additional_classpath_entries_list:
         args = cmd_args()
@@ -599,6 +601,28 @@ def _check_exported_deps(exported_deps: list[Dependency], attr_name: str):
 def _skip_java_library_dep_checks(ctx: AnalysisContext) -> bool:
     return "skip_buck2_java_library_dep_checks" in ctx.attrs.labels
 
+def jvm_target_stats(ctx: AnalysisContext) -> (list[Provider], dict[str, list[Provider]]):
+    """target_stats for a JVM library rule (java_library, kotlin_library).
+
+    JVM sources get package cycles, as android_library does; the tools come from
+    the java toolchain, which is the one both rules have. A no-op unless the
+    config is enabled and that toolchain carries the tools.
+    """
+    if not TARGET_STATS_ENABLED:
+        return [], {}
+    tools = ctx.attrs._java_toolchain[JavaToolchainInfo].target_stats_tools
+    if tools == None:
+        return [], {}
+    return target_stats_providers_and_subtargets(
+        ctx,
+        tools = tools,
+        srcs = {src.short_path: src for src in ctx.attrs.srcs},
+        # Target stats cover the compile graph, including non-packaged provided deps.
+        deps = (ctx.attrs.deps + ctx.attrs.exported_deps + ctx.attrs.runtime_deps + ctx.attrs.provided_deps + ctx.attrs.exported_provided_deps),
+        cycle_mode = CycleMode("package"),
+        module_name = ctx.label.name,
+    )
+
 def java_library_impl(ctx: AnalysisContext) -> list[Provider]:
     """
      java_library() rule implementation
@@ -635,13 +659,16 @@ def java_library_impl(ctx: AnalysisContext) -> list[Provider]:
         _check_dep_types(ctx.attrs.exported_provided_deps)
         _check_dep_types(ctx.attrs.runtime_deps)
 
+    target_stats_providers, target_stats_subtargets = jvm_target_stats(ctx)
+
     java_providers = build_java_library(
         ctx = ctx,
         srcs = ctx.attrs.srcs,
         validation_deps_outputs = get_validation_deps_outputs(ctx),
+        extra_sub_targets = target_stats_subtargets,
     )
 
-    return to_list(java_providers) + [android_packageable_info] + [LabelInfo(labels = ctx.attrs.labels)] + graphql_providers(ctx)
+    return to_list(java_providers) + [android_packageable_info] + [LabelInfo(labels = ctx.attrs.labels)] + graphql_providers(ctx) + target_stats_providers
 
 def build_java_library(
     ctx: AnalysisContext,

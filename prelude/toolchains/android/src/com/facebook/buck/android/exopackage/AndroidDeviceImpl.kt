@@ -16,6 +16,7 @@ import com.google.common.base.Splitter
 import com.google.common.collect.ImmutableSortedSet
 import com.google.common.collect.Sets
 import java.io.File
+import java.io.IOException
 import java.lang.Thread.sleep
 import java.nio.file.Files
 import java.nio.file.Path
@@ -24,10 +25,14 @@ import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.Optional
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentMap
 import java.util.regex.Pattern
 import kotlin.system.measureTimeMillis
 
 class AndroidDeviceImpl(val serial: String, val adbUtils: AdbUtils) : AndroidDevice {
+
+  private val properties: ConcurrentMap<String, String> = ConcurrentHashMap()
 
   override fun installApkOnDevice(
       apk: File,
@@ -499,11 +504,6 @@ class AndroidDeviceImpl(val serial: String, val adbUtils: AdbUtils) : AndroidDev
   }
 
   @Throws(Exception::class)
-  override fun createForward(): AutoCloseable {
-    return AutoCloseable {}
-  }
-
-  @Throws(Exception::class)
   override fun installFiles(
       filesType: String,
       installPaths: Map<Path, Path>,
@@ -539,16 +539,18 @@ class AndroidDeviceImpl(val serial: String, val adbUtils: AdbUtils) : AndroidDev
                 .forEach { tempFolders[it] = Files.createTempDirectory("${it.fileName}_") }
             installPaths.forEach { (destination, source) ->
               val targetPath = tempFolders[destination.parent]?.resolve(destination.fileName)
-              Files.copy(source, targetPath, StandardCopyOption.REPLACE_EXISTING)
+              stageForPush(source, checkNotNull(targetPath))
             }
             // push the temp folder to the device
             mkDirP(stagingDir)
             tempFolders.forEach { (destination, source) ->
               try {
                 executeAdbCommand("push -z brotli $source $stagingDir")
+                // In staging, where the glob covers this shard's files and nothing else. The
+                // destination holds every shard's, so chmodding there costs the whole directory
+                // once per shard. The app will not start if its dex files are writable.
+                executeAdbShellCommand("chmod 644 $stagingDir/${source.fileName}/*")
                 executeAdbShellCommand("mv $stagingDir/${source.fileName}/* $destination")
-                // instagram will fail to star if dex files are writable
-                executeAdbShellCommand("chmod 644 $destination/*")
               } catch (e: AdbCommandFailedException) {
                 throw AndroidInstallException.adbCommandFailedException(
                     "Failed to push $source to $destination.",
@@ -583,6 +585,12 @@ class AndroidDeviceImpl(val serial: String, val adbUtils: AdbUtils) : AndroidDev
                 "push $source $destination",
                 "Failed to push $source to $destination.",
             )
+            // As for the payloads above: nothing the app reads is left writable. One named file
+            // rather than a glob, since these are pushed one at a time.
+            executeAdbShellCommandCatching(
+                "chmod 644 $destination",
+                "Failed to set permissions on $destination.",
+            )
           }
         }
       }
@@ -616,7 +624,32 @@ class AndroidDeviceImpl(val serial: String, val adbUtils: AdbUtils) : AndroidDev
 
   @Throws(Exception::class)
   override fun getProperty(name: String): String {
-    return executeAdbShellCommandCatching("getprop $name", "Failed to get property $name.")
+    val read = { executeAdbShellCommandCatching("getprop $name", "Failed to get property $name.") }
+    // Only `ro.` properties are fixed at boot and so safe to hold on to; anything else can change
+    // under us mid-install. Caching is worth it because a single exopackage install otherwise
+    // re-queries ro.product.cpu.abilist five times over adb.
+    return if (name.startsWith("ro.")) properties.computeIfAbsent(name) { read() } else read()
+  }
+
+  /**
+   * Hardlinks an artifact into the staging directory, copying only if it cannot be linked -- a
+   * different filesystem, typically, when the temp directory is on another volume.
+   *
+   * Buck materialises exopackage payloads as symlink farms and adb will not follow symlinks, so
+   * something has to resolve them; staging also renames each file to the hash-based name it takes
+   * on the device. Neither needs the bytes copied, and a payload is several GB.
+   *
+   * The link shares an inode with the artifact in buck-out, so nothing may modify a staged file.
+   * The `chmod` after the push deliberately runs on the device, not here.
+   */
+  private fun stageForPush(source: Path, target: Path) {
+    try {
+      Files.createLink(target, source.toRealPath())
+    } catch (e: IOException) {
+      Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING)
+    } catch (e: UnsupportedOperationException) {
+      Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING)
+    }
   }
 
   @Throws(Exception::class)
@@ -732,8 +765,16 @@ class AndroidDeviceImpl(val serial: String, val adbUtils: AdbUtils) : AndroidDev
   ): Boolean {
     val destinationPath: String = dataRoot.resolve(packageName).toString()
     try {
-      executeAdbShellCommand("umask 022 && mkdir -p $destinationPath")
-      executeAdbShellCommand("echo $buildUuid > $destinationPath/build_uuid.txt")
+      // One `adb shell`, not two, because `umask` is per-process. Split across two shells the
+      // second one never runs the umask, so the file its redirect creates takes adbd's default
+      // mode rather than 0644. The directory is unaffected either way — the FIRST shell is what
+      // creates it — and that asymmetry is what makes this easy to miss: on a host whose default
+      // umask is already 022 both land 0644 and the split looks harmless. The file is read back
+      // as build provenance, so it should not be writable by anything but the installer.
+      executeAdbShellCommand(
+          "umask 022 && mkdir -p $destinationPath && " +
+              "echo $buildUuid > $destinationPath/build_uuid.txt",
+      )
     } catch (e: Exception) {
       // we don't want to fail the install if we can't install the build_uuid.txt file
       LOG.warn("Failed to install build_uuid.txt file on $serial: ${e.message}")

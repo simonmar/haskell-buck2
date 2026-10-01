@@ -10,26 +10,18 @@
 
 package com.facebook.buck.installer.android;
 
-import com.facebook.buck.android.AdbExecutionContext;
 import com.facebook.buck.android.AdbHelper;
-import com.facebook.buck.android.AdbOptions;
 import com.facebook.buck.android.IsolatedApkInfo;
-import com.facebook.buck.android.device.TargetDeviceOptions;
-import com.facebook.buck.android.exopackage.AdbUtils;
 import com.facebook.buck.android.exopackage.AndroidDeviceInfo;
 import com.facebook.buck.android.exopackage.ExopackageInstaller;
 import com.facebook.buck.android.exopackage.IsolatedExopackageInfo;
-import com.facebook.buck.android.exopackage.SetDebugAppMode;
 import com.facebook.buck.core.filesystems.AbsPath;
 import com.facebook.buck.installer.InstallId;
 import com.facebook.buck.installer.InstallResult;
-import com.facebook.buck.util.Console;
-import com.facebook.buck.util.Verbosity;
-import com.google.common.io.ByteStreams;
-import java.io.ByteArrayOutputStream;
-import java.io.PrintStream;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -42,6 +34,8 @@ import java.util.logging.Logger; // NOPMD
 /** Installs an Android Apk */
 class AndroidInstall {
   private static final Logger LOG = Logger.getLogger(AndroidInstall.class.getName());
+  private static final DateTimeFormatter INSTALL_COMPLETION_TIME_FORMAT =
+      DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
   private static final Set<String> ENABLE_APP_LINKS_ALLOWLIST =
       Set.of("com.facebook.wakizashi", "com.facebook.lite", "com.instagram.lite");
 
@@ -53,73 +47,25 @@ class AndroidInstall {
   private final boolean installViaSd = false;
   private final Logger logger;
   private final AdbHelper adbHelper;
-  private final ByteArrayOutputStream stderr;
-  private final AndroidArtifacts artifacts;
+  private final InstallState state;
 
   public AndroidInstall(
       Logger logger,
       AbsPath rootPath,
       AndroidCommandLineOptions cliOptions,
-      AndroidInstallApkOptions apkOptions,
       IsolatedApkInfo apkInfo,
       Optional<IsolatedExopackageInfo> exopackageInfo,
       InstallId installId,
-      AndroidArtifacts artifacts) {
+      InstallState state,
+      AdbHelper adbHelper) {
     this.logger = logger;
     this.rootPath = rootPath;
     this.apkInfo = apkInfo;
     this.exopackageInfo = exopackageInfo;
     this.installId = installId;
     this.cliOptions = cliOptions;
-    this.artifacts = artifacts;
-
-    // Set-up adbOptions
-    AdbOptions adbOptions =
-        new AdbOptions(
-            cliOptions.adbExecutablePath,
-            cliOptions.adbThreadCount,
-            cliOptions.adbServerPort,
-            cliOptions.multiInstallMode,
-            apkOptions.stagedInstallMode,
-            cliOptions.ignoreMissingDevices,
-            apkOptions.apexMode,
-            cliOptions.restartMode.name(),
-            cliOptions.waitForDeviceReady);
-    LOG.info("adbOptions: " + adbOptions);
-
-    TargetDeviceOptions targetDeviceOptions =
-        new TargetDeviceOptions(
-            cliOptions.useEmulatorsOnlyMode,
-            cliOptions.useRealDevicesOnlyMode,
-            Optional.ofNullable(cliOptions.serialNumber));
-    LOG.info("targetDeviceOptions: " + targetDeviceOptions);
-
-    this.stderr = new ByteArrayOutputStream();
-    Console console =
-        new Console(
-            Verbosity.STANDARD_INFORMATION,
-            new PrintStream(ByteStreams.nullOutputStream()),
-            new PrintStream(stderr));
-    SetDebugAppMode setDebugAppMode = SetDebugAppMode.SET;
-    if (cliOptions.skipSetDebugApp) {
-      setDebugAppMode = SetDebugAppMode.SKIP;
-    }
-    AdbUtils adbUtils =
-        new AdbUtils(
-            Optional.of(apkOptions.adbExecutable)
-                .orElseThrow(AndroidInstallException.Companion::adbPathNotFound),
-            adbOptions.getAdbServerPort());
-    this.adbHelper =
-        new AdbHelper(
-            adbUtils,
-            adbOptions,
-            targetDeviceOptions,
-            new AdbExecutionContext(console),
-            new IsolatedAndroidInstallerPrinter(logger),
-            apkOptions.restartAdbOnFailure,
-            apkOptions.skipInstallMetadata,
-            setDebugAppMode,
-            artifacts);
+    this.state = state;
+    this.adbHelper = adbHelper;
   }
 
   /** Uses AdbHelper to do actual install with APK */
@@ -127,14 +73,10 @@ class AndroidInstall {
     List<Map<String, String>> deviceInfos = new ArrayList();
     try {
       if (cliOptions.cleanUp) {
-        String appId =
-            AdbHelper.tryToExtractPackageNameFromManifest(apkInfo.getManifestPath().getPath());
-        adbHelper.uninstallApp(appId, cliOptions.keepUserData);
+        adbHelper.uninstallApp(state.packageName(), cliOptions.keepUserData);
       } else {
         if (cliOptions.uninstallFirst) {
-          String appId =
-              AdbHelper.tryToExtractPackageNameFromManifest(apkInfo.getManifestPath().getPath());
-          adbHelper.uninstallApp(appId, cliOptions.keepUserData);
+          adbHelper.uninstallApp(state.packageName(), cliOptions.keepUserData);
         }
         logger.info(String.format("Attempting install of %s", apkInfo.getApkPath()));
         Instant start = Instant.now();
@@ -167,21 +109,23 @@ class AndroidInstall {
             rootPath,
             installViaSd,
             /* quiet= */ false,
-            installId.getValue());
-        artifacts.recordDeviceWork(deviceWorkStart, System.currentTimeMillis());
+            installId.getValue(),
+            state.packageName());
+        state.metrics().recordDeviceWork(deviceWorkStart, System.currentTimeMillis());
 
         // Only now are the stage timings complete, so the metrics cannot be gathered any earlier.
         Map<String, String> installMetrics =
-            artifacts.getInstallMetrics(System.currentTimeMillis());
+            state.metrics().summarise(System.currentTimeMillis(), state.artifacts().arrivals());
         deviceInfos.forEach(infoMap -> infoMap.putAll(installMetrics));
+        Instant completedAt = Instant.now();
         logger.info(
-            String.format(
-                "Install of %s finished in %d seconds",
-                apkInfo.getApkPath().getFileName(),
-                Duration.between(start, Instant.now()).getSeconds()));
+            formatCompletionMessage(
+                apkInfo.getApkPath().getFileName().toString(),
+                start,
+                completedAt,
+                ZoneId.systemDefault()));
 
-        String packageName =
-            AdbHelper.tryToExtractPackageNameFromManifest(apkInfo.getManifestPath().getPath());
+        String packageName = state.packageName();
 
         // Determine if app links should be enabled based on command line option or allowlist
         boolean shouldEnableAppLinks = false;
@@ -221,11 +165,7 @@ class AndroidInstall {
     } catch (AndroidInstallException exc) {
       return new InstallResult(deviceInfos, Optional.of(exc.getInstallError()));
     } catch (Exception err) {
-      String errMsg =
-          Optional.ofNullable(stderr.toString())
-              .filter(s -> !s.isEmpty())
-              .map(s -> "stderr message: " + s)
-              .orElseGet(err::getMessage);
+      String errMsg = err.getMessage();
       logger.log(
           Level.SEVERE,
           String.format("Error while installing %s. Error message: %s", installId, errMsg),
@@ -234,5 +174,14 @@ class AndroidInstall {
           deviceInfos,
           Optional.of(errMsg).map(AndroidInstallErrorClassifier.INSTANCE::fromErrorMessage));
     }
+  }
+
+  static String formatCompletionMessage(
+      String apkName, Instant start, Instant completedAt, ZoneId zoneId) {
+    return String.format(
+        "Install of %s finished in %d seconds at %s",
+        apkName,
+        Duration.between(start, completedAt).getSeconds(),
+        INSTALL_COMPLETION_TIME_FORMAT.withZone(zoneId).format(completedAt));
   }
 }

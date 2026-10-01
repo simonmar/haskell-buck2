@@ -8,8 +8,8 @@
 
 load(
     "@prelude//:resources.bzl",
-    "ResourceInfo",
     "gather_resources",
+    "make_resource_info",
 )
 load(
     "@prelude//cxx:omnibus.bzl",
@@ -46,6 +46,7 @@ load(
     "gather_dep_libraries",
 )
 load(":source_db.bzl", "create_python_source_db_info", "create_source_db_no_deps_from_manifest")
+load(":toolchain.bzl", "PythonToolchainInfo")
 
 def prebuilt_python_library_impl(ctx: AnalysisContext) -> list[Provider]:
     providers = []
@@ -99,7 +100,9 @@ def prebuilt_python_library_impl(ctx: AnalysisContext) -> list[Provider]:
     deps, shared_deps = gather_dep_libraries(ctx.attrs.deps)
     manifest_param = "binary_src" if binary_src != None else "source_dir"
     src_manifest = create_manifest_for_source_dir(ctx, manifest_param, source_root, exclude = "\\.pyc$")
-    bytecode = compile_manifests(ctx, [src_manifest])
+    bytecode = None
+    if ctx.attrs._python_toolchain[PythonToolchainInfo].pyc_compilation_enabled:
+        bytecode = compile_manifests(ctx, [src_manifest])
 
     lazy_imports_analyzer = get_lazy_imports_analyzer(ctx)
     lazy_imports_cache_output = None
@@ -156,12 +159,12 @@ def prebuilt_python_library_impl(ctx: AnalysisContext) -> list[Provider]:
 
     # C++ resources.
     providers.append(
-        ResourceInfo(
-            resources = gather_resources(
+        make_resource_info(
+            gather_resources(
                 label = ctx.label,
                 deps = ctx.attrs.deps,
-            )
-        )
+            ),
+        ),
     )
 
     # Allow third-party-build rules to depend on Python rules.

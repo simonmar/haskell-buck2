@@ -11,7 +11,7 @@ load(
     "ArtifactTSet",
     "make_artifact_tset",
 )
-load("@prelude//:resources.bzl", "ResourceInfo", "gather_resources")
+load("@prelude//:resources.bzl", "gather_resources", "make_resource_info")
 load(
     "@prelude//android:android_providers.bzl",
     "merge_android_packageable_info",
@@ -39,6 +39,7 @@ load(
     "LinkInfos",
     "LinkStrategy",
     "LinkedObject",
+    "LinkerFlags",
     "MergedLinkInfo",  # @unused Used as a type
     "SharedLibLinkable",
     "create_merged_link_info",
@@ -48,7 +49,7 @@ load(
 )
 load(
     "@prelude//linking:linkable_graph.bzl",
-    "DlopenableLibraryInfo",
+    "DLOPENABLE_LIBRARY_INFO_MARKER",
     "create_linkable_graph",
     "create_linkable_graph_node",
     "create_linkable_node",
@@ -88,6 +89,7 @@ load(
 load(
     ":build_params.bzl",
     "BuildParams",  # @unused Used as a type
+    "CrateType",
     "Emit",
     "LinkageLang",
     "MetadataKind",
@@ -191,7 +193,7 @@ def rust_library_impl(ctx: AnalysisContext) -> list[Provider]:
         link = rust_compile(
             ctx = ctx,
             compile_ctx = compile_ctx,
-            emit = Emit("link"),
+            emit = Emit("rlib") if params.crate_type == CrateType("rlib") else Emit("link"),
             params = params,
             default_roots = _DEFAULT_ROOTS,
             incremental_enabled = ctx.attrs.incremental_enabled,
@@ -200,6 +202,19 @@ def rust_library_impl(ctx: AnalysisContext) -> list[Provider]:
 
         param_subtargets.setdefault(params, {})
         if LinkageLang("rust") in langs:
+            metadata_link = link
+            if toolchain_info.advanced_unstable_linking and params.crate_type == CrateType("rlib"):
+                # Rustc-produced staticlibs need code and metadata in one rlib.
+                rlib_for_staticlib = rust_compile(
+                    ctx = ctx,
+                    compile_ctx = compile_ctx,
+                    emit = Emit("link"),
+                    params = params,
+                    default_roots = _DEFAULT_ROOTS,
+                    incremental_enabled = ctx.attrs.incremental_enabled,
+                )
+                metadata_link = rlib_for_staticlib
+
             if toolchain_info.nightly_features:
                 # Pipelined build: dependents that need full metadata compile
                 # against the `-Zno-codegen` "hollow rlib" instead of waiting
@@ -217,7 +232,7 @@ def rust_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 # wait for the real rlib instead.
                 metadata_full = link
             param_metadata_outputs[params] = {
-                MetadataKind("link"): link,
+                MetadataKind("link"): metadata_link,
                 MetadataKind("full"): metadata_full,
                 MetadataKind("fast"): meta_fast,
             }
@@ -258,6 +273,8 @@ def rust_library_impl(ctx: AnalysisContext) -> list[Provider]:
             linked_object = rust_link_shared(
                 ctx,
                 compile_ctx,
+                # Unlike `cxx_library`, `link_style` is not consulted here: the deps of a Rust DSO
+                # always use the shared link strategy.
                 dep_link_style = LinkStrategy("shared"),
                 static_lib = link_infos[LibOutputStyle("pic_archive")].default,
             )
@@ -352,7 +369,7 @@ def rust_library_impl(ctx: AnalysisContext) -> list[Provider]:
         llvm_time_trace = rust_compile(
             ctx = ctx,
             compile_ctx = compile_ctx,
-            emit = Emit("link"),
+            emit = Emit("rlib"),
             params = static_library_params,
             default_roots = _DEFAULT_ROOTS,
             incremental_enabled = ctx.attrs.incremental_enabled,
@@ -361,7 +378,7 @@ def rust_library_impl(ctx: AnalysisContext) -> list[Provider]:
         self_profile = rust_compile(
             ctx = ctx,
             compile_ctx = compile_ctx,
-            emit = Emit("link"),
+            emit = Emit("rlib"),
             params = static_library_params,
             default_roots = _DEFAULT_ROOTS,
             incremental_enabled = ctx.attrs.incremental_enabled,
@@ -396,6 +413,7 @@ def rust_library_impl(ctx: AnalysisContext) -> list[Provider]:
         doctests_enabled = False
 
     if toolchain_info.nightly_features:
+        rustdoc_test_metadata_kind = MetadataKind("full") if toolchain_info.advanced_unstable_linking and not ctx.attrs.proc_macro else MetadataKind("link")
         rustdoc_test_params = build_params(
             rule = RuleType("binary"),
             proc_macro = ctx.attrs.proc_macro,
@@ -408,7 +426,7 @@ def rust_library_impl(ctx: AnalysisContext) -> list[Provider]:
         rustdoc_test = generate_rustdoc_test(
             ctx = ctx,
             compile_ctx = compile_ctx,
-            rlib = param_output[static_library_params].output,
+            rlib = param_metadata_outputs[static_library_params][rustdoc_test_metadata_kind].output,
             link_infos = link_infos,
             params = rustdoc_test_params,
             default_roots = _DEFAULT_ROOTS,
@@ -449,7 +467,7 @@ def rust_library_impl(ctx: AnalysisContext) -> list[Provider]:
     remarks_artifact = rust_compile(
         ctx = ctx,
         compile_ctx = compile_ctx,
-        emit = Emit("link"),
+        emit = Emit("rlib"),
         params = meta_params,
         default_roots = _DEFAULT_ROOTS,
         incremental_enabled = False,
@@ -509,13 +527,13 @@ def rust_library_impl(ctx: AnalysisContext) -> list[Provider]:
 
     deps = [dep.dep for dep in resolve_deps(ctx, compile_ctx.dep_ctx)]
     providers.append(
-        ResourceInfo(
-            resources = gather_resources(
+        make_resource_info(
+            gather_resources(
                 label = ctx.label,
                 resources = rust_attr_resources(ctx),
                 deps = deps,
-            )
-        )
+            ),
+        ),
     )
 
     providers.append(merge_android_packageable_info(ctx.label, ctx.actions, deps))
@@ -872,6 +890,13 @@ def _proc_macro_link_providers(ctx: AnalysisContext, rust_artifacts: dict[LinkSt
         )
     ]
 
+def _linker_flags(ctx: AnalysisContext) -> LinkerFlags:
+    return LinkerFlags(
+        flags = ctx.attrs.linker_flags,
+        exported_flags = ctx.attrs.exported_linker_flags,
+        exported_post_flags = ctx.attrs.exported_post_linker_flags,
+    )
+
 def _advanced_unstable_link_providers(
     ctx: AnalysisContext,
     compile_ctx: CompileContext,
@@ -943,6 +968,7 @@ def _advanced_unstable_link_providers(
                 exported_deps = inherited_exported_deps,
                 link_infos = link_infos,
                 shared_libs = shared_libs,
+                linker_flags = _linker_flags(ctx),
                 default_soname = shlib_name,
                 # Link groups have a heuristic in which they assume that a
                 # preferred_linkage = "static" library needs to be linked
@@ -972,7 +998,7 @@ def _advanced_unstable_link_providers(
 
     # Mark libraries that support `dlopen`.
     if getattr(ctx.attrs, "supports_python_dlopen", False):
-        providers.append(DlopenableLibraryInfo())
+        providers.append(DLOPENABLE_LIBRARY_INFO_MARKER)
 
     # We never need to add anything to this provider because Rust libraries
     # cannot act as link group libs, especially given that they only support
@@ -1149,7 +1175,7 @@ def _native_link_providers(
 
     # Mark libraries that support `dlopen`.
     if getattr(ctx.attrs, "supports_python_dlopen", False):
-        providers.append(DlopenableLibraryInfo())
+        providers.append(DLOPENABLE_LIBRARY_INFO_MARKER)
 
     linkable_graph = create_linkable_graph(
         ctx,
@@ -1162,6 +1188,7 @@ def _native_link_providers(
                 exported_deps = inherited_exported_deps,
                 link_infos = link_infos,
                 shared_libs = shared_libs,
+                linker_flags = _linker_flags(ctx),
                 default_soname = shlib_name,
                 include_in_android_mergemap = getattr(ctx.attrs, "include_in_android_merge_map_output", True),
             ),

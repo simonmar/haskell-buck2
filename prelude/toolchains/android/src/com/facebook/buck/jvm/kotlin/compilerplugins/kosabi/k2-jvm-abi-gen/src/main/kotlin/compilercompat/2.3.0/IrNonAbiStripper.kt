@@ -45,8 +45,10 @@ import org.jetbrains.kotlin.ir.util.primaryConstructor
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.psi.KtFile
 
-internal class NonAbiDeclarationsStrippingIrExtension(private val sourceFiles: List<KtFile>) :
-    IrGenerationExtension {
+internal class NonAbiDeclarationsStrippingIrExtension(
+    private val sourceFiles: List<KtFile>,
+    private val repairLog: AbiGenRepairLog,
+) : IrGenerationExtension {
 
   private fun shouldStripAnnotation(annotation: IrConstructorCall): Boolean {
     val annotationClass = annotation.symbol.owner.parent as? IrClass ?: return false
@@ -216,6 +218,7 @@ internal class NonAbiDeclarationsStrippingIrExtension(private val sourceFiles: L
             pluginContext.irFactory,
             pluginContext.irBuiltIns,
             pluginContext,
+            repairLog,
         ),
         null,
     )
@@ -227,6 +230,7 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
     private val irFactory: IrFactory,
     private val irBuiltins: IrBuiltIns,
     private val pluginContext: IrPluginContext,
+    private val repairLog: AbiGenRepairLog,
 ) : IrElementTransformerVoidCompat() {
 
   override fun visitFile(declaration: IrFile): IrFile {
@@ -242,23 +246,20 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
   }
 
   override fun visitClass(declaration: IrClass): IrStatement {
-    // Strip PRIVATE supertypes from the class's implemented interfaces.
-    // Internal supertypes are kept because source-only ABI is consumed within the same
+    // Strip supertypes whose class file the ABI jar will not contain, since the reference would
+    // dangle. Internal supertypes are kept because source-only ABI is consumed within the same
     // module, where internal types are accessible. Stripping them would cause Java consumers
     // to see "incompatible types" errors when a public class implements an internal interface.
-
-    // First, collect the supertypes that will be stripped (private only)
     val strippedSupertypes =
         declaration.superTypes.filter { superType ->
           val superClass = superType.classOrNull?.owner ?: return@filter false
-          isClassPrivate(superClass)
+          isClassAbsentFromAbi(superClass)
         }
 
-    // Strip the private supertypes
     declaration.superTypes =
         declaration.superTypes.filter { superType ->
           val superClass = superType.classOrNull?.owner ?: return@filter true
-          !isClassPrivate(superClass)
+          !isClassAbsentFromAbi(superClass)
         }
 
     // For each stripped supertype that was an interface, convert fake override methods
@@ -286,13 +287,13 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
       if (!decl.isFakeOverride) continue
       if (!decl.visibility.isPublicAPI) continue
 
-      // Check if any of the overridden symbols is from a class that implements a non-public
-      // interface
+      // Materialize only when the declaring class is gone from the ABI. If it survives -- any
+      // nested private class does -- the fake override still resolves, and emitting a body here
+      // would add a method the library jar does not have.
       val shouldMaterialize =
           decl.overriddenSymbols.any { overriddenSymbol ->
-            val overridden = overriddenSymbol.owner
-            val overriddenParent = overridden.parent as? IrClass
-            overriddenParent != null && !isClassPubliclyAccessible(overriddenParent)
+            val overriddenParent = overriddenSymbol.owner.parent as? IrClass
+            overriddenParent != null && isClassAbsentFromAbi(overriddenParent)
           }
 
       if (shouldMaterialize) {
@@ -365,33 +366,22 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
     }
   }
 
-  // Check if a class is publicly accessible (it and all its containing classes are public)
-  private fun isClassPubliclyAccessible(irClass: IrClass): Boolean {
-    var current: IrClass? = irClass
-    while (current != null) {
-      if (!current.visibility.isPublicAPI) {
-        return false
-      }
-      // Get the containing class, if any
-      current = current.parent as? IrClass
-    }
-    return true
-  }
-
-  // Check if a class or any of its containing classes is private/local (not internal or public).
-  // Internal classes are accessible within the same module (source-only ABI scope).
-  private fun isClassPrivate(irClass: IrClass): Boolean {
-    var current: IrClass? = irClass
-    while (current != null) {
-      val visibility = current.visibility
-      if (
-          visibility == DescriptorVisibilities.PRIVATE || visibility == DescriptorVisibilities.LOCAL
-      ) {
+  // True when removeNonPublicApi will drop this class from the ABI, which is the only reason a
+  // supertype has to leave a supertype list. Only top-level private classes are dropped; a nested
+  // private class is kept, so a `private sealed class`/`sealed interface` and everything nested
+  // under it stays referenceable and must keep appearing as a supertype.
+  private fun isClassAbsentFromAbi(irClass: IrClass): Boolean {
+    var current: IrClass = irClass
+    while (true) {
+      if (current.visibility == DescriptorVisibilities.LOCAL) {
         return true
       }
-      current = current.parent as? IrClass
+      val outer = current.parent as? IrClass
+      if (outer == null) {
+        return current.visibility == DescriptorVisibilities.PRIVATE
+      }
+      current = outer
     }
-    return false
   }
 
   override fun visitField(declaration: IrField): IrStatement {
@@ -410,6 +400,14 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
         val defaultExpressionBody = generateDefaultExpressionBody(declaration.type)
         if (defaultExpressionBody != null) {
           declaration.initializer = defaultExpressionBody
+          // For a non-const field this only affects the initializer, which is not part of the
+          // ABI. For a const val it rewrites the ConstantValue attribute consumers inline.
+          val ownerPrefix = (declaration.parent as? IrClass)?.kotlinFqName?.asString()?.plus(".")
+          repairLog.recordReplacedFieldInitializer(
+              (ownerPrefix ?: "") + declaration.name.asString(),
+              "initializer contained a call that source-only ABI cannot evaluate; " +
+                  "replaced with the default value for ${declaration.type.classFqName?.asString()}",
+          )
         }
       }
     }
@@ -474,24 +472,23 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
     // For primitive types, create a default constant value
     // The code handles properties like val DEFAULT_SHADOW_COLOR: Int = Color.argb(128, 0, 0, 0)
     // If we don't set a default value, compiler crashes because it expects a ConstExpression
+    // Primitives are matched by classifier (isInt/isLong/...) rather than by instance equality with
+    // irBuiltins: a value class deserialized from another module carries a non-canonical underlying
+    // primitive type that is not `==` to irBuiltins.longType, and matching it by instance used to
+    // drop through to the null branch -- storing ACONST_NULL into an unboxed primitive slot. The
+    // predicates are non-null-only, so a nullable primitive (a boxed, reference slot) still falls
+    // through to null, which is correct there.
     var defaultValue: IrExpression? =
         when {
-          constructedType == irBuiltins.intType -> IrConstImpl.int(-1, -1, irBuiltins.intType, 0)
-          constructedType == irBuiltins.booleanType ->
-              IrConstImpl.boolean(-1, -1, irBuiltins.booleanType, false)
-          constructedType == irBuiltins.stringType ->
-              IrConstImpl.string(-1, -1, irBuiltins.stringType, "")
-          constructedType == irBuiltins.doubleType ->
-              IrConstImpl.double(-1, -1, irBuiltins.doubleType, 0.0)
-          constructedType == irBuiltins.floatType ->
-              IrConstImpl.float(-1, -1, irBuiltins.floatType, 0.0f)
-          constructedType == irBuiltins.longType ->
-              IrConstImpl.long(-1, -1, irBuiltins.longType, 0L)
-          constructedType == irBuiltins.charType ->
-              IrConstImpl.char(-1, -1, irBuiltins.charType, '\u0000')
-          constructedType == irBuiltins.byteType -> IrConstImpl.byte(-1, -1, irBuiltins.byteType, 0)
-          constructedType == irBuiltins.shortType ->
-              IrConstImpl.short(-1, -1, irBuiltins.shortType, 0)
+          constructedType.isInt() -> IrConstImpl.int(-1, -1, irBuiltins.intType, 0)
+          constructedType.isBoolean() -> IrConstImpl.boolean(-1, -1, irBuiltins.booleanType, false)
+          constructedType.isString() -> IrConstImpl.string(-1, -1, irBuiltins.stringType, "")
+          constructedType.isDouble() -> IrConstImpl.double(-1, -1, irBuiltins.doubleType, 0.0)
+          constructedType.isFloat() -> IrConstImpl.float(-1, -1, irBuiltins.floatType, 0.0f)
+          constructedType.isLong() -> IrConstImpl.long(-1, -1, irBuiltins.longType, 0L)
+          constructedType.isChar() -> IrConstImpl.char(-1, -1, irBuiltins.charType, '\u0000')
+          constructedType.isByte() -> IrConstImpl.byte(-1, -1, irBuiltins.byteType, 0)
+          constructedType.isShort() -> IrConstImpl.short(-1, -1, irBuiltins.shortType, 0)
           else ->
               // For value/inline classes (e.g. Compose's `Color`, which wraps `ULong`/`long`) a
               // null default is wrong: the JVM slot is the unboxed primitive, so the
@@ -510,18 +507,38 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
     return defaultValue
   }
 
-  // Build a default value for a value/inline class by invoking its primary constructor with the
-  // (recursively derived) default of its single underlying field. Returns null when the type is not
-  // a value class or its constructor is unavailable.
+  // Build a default value for a non-null value/inline class over a primitive, whose `<fn>$default`
+  // slot is the *unboxed* primitive. Returns null (leaving the caller's ACONST_NULL fallback) for a
+  // non-value class or a nullable value class -- which is boxed, so its slot is a reference and
+  // null
+  // is correct.
+  //
+  // The underlying primitive is read from the class's inline-class representation, which survives
+  // deserialization even when the value class's constructor does not: a value class reached through
+  // a source-only-ABI dependency deserializes with zero constructors (e.g. WA
+  // `TranscriptionStatus`,
+  // `ctors=0`). When a constructor *is* materialized we invoke it, so inline-class lowering unboxes
+  // the call to the primitive zero (ICONST_0/LCONST_0). When it is not, we emit the underlying
+  // primitive directly -- the slot is already that primitive, so a bare zero verifies -- rather
+  // than
+  // dropping through to ACONST_NULL and failing bytecode verification ("Expected I, but found R").
   private fun generateInlineClassDefaultValue(type: IrSimpleType): IrExpression? {
     val irClass = type.classOrNull?.owner ?: return null
     if (!irClass.isValue) return null
-    val constructor = irClass.primaryConstructor ?: return null
-    val underlyingParam = constructor.valueParameters.singleOrNull() ?: return null
-    val underlyingDefault = generateDefaultValue(underlyingParam.type) ?: return null
-    return DeclarationIrBuilder(pluginContext, constructor.symbol)
-        .irCallConstructor(constructor.symbol, emptyList())
-        .apply { putValueArgument(0, underlyingDefault) }
+    if (type.isNullable()) return null
+    val constructor = irClass.primaryConstructor ?: irClass.constructors.singleOrNull()
+    val underlyingType =
+        irClass.inlineClassRepresentation?.underlyingType
+            ?: constructor?.valueParameters?.singleOrNull()?.type
+            ?: return null
+    val underlyingDefault = generateDefaultValue(underlyingType) ?: return null
+    return if (constructor != null && constructor.valueParameters.size == 1) {
+      DeclarationIrBuilder(pluginContext, constructor.symbol)
+          .irCallConstructor(constructor.symbol, emptyList())
+          .apply { putValueArgument(0, underlyingDefault) }
+    } else {
+      underlyingDefault
+    }
   }
 
   private fun IrDeclarationContainer.removeNonPublicApi() {
@@ -529,9 +546,11 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
     val inlineClassBackingFieldName =
         (this as? IrClass)?.inlineClassRepresentation?.underlyingPropertyName
 
+    this.declarations.filterIsInstance<IrProperty>().forEach { property ->
+      if (property.isDelegated) property.backingField = null
+    }
+
     this.declarations.removeAll { declaration ->
-      // Keep synthetic declarations (generated by compiler)
-      if (declaration.origin.isSynthetic) return@removeAll false
       // Keep constructors (needed for instantiation)
       if (declaration is IrConstructor) return@removeAll false
       // Keep companion objects (may contain public members)
@@ -550,6 +569,11 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
       if (declaration.isInlineClassBackingMember(inlineClassBackingFieldName))
           return@removeAll false
 
+      if (declaration.isPropertyDelegateBackingField()) return@removeAll true
+
+      // Keep synthetic declarations (generated by compiler)
+      if (declaration.origin.isSynthetic) return@removeAll false
+
       // Remove private/local members only (NOT internal - K1 kept internal in ABI)
       val visibility = (declaration as? IrDeclarationWithVisibility)?.visibility
       visibility == DescriptorVisibilities.PRIVATE ||
@@ -557,6 +581,11 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
           visibility == DescriptorVisibilities.LOCAL
     }
   }
+
+  private fun IrDeclaration.isPropertyDelegateBackingField(): Boolean =
+      this is IrField &&
+          visibility == DescriptorVisibilities.PRIVATE &&
+          origin == IrDeclarationOrigin.PROPERTY_DELEGATE
 
   private fun IrDeclaration.isInlineClassBackingMember(backingFieldName: Name?): Boolean {
     if (backingFieldName == null) return false
@@ -582,6 +611,21 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
     return irFactory.createExpressionBody(-1, -1, defaultValue)
   }
 
+  // Replace each defaulted value parameter's default with a fabricated, type-correct default.
+  // For source-only ABI only the presence and type of a default matter, not its value. This
+  // turns a value-class-over-primitive default into a boxed constructor call, which inline-class
+  // lowering unboxes to the primitive zero, rather than the ACONST_NULL codegen would otherwise
+  // store into the synthetic `$default` overload's unboxed slot ("Expected I, but found R").
+  // Shared by visitSimpleFunction and visitConstructor -- the latter is where the WA
+  // TranscriptionViewModel.VmState `<init>$default` crash lived.
+  private fun regenerateDefaultParameterValues(function: IrFunction) {
+    function.valueParameters
+        .filter { it.defaultValue != null }
+        .forEach { parameter ->
+          generateDefaultExpressionBody(parameter.type)?.let { parameter.defaultValue = it }
+        }
+  }
+
   override fun visitSimpleFunction(declaration: IrSimpleFunction): IrStatement {
     if (!declaration.origin.isSynthetic) {
       if (declaration.parent is IrProperty) {
@@ -596,13 +640,8 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
       } else {
         declaration.body = irFactory.createBlockBody(-1, -1)
       }
-      val parametersWithDefaultValues =
-          declaration.valueParameters.filter { it.defaultValue != null }
-      for (parameter in parametersWithDefaultValues) {
-        // if we can - we resolve the default value to a constant
-        // handles default values in functions like fun foo(x: Int = Something.SomeValue)
-        generateDefaultExpressionBody(parameter.type)?.let { parameter.defaultValue = it }
-      }
+      // handles default values in functions like fun foo(x: Int = Something.SomeValue)
+      regenerateDefaultParameterValues(declaration)
     } else if (declaration.body?.containsErrorExpression() == true) {
       // Synthetic dispatchers -- most commonly the `<fn>$default` overload generated for a
       // function/data-class member with default parameters -- keep a when/IrErrorExpression
@@ -630,25 +669,50 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
     //    the `<init>(..., int mask, DefaultConstructorMarker)` overload) reaches codegen with a
     //    body that still holds Kosabi's `skipBodies` IrErrorExpression placeholders, which
     //    ExpressionCodegen cannot emit.
-    // For most classes a stub (empty) body is sufficient -- ABI jars are compile-classpath-only,
-    // only the signature matters, and ordinary constructors keep the delegating call fir2ir
-    // still emits for them.
+    // A stub body must still carry a delegating constructor call: an empty body compiles to a
+    // bare RETURN and the JVM verifier rejects a constructor that returns without first calling
+    // super()/this() ("Constructor must call super() or this() before return"). ABI jars are
+    // compile-classpath-only, so only a well-formed delegating call matters, not its arguments
+    // (see createSuperDelegatingConstructorBody). Ordinary constructors whose delegating call
+    // fir2ir still emits are left untouched by the default traversal.
     //
-    // Inner classes are the exception: the JVM pipeline runs InnerClassesLowering, which asserts
+    // Inner classes need extra care: the JVM pipeline runs InnerClassesLowering, which asserts
     // that every inner-class constructor body contains an IrDelegatingConstructorCall (it
     // rewrites that call to thread the outer `this`). A bodyless inner constructor is skipped by
     // that lowering but then fails codegen; an *empty* stub body makes the lowering run and trip
-    // its "Delegating constructor call expected" assertion. So for inner-class constructors that
-    // have lost their delegating call we synthesize a trivial delegation to the superclass
-    // constructor.
+    // its "Delegating constructor call expected" assertion. So for inner-class constructors whose
+    // stripped body is not well-formed for that lowering we synthesize a trivial delegation to the
+    // superclass constructor (see the predicate below for exactly which shapes qualify).
     val parentClass = declaration.parentAsClass
+    // A defaulted value-class-over-primitive constructor parameter reaches the synthetic
+    // `<init>$default` with an unboxed slot; regenerate its default as visitSimpleFunction does
+    // so the slot gets the unboxed primitive zero rather than ACONST_NULL. Skip annotation classes:
+    // their constructor parameter defaults ARE the ABI (the `AnnotationDefault` attribute), so
+    // regenerating them drops the element default and breaks consumers ("annotation @X is missing a
+    // default value for the element ...").
+    if (parentClass.kind != ClassKind.ANNOTATION_CLASS) {
+      regenerateDefaultParameterValues(declaration)
+    }
     sanitizeErrorDefaultValues(declaration)
     if (parentClass.isInner) {
-      val existingBody = declaration.body
-      val hasDelegatingCall =
-          existingBody is IrBlockBody &&
-              existingBody.statements.any { it is IrDelegatingConstructorCall }
-      if (!hasDelegatingCall) {
+      // A stripped inner-class constructor body is well-formed for InnerClassesLowering only if it
+      // has an IrInstanceInitializerCall (super-delegation) or an IrDelegatingConstructorCall to
+      // this same class (this()-delegation). The lowering treats a body WITHOUT an instance
+      // initializer as a this()-delegation and threads the outer instance onto the delegating
+      // call's dispatch receiver; for a super-delegation -- e.g. silverstonedgw's `private inner
+      // class InternalListener(..) : SomeInterface`, whose only supertype is an interface so it
+      // super-delegates to kotlin.Any -- that crashes with "no argument slot for the corresponding
+      // dispatch receiver parameter". Any other shape (no delegating call, or a super-delegation
+      // that lost its instance initializer) is replaced with a synthesized super-delegation.
+      val existingBody = declaration.body as? IrBlockBody
+      val isBodyWellFormed =
+          existingBody != null &&
+              existingBody.statements.any {
+                it is IrInstanceInitializerCall ||
+                    (it is IrDelegatingConstructorCall &&
+                        it.symbol.owner.parentAsClass == parentClass)
+              }
+      if (!isBodyWellFormed) {
         declaration.body =
             createSuperDelegatingConstructorBody(declaration) ?: irFactory.createBlockBody(-1, -1)
       }
@@ -659,24 +723,56 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
         declaration.body == null ||
             declaration.origin == IrDeclarationOrigin.FUNCTION_FOR_DEFAULT_PARAMETER
     ) {
-      declaration.body = irFactory.createBlockBody(-1, -1)
+      // SKIP_BODIES dropped the delegating constructor call for a bodyless constructor (e.g. a
+      // primary constructor whose body was stripped) and left the synthetic <init>$default overload
+      // holding skipBodies error expressions. An empty replacement body is a bare RETURN that the
+      // JVM verifier rejects, so synthesize a well-formed delegation. Value-class secondary
+      // constructors must delegate to their primary constructor; other constructors delegate to
+      // their superclass as above.
+      declaration.body =
+          if (parentClass.isValue && parentClass.primaryConstructor != declaration) {
+            createValueClassDelegatingConstructorBody(declaration)
+                ?: irFactory.createBlockBody(-1, -1)
+          } else {
+            createSuperDelegatingConstructorBody(declaration) ?: irFactory.createBlockBody(-1, -1)
+          }
     }
     return super.visitConstructor(declaration)
   }
 
   /**
-   * Builds a constructor body with a delegating call to [innerClass]'s superclass constructor
-   * (defaulting to kotlin.Any) plus an instance-initializer, so InnerClassesLowering can find and
-   * rewrite it after SKIP_BODIES stripped the original delegating call. When the superclass
-   * constructor takes value parameters, fabricated default constants are passed -- for a
-   * compile-classpath-only ABI stub the argument values are irrelevant, only a well-formed call is.
-   * Returns null only when the superclass has no usable constructor.
+   * Builds a body that delegates a value-class secondary constructor to its primary constructor.
+   * Kotlin 2.3 lowers a super-delegating stub to a STATIC_INLINE_CLASS_CONSTRUCTOR containing an
+   * INSTANCE_INITIALIZER_CALL, which JVM codegen cannot emit. A this()-delegation lowers to the
+   * expected constructor-impl that returns the underlying value.
+   */
+  private fun createValueClassDelegatingConstructorBody(constructor: IrConstructor): IrBody? {
+    val primaryConstructor = constructor.parentAsClass.primaryConstructor ?: return null
+    val builder = DeclarationIrBuilder(pluginContext, constructor.symbol)
+    val delegatingCall = builder.irDelegatingConstructorCall(primaryConstructor)
+    primaryConstructor.valueParameters.forEachIndexed { index, parameter ->
+      val defaultArgument =
+          generateDefaultValue(parameter.type)
+              ?: IrConstImpl.constNull(-1, -1, parameter.type.makeNullable())
+      delegatingCall.putValueArgument(index, defaultArgument)
+    }
+    return irFactory.createBlockBody(-1, -1).apply { statements.add(delegatingCall) }
+  }
+
+  /**
+   * Builds a constructor body with a delegating call to the owner class's superclass constructor
+   * (defaulting to kotlin.Any) plus an instance-initializer. SKIP_BODIES stripped the original
+   * delegating call, so without this the stub would be a bare RETURN (rejected by the JVM verifier)
+   * and, for an inner class, InnerClassesLowering would have no delegating call to find and
+   * rewrite. When the superclass constructor takes value parameters, fabricated default constants
+   * are passed -- for a compile-classpath-only ABI stub the argument values are irrelevant, only a
+   * well-formed call is. Returns null only when the superclass has no usable constructor.
    */
   @OptIn(org.jetbrains.kotlin.DeprecatedForRemovalCompilerApi::class)
   private fun createSuperDelegatingConstructorBody(constructor: IrConstructor): IrBody? {
-    val innerClass = constructor.parentAsClass
+    val ownerClass = constructor.parentAsClass
     val superClass =
-        innerClass.superTypes
+        ownerClass.superTypes
             .mapNotNull { it.classOrNull?.owner }
             .firstOrNull { it.kind == ClassKind.CLASS } ?: irBuiltins.anyClass.owner
     val superConstructor = superClass.primaryConstructor ?: superClass.constructors.firstOrNull()
@@ -691,7 +787,7 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
     // super-delegations), so populate it here with the current inner class's enclosing `this`;
     // otherwise codegen sees a null dispatch receiver ("Null argument ... kind:DispatchReceiver").
     if (superClass.isInner) {
-      innerClass.parentAsClass.thisReceiver?.let { outerThis ->
+      ownerClass.parentAsClass.thisReceiver?.let { outerThis ->
         delegatingCall.dispatchReceiver = IrGetValueImpl(-1, -1, outerThis.type, outerThis.symbol)
       }
     }
@@ -712,7 +808,7 @@ internal class NonAbiDeclarationsStrippingIrVisitor(
     // instance-initializer marks it as a super-delegation, so the lowering initializes the
     // outer-this field instead of rewriting the delegating call.
     val instanceInitializer =
-        IrInstanceInitializerCallImpl(-1, -1, innerClass.symbol, irBuiltins.unitType)
+        IrInstanceInitializerCallImpl(-1, -1, ownerClass.symbol, irBuiltins.unitType)
     return irFactory.createBlockBody(-1, -1).apply {
       statements.add(delegatingCall)
       statements.add(instanceInitializer)

@@ -110,13 +110,20 @@ public class InstallerService extends InstallerGrpc.InstallerImplBase {
     LOG.info(
         String.format(
             "Received install id: %s with %d file names", installId.getValue(), fileNames.size()));
+    // Before the install is registered: a file is only accepted for an install that is in the map,
+    // so declaring first leaves no window where an artifact can arrive for an install that has not
+    // been told what to expect.
+    installer.onInstallStarted(installId, fileNames);
     synchronized (installIdToFilesMap) {
       installIdToFilesMap.put(
           installId,
           fileNames.stream()
               .collect(Collectors.toMap(Function.identity(), ignore -> Optional.empty())));
     }
-    return InstallResponse.newBuilder().setInstallId(installId.getValue()).build();
+    return InstallResponse.newBuilder()
+        .setInstallId(installId.getValue())
+        .setInstallerName(installer.name())
+        .build();
   }
 
   @Override

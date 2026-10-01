@@ -10,6 +10,8 @@ load("@prelude//cxx:cxx_apple_linker_flags.bzl", "apple_extra_darwin_linker_flag
 load("@prelude//cxx:debug.bzl", "SplitDebugMode")
 load("@prelude//target_stats:target_stats_tools.bzl", "TargetStatsToolsInfo")
 
+CXX_COMPILER_TYPES = ["clang", "clang_cl", "clang_windows", "gcc", "windows", "windows_ml64"]
+
 LinkerType = enum("gnu", "darwin", "windows", "wasm")
 
 IncrementalLinkingMode = enum("disabled", "supported", "enabled")
@@ -99,9 +101,9 @@ LinkerInfo = provider(
 BinaryUtilitiesInfo = provider(
     fields = {
         "bolt": provider_field(typing.Any, default = None),
-        "bolt_msdk": provider_field(typing.Any, default = None),
         "custom_tools": provider_field(dict[str, RunInfo], default = {}),
         "dwp": provider_field(typing.Any, default = None),
+        "elf_stamp": provider_field([RunInfo, None], default = None),
         "nm": provider_field(typing.Any, default = None),
         "objcopy": provider_field(typing.Any, default = None),
         "objdump": provider_field(typing.Any, default = None),
@@ -147,11 +149,14 @@ _compiler_fields = [
     "compiler",
     "compiler_type",
     "compiler_flags",
-    # An optional @argsfile `Artifact` that contains the preprocessor flags and the compiler flags.
-    "argsfile",  # `Artifact | None`
-    # An optional @argsfile `Artifact` that contains the preprocessor flags and the compiler flags
+    # An optional argsfile that contains the preprocessor flags and the compiler flags.
+    "argsfile",  # `cmd_args | None`
+    # An optional argsfile that contains the preprocessor flags and the compiler flags,
     # formatted for xcode.
-    "argsfile_xcode",  # `Artifact | None`
+    "argsfile_xcode",  # `cmd_args | None`
+    # An optional copy of `argsfile` filtered for C++20 module precompilation,
+    # as an `argsfile_with_artifacts()` value.
+    "argsfile_precompile",  # `cmd_args | None`
     "preprocessor",
     "preprocessor_type",
     "preprocessor_flags",
@@ -165,13 +170,27 @@ _compiler_fields = [
 AsCompilerInfo = provider(fields = _compiler_fields)
 AsmCompilerInfo = provider(fields = _compiler_fields)
 CCompilerInfo = provider(fields = _compiler_fields)
-CudaCompilerInfo = provider(fields = _compiler_fields)
+CudaCompilerInfo = provider(fields = _compiler_fields + ["compiler_for_dryrun"])
 CvtresCompilerInfo = provider(fields = _compiler_fields)
 CxxCompilerInfo = provider(fields = _compiler_fields)
 HipCompilerInfo = provider(fields = _compiler_fields)
 ObjcCompilerInfo = provider(fields = _compiler_fields)
 ObjcxxCompilerInfo = provider(fields = _compiler_fields)
 RcCompilerInfo = provider(fields = _compiler_fields)
+
+def compiler_info_with_argsfiles(
+    compiler_info: typing.Any, ctor: typing.Callable, argsfile: cmd_args, argsfile_xcode: cmd_args, argsfile_precompile: cmd_args | None = None
+) -> typing.Any:
+    fields = {k: getattr(compiler_info, k) for k in _compiler_fields}
+    fields["argsfile"] = argsfile
+    fields["argsfile_xcode"] = argsfile_xcode
+    fields["argsfile_precompile"] = argsfile_precompile
+
+    # CudaCompilerInfo carries fields beyond the shared set.
+    compiler_for_dryrun = getattr(compiler_info, "compiler_for_dryrun", None)
+    if compiler_for_dryrun != None:
+        fields["compiler_for_dryrun"] = compiler_for_dryrun
+    return ctor(**fields)
 
 DistLtoToolsInfo = provider(
     fields = dict(

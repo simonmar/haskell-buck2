@@ -60,9 +60,19 @@ _RUST_EXECUTABLE_ATTRIBUTES = {
     # Unlike cxx which supports pre-defined link groups, we only support
     # auto_link_groups in rust
     "auto_link_groups": attrs.bool(default = True),
-    # BOLT post-link optimization only applies when deferred_link_enabled is True.
+    # BOLT post-link optimization only applies when cxx performs the link
+    # (advanced_unstable_linking toolchains; see rust_link_binary).
     "bolt_flags": attrs.list(attrs.arg(), default = []),
     "bolt_profile": attrs.option(attrs.source(), default = None),
+    # Contents to embed into the linked executable as named ELF sections, added
+    # after BOLT and before build info stamping. Only applies when cxx performs
+    # the link (advanced_unstable_linking toolchains; see rust_link_binary).
+    "elf_sections": attrs.dict(
+        key = attrs.string(),
+        value = attrs.source(),
+        sorted = True,
+        default = {},
+    ),
     "enable_distributed_thinlto": attrs.bool(default = False),
     "extra_dwp_flags": attrs.list(attrs.string(), default = []),
     # Opt the final executable output into content-based (immutable) buck-out
