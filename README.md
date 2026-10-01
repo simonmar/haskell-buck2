@@ -67,8 +67,11 @@ There are a few [limitations](#limitations), however.
 
 # How to use it
 
-Build a modified version of `cabal-install` that has the `cabal buck2`
-command:
+First [download a buck2 binary](https://buck2.build/docs/getting_started/install/), unpack it and put
+it on your `PATH`.
+
+Next, build a modified version of `cabal-install` that has the `cabal
+buck2` command:
 
 ```
 git clone https://github.com/simonmar/cabal.git -b buck2
