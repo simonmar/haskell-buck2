@@ -18,7 +18,12 @@ def _srcs_arg():
             sorted = True,
             default = [],
             doc = """
-    A list of Haskell sources to be built by this rule. The dictionary option is deprecated.
+    A list of Haskell sources to be built by this rule. In the list form,
+    each source file must match the module name with "." replaced by "/", e.g.
+    `[ "Main.hs", "Other/Module.hs" ]`.
+    If the source files don't match the module names 1:1, then you
+    can use the dict form, in which the keys are module names, e.g.
+    `{ "Main": "src/test.hs", "Other.Module" : "src/Other/Module.hs" }`
 """,
         ),
     }

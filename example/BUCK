@@ -43,6 +43,6 @@ haskell_library(
 
 haskell_test(
     name = "example-test",
-    srcs = {"Main.hs": "test/Main.hs"},
+    srcs = { "Main" : "test/Main.hs" },
     deps = [":example"],
 )

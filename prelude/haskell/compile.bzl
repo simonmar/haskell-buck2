@@ -232,10 +232,10 @@ def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: 
 
     arg_srcs = []
     hidden_srcs = []
-    for path, src in srcs_to_pairs(ctx.attrs.srcs):
+    for _, src in srcs_to_pairs(ctx.attrs.srcs):
         # hs-boot files aren't expected to be an argument to compiler but does need
         # to be included in the directory of the associated src file
-        if is_haskell_src(path):
+        if is_haskell_src(src):
             arg_srcs.append(src)
         else:
             hidden_srcs.append(src)
