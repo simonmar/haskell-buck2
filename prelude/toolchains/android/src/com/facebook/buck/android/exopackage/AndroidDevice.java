@@ -129,8 +129,16 @@ public interface AndroidDevice {
    */
   void rmStaleFiles(String packageName) throws Exception;
 
-  AutoCloseable createForward() throws Exception;
-
+  /**
+   * Pushes {@code installPaths}, a map of device destination to local source.
+   *
+   * <p>Called concurrently for the same package: an install pushes its payload as several shards at
+   * once. Whatever an implementation stages under has to be unique per call, or concurrent shards
+   * overwrite each other on the way in.
+   *
+   * @param packageName the app these files belong to. Scopes whatever scratch the device needs, so
+   *     that installs of different apps cannot disturb each other's transfers.
+   */
   void installFiles(String filesType, Map<Path, Path> installPaths, String packageName)
       throws Exception;
 

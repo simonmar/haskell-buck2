@@ -29,6 +29,7 @@ load(
 )
 load(
     "@prelude//cxx:cxx_bolt.bzl",
+    "PRE_BOLT_SUFFIX",
     "cxx_use_bolt",
 )
 load(
@@ -62,6 +63,14 @@ load(
     "XcodeDataInfo",
     "generate_xcode_data",
 )
+load("@prelude//linking:add_elf_sections.bzl", "PRE_ADD_ELF_SECTIONS_SUFFIX", "get_elf_sections")
+load(
+    "@prelude//linking:generated_build_info.bzl",
+    "compile_generated_build_info",
+    "generate_build_info",
+    "generate_build_info_shared_library",
+    "generated_build_info_is_shared_library",
+)
 load(
     "@prelude//linking:link_groups.bzl",
     "gather_link_group_libs",
@@ -81,6 +90,7 @@ load(
     "make_link_command_debug_output_json_info",
     "process_link_strategy_for_pic_behavior",
     "to_link_strategy",
+    "unpack_link_args",
 )
 load(
     "@prelude//linking:linkable_graph.bzl",
@@ -119,7 +129,6 @@ load(
     "@prelude//xplugins:types.bzl",
     "XPluginsDebugArtifactsInfo",
 )
-load("@prelude//xplugins:utils.bzl", "get_xplugins_usage_info", "get_xplugins_usage_subtargets")
 load(
     ":argsfiles.bzl",
     "ARGSFILES_SUBTARGET",
@@ -244,7 +253,7 @@ CxxExecutableOutput = record(
     # All link group links that were generated in the executable.
     auto_link_groups = field(dict[str, LinkedObject], {}),
     compilation_db = CxxCompilationDbInfo,
-    xcode_data = XcodeDataInfo,
+    xcode_data = [XcodeDataInfo, None],
     linker_map_data = [CxxLinkerMapData, None],
     gc_sections_data = [CxxGcSectionsData, None],
     link_command_debug_output = field([LinkCommandDebugOutput, None], None),
@@ -254,6 +263,7 @@ CxxExecutableOutput = record(
     validation_specs = field(list[ValidationSpec], []),
     gcno_files = field(list[Artifact], []),
     xplugins_debug_artifacts_info = field(XPluginsDebugArtifactsInfo | None, None),
+    build_info_manifest_entries = field(Artifact | None, None),
 )
 
 def cxx_executable(ctx: AnalysisContext, impl_params: CxxRuleConstructorParams, is_cxx_test: bool = False) -> CxxExecutableOutput:
@@ -326,8 +336,10 @@ def cxx_executable(ctx: AnalysisContext, impl_params: CxxRuleConstructorParams, 
     if get_cxx_toolchain_info(ctx).gcno_files:
         gcno_files += flatten([dep[GcnoFilesInfo].gcno_files for dep in cxx_deps if GcnoFilesInfo in dep])
 
-    sub_targets[ARGSFILES_SUBTARGET] = [get_argsfiles_output(ctx, compile_cmd_output.argsfiles.relative, ARGSFILES_SUBTARGET)]
-    sub_targets[XCODE_ARGSFILES_SUB_TARGET] = [get_argsfiles_output(ctx, compile_cmd_output.argsfiles.xcode, XCODE_ARGSFILES_SUB_TARGET)]
+    if impl_params.generate_sub_targets.argsfiles:
+        sub_targets[ARGSFILES_SUBTARGET] = [get_argsfiles_output(ctx, compile_cmd_output.argsfiles.relative, ARGSFILES_SUBTARGET)]
+    if impl_params.generate_sub_targets.xcode_data:
+        sub_targets[XCODE_ARGSFILES_SUB_TARGET] = [get_argsfiles_output(ctx, compile_cmd_output.argsfiles.xcode, XCODE_ARGSFILES_SUB_TARGET)]
     sub_targets[OBJECTS_SUBTARGET] = [DefaultInfo(sub_targets = cxx_objects_sub_targets(cxx_outs))]
 
     if impl_params.generate_sub_targets and impl_params.generate_sub_targets.clang_traces:
@@ -440,7 +452,7 @@ def cxx_executable(ctx: AnalysisContext, impl_params: CxxRuleConstructorParams, 
     # Gather link inputs.
     own_link_flags = (
         get_cxx_toolchain_info(ctx).linker_info.binary_linker_flags
-        + cxx_attr_linker_flags(ctx)
+        + cxx_attr_linker_flags(ctx, impl_params.cxx_flags)
         + impl_params.extra_link_flags
         + impl_params.extra_exported_link_flags
     )
@@ -701,6 +713,43 @@ def cxx_executable(ctx: AnalysisContext, impl_params: CxxRuleConstructorParams, 
 
     toolchain_info = get_cxx_toolchain_info(ctx)
     linker_info = toolchain_info.linker_info
+    generated_build_info_external_debug_info = []
+    binary_linker_flags = ctx.attrs.binary_linker_flags
+    generated_build_info_args = []
+    if getattr(ctx.attrs, "_generated_build_info_enabled", False):
+        generated_build_info_args = [flag for flag in binary_linker_flags if _is_build_info_linker_flag(flag)]
+        binary_linker_flags = [flag for flag in binary_linker_flags if not _is_build_info_linker_flag(flag)]
+    generated_build_info_invalidation_inputs = (
+        [out.object for out in cxx_outs]
+        + [unpack_link_args(dep_links)]
+        + [shared_lib.lib.output for shared_lib in shared_libs]
+        + impl_params.generated_build_info_invalidation_inputs
+    )
+    generated_build_info_shared_library = None
+    if generated_build_info_is_shared_library(ctx):
+        binary_linker_flags += ["--build-info=none"]
+        generated_build_info_shared_library = generate_build_info_shared_library(
+            ctx,
+            dep_links,
+            generator_args = generated_build_info_args,
+            invalidation_inputs = generated_build_info_invalidation_inputs,
+        )
+        if generated_build_info_shared_library:
+            shared_libs.append(generated_build_info_shared_library.library)
+            sub_targets["generated_build_info"] = [
+                DefaultInfo(default_output = generated_build_info_shared_library.library.lib.output),
+            ]
+    else:
+        generated_build_info = generate_build_info(
+            ctx,
+            generator_args = generated_build_info_args,
+            invalidation_inputs = generated_build_info_invalidation_inputs,
+        )
+        if generated_build_info:
+            generated_build_info_compile_output = compile_generated_build_info(ctx, generated_build_info)
+            generated_build_info_external_debug_info = generated_build_info_compile_output.external_debug_info
+            binary_linker_flags += generated_build_info_compile_output.objects + generated_build_info.linker_flags
+
     links = [
         LinkArgs(
             infos = [
@@ -720,14 +769,17 @@ def cxx_executable(ctx: AnalysisContext, impl_params: CxxRuleConstructorParams, 
                         artifacts = (
                             [out.object for out in cxx_outs if out.object_has_external_debug_info]
                             + [out.external_debug_info for out in cxx_outs if out.external_debug_info != None]
+                            + generated_build_info_external_debug_info
                             + (impl_params.extra_link_input if impl_params.extra_link_input_has_external_debug_info else [])
                         ),
                     ),
                 ),
             ]
         ),
-        dep_links,
-    ] + impl_params.extra_link_args
+    ]
+    if generated_build_info_shared_library:
+        links.append(generated_build_info_shared_library.link_args)
+    links += [dep_links] + impl_params.extra_link_args
 
     # If there are hidden dependencies to this target then add them as
     # hidden link args.
@@ -752,6 +804,7 @@ def cxx_executable(ctx: AnalysisContext, impl_params: CxxRuleConstructorParams, 
         shared_libs if impl_params.exe_shared_libs_link_tree else [],
         impl_params.executable_name,
         linker_info.binary_extension,
+        binary_linker_flags,
         link_options(
             links = links,
             link_weight = linker_info.link_weight,
@@ -769,6 +822,7 @@ def cxx_executable(ctx: AnalysisContext, impl_params: CxxRuleConstructorParams, 
             incremental_link = incremental_link,
             has_hip_device_debug = has_hip_device_debug,
         ),
+        build_info_json = (generated_build_info_shared_library.json if generated_build_info_shared_library else None),
     )
     binary = link_result.exe
     runtime_files = link_result.runtime_files
@@ -777,16 +831,18 @@ def cxx_executable(ctx: AnalysisContext, impl_params: CxxRuleConstructorParams, 
     gc_sections_data = link_result.gc_sections_data
 
     # Define the xcode data sub target
-    xcode_data_default_info, xcode_data_info = generate_xcode_data(
-        ctx,
-        rule_type = impl_params.rule_type,
-        output = binary.output,
-        populate_rule_specific_attributes_func = impl_params.cxx_populate_xcode_attributes_func,
-        srcs = impl_params.srcs + impl_params.additional.srcs,
-        argsfiles = compile_cmd_output.argsfiles.xcode,
-        product_name = get_cxx_executable_product_name(ctx, has_hip_device_debug),
-    )
-    sub_targets[XCODE_DATA_SUB_TARGET] = xcode_data_default_info
+    xcode_data_info = None
+    if impl_params.generate_sub_targets.xcode_data:
+        xcode_data_default_info, xcode_data_info = generate_xcode_data(
+            ctx,
+            rule_type = impl_params.rule_type,
+            output = binary.output,
+            populate_rule_specific_attributes_func = impl_params.cxx_populate_xcode_attributes_func,
+            srcs = impl_params.srcs + impl_params.additional.srcs,
+            argsfiles = compile_cmd_output.argsfiles.xcode,
+            product_name = get_cxx_executable_product_name(ctx, has_hip_device_debug),
+        )
+        sub_targets[XCODE_DATA_SUB_TARGET] = xcode_data_default_info
 
     # Info about dynamic-linked libraries for fbpkg integration:
     # - the symlink dir that's part of RPATH
@@ -1028,11 +1084,6 @@ def cxx_executable(ctx: AnalysisContext, impl_params: CxxRuleConstructorParams, 
 
     sub_targets.update(link_result.extra_outputs)
 
-    # Propagate xplugins providers
-    xplugins_usage_info = get_xplugins_usage_info(ctx.actions, cxx_deps)
-    if xplugins_usage_info:
-        sub_targets.update(get_xplugins_usage_subtargets(ctx, xplugins_usage_info, link_group_info))
-
     xplugins_debug_artifacts_info = xplugins_get_debug_artifacts_info(ctx, cxx_deps)
 
     return CxxExecutableOutput(
@@ -1063,6 +1114,7 @@ def cxx_executable(ctx: AnalysisContext, impl_params: CxxRuleConstructorParams, 
         validation_specs = get_attrs_validation_specs(ctx),
         gcno_files = dedupe(gcno_files),
         xplugins_debug_artifacts_info = xplugins_debug_artifacts_info,
+        build_info_manifest_entries = (generated_build_info_shared_library.manifest_entries if generated_build_info_shared_library else None),
     )
 
 _CxxLinkExecutableResult = record(
@@ -1127,7 +1179,13 @@ def _get_shared_library_symlink_deps(
     return shlib_deps
 
 def _link_into_executable(
-    ctx: AnalysisContext, shared_libs: list[SharedLibrary], executable_name: [str, None], binary_extension: str, opts: LinkOptions
+    ctx: AnalysisContext,
+    shared_libs: list[SharedLibrary],
+    executable_name: [str, None],
+    binary_extension: str,
+    binary_linker_flags: list[typing.Any],
+    opts: LinkOptions,
+    build_info_json: Artifact | None = None,
 ) -> _CxxLinkExecutableResult:
     if executable_name and binary_extension and executable_name.endswith(binary_extension):
         # don't append .exe if it already is .exe
@@ -1149,20 +1207,21 @@ def _link_into_executable(
         ctx = ctx,
         output = output,
         result_type = CxxLinkResultType("executable"),
-        # ctx.attrs.binary_linker_flags should come after default link flags so it can be used to override default settings
+        # Binary linker flags should come after default link flags so they can override default settings.
         opts = merge_link_options(
             opts,
             binary_links = [
                 LinkArgs(
                     infos = [
                         LinkInfo(
-                            pre_flags = ctx.attrs.binary_linker_flags,
+                            pre_flags = binary_linker_flags,
                         ),
                     ]
                 ),
             ],
             links = [LinkArgs(flags = executable_args.extra_link_args)] + opts.links,
         ),
+        build_info_json = build_info_json,
     )
 
     return _CxxLinkExecutableResult(
@@ -1177,14 +1236,27 @@ def _link_into_executable(
         extra_outputs = link_result.extra_outputs if link_result.extra_outputs else {},
     )
 
-def get_cxx_executable_product_name(ctx: AnalysisContext, has_hip_device_debug: bool = False) -> str:
-    name = ctx.label.name
+def get_cxx_post_link_suffix(ctx: AnalysisContext, has_hip_device_debug: bool = False) -> str:
+    """
+    The suffix the linker's output must carry so that each post-link stage of
+    `cxx_link_into` can strip the part it owns, leaving the canonical name.
+
+    Appended in reverse of the order the stages run, so the outermost suffix
+    belongs to the stage that runs first.
+    """
+    suffix = ""
     if cxx_stamp_build_info(ctx):
-        # build_info_stamping is executed after BOLT, make sure the prestamp flag is the innermost prefix
-        name += PRE_STAMPED_SUFFIX
+        suffix += PRE_STAMPED_SUFFIX
+    if get_elf_sections(ctx):
+        suffix += PRE_ADD_ELF_SECTIONS_SUFFIX
     if has_hip_device_debug and hip_debug_extract_available(get_cxx_toolchain_info(ctx)):
-        # Pre-suffix so hip_debug_extract can strip back to canonical name.
-        name += PRE_EXTRACT_SUFFIX
+        suffix += PRE_EXTRACT_SUFFIX
     if cxx_use_bolt(ctx):
-        name += "-wrapper"
-    return name
+        suffix += PRE_BOLT_SUFFIX
+    return suffix
+
+def get_cxx_executable_product_name(ctx: AnalysisContext, has_hip_device_debug: bool = False) -> str:
+    return ctx.label.name + get_cxx_post_link_suffix(ctx, has_hip_device_debug)
+
+def _is_build_info_linker_flag(flag) -> bool:
+    return flag.startswith("--build-info")

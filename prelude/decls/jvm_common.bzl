@@ -200,7 +200,7 @@ def _k2():
 def _incremental():
     return {
         "incremental": attrs.bool(
-            default = True,
+            default = False,
             doc = """
                 Enables Kotlin incremental compilation.
             """,
@@ -352,8 +352,22 @@ def _javac():
         ),
     }
 
+def _friend_paths_attr():
+    return attrs.list(
+        attrs.one_of(attrs.dep(), attrs.string()),
+        default = [],
+        doc = """
+    Modules whose `internal` declarations this rule may access, passed to the Kotlin compiler as
+     friend-paths.
+
+    An entry is either a target (`//foo/bar:baz`) or a build target pattern covering more than one
+     target (`//foo/bar/...` recursively, or `//foo/bar:` for a single package).
+""",
+    )
+
 jvm_common = struct(
     test_env = _test_env,
+    friend_paths_attr = _friend_paths_attr,
     resources_arg = _resources_arg,
     remove_classes_arg = _remove_classes_arg,
     provided_deps = _provided_deps,

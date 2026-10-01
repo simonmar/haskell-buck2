@@ -35,17 +35,18 @@ message KotlinExtraParams {
   repeated string extraClassPaths = 2;
   string standardLibraryClassPath = 3;
   string annotationProcessingClassPath = 4;
-  AnnotationProcessingTool annotationProcessingTool = 5;
+  reserved 5;
   repeated string extraKotlincArguments = 6;
   // kotlinCompilerPlugin keys are strings encoded as strings due to limitations
   // in proto3.
   map<string, PluginParams> kotlinCompilerPlugins = 7;
   map<string, string> kosabiPluginOptions = 8;
-  string kosabiJvmAbiGenEarlyTerminationMessagePrefix = 9;
+  reserved 9;
+  reserved "kosabiJvmAbiGenEarlyTerminationMessagePrefix";
   repeated string friendPaths = 10;
   repeated string kotlinHomeLibraries = 11;
   string jvmTarget = 12;
-  bool shouldGenerateAnnotationProcessingStats = 13;
+  reserved 13;
   bool shouldUseJvmAbiGen = 14;
   string jvmAbiGenPlugin = 15;
   bool shouldVerifySourceOnlyAbiConstraints = 16;
@@ -58,7 +59,8 @@ message KotlinExtraParams {
   bool shouldKsp2RunIncrementally = 26;
   reserved 27; // was shouldKosabiJvmAbiGenUseK2, unused (kotlincd derives K2
                // from LanguageVersion.getSupportsK2())
-  string kotlinClassesDir = 28;
+  reserved 28;
+  reserved "kotlinClassesDir";
   reserved 29; // was skipClasspathRemovalRebuild, removed after KT-85740 fix
   string javaBinary = 30;
   // Reduced SO-ABI classpath for the applicability plugin (only deps with
@@ -70,12 +72,6 @@ message KotlinExtraParams {
 
 message PluginParams {
   map<string, string> params = 1;
-}
-
-/** Model for KotlinLibraryDescription.AnnotationProcessingTool */
-enum AnnotationProcessingTool {
-  KAPT = 0;
-  JAVAC = 1;
 }
 
 /** Model for metadata provided by Buck2 incremental action see:

@@ -8,18 +8,12 @@
  * above-listed licenses.
  */
 
-package com.facebook.buck.jvm.cd.command.kotlin
+package com.facebook.buck.android.dex;
 
-enum class AnnotationProcessingTool {
-  /**
-   * Default tool for Kotlin modules. Allows to run Java annotation processors against Kotlin
-   * sources while backporting it for Java sources too.
-   */
-  KAPT,
+import com.facebook.infer.annotation.Nullsafe;
 
-  /**
-   * Works only against Java sources, Kotlin sources won't have access to generated classes at
-   * compile time.
-   */
-  JAVAC,
+/** Additional metadata to capture while running D8. */
+@Nullsafe(Nullsafe.Mode.LOCAL)
+public enum D8OutputOption {
+  CLASS_DESCRIPTORS,
 }

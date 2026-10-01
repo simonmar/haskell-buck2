@@ -13,6 +13,7 @@ package com.facebook.buck.jvm.kotlin.ksp
 import com.facebook.buck.core.build.execution.context.IsolatedExecutionContext
 import com.facebook.buck.core.filesystems.AbsPath
 import com.facebook.buck.core.filesystems.RelPath
+import com.facebook.buck.core.util.log.Logger
 import com.facebook.buck.io.file.GlobPatternMatcher
 import com.facebook.buck.jvm.cd.command.kotlin.LanguageVersion
 import com.facebook.buck.jvm.core.BuildTargetValue
@@ -40,6 +41,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Path
 import java.util.Optional
 import java.util.ServiceLoader
+import kotlin.time.measureTimedValue
 
 class Ksp2Step(
     private val invokingRule: BuildTargetValue,
@@ -65,12 +67,43 @@ class Ksp2Step(
     private val ksp2Mode: Ksp2Mode,
 ) : IsolatedStep {
 
+  private val noOpDetector = Ksp2NoOpDetector()
+
   @Throws(IOException::class, InterruptedException::class)
   override fun executeIsolatedStep(context: IsolatedExecutionContext): StepExecutionResult {
     CapturingPrintStream().use { stderr ->
       try {
-        val exitCode: KotlinSymbolProcessing.ExitCode = executeKsp2(stderr, context)
-        kotlinCDAnalytics.log(KotlinCDLoggingContext(languageVersion, ksp2Mode))
+        val (exitCode, elapsed) = measureTimedValue { executeKsp2(stderr, context) }
+        val durationMs = elapsed.inWholeMilliseconds
+        // Same shape KotlincStep already emits, so the two steps are greppable together.
+        LOG.info(
+            "KOTLINCD_STEP_DURATION|%s|%s|%d|%d",
+            invokingRule.fullyQualifiedName,
+            this::class.java.simpleName,
+            durationMs,
+            sourceFilePaths.size,
+        )
+        kotlinCDAnalytics.log(
+            KotlinCDLoggingContext(languageVersion, ksp2Mode, durationMs).apply {
+              addExtras(
+                  this@Ksp2Step::class.java.simpleName,
+                  "Ksp2 step duration: $durationMs ms",
+              )
+              val counts = noOpDetector.countsByProcessor
+              if (
+                  shouldRecordProcessorCounts(
+                      exitCode == KotlinSymbolProcessing.ExitCode.OK,
+                      counts.isNotEmpty(),
+                      ksp2Mode,
+                  )
+              ) {
+                addExtras(
+                    PROCESSOR_OUTPUT_EXTRAS_KEY,
+                    counts.entries.joinToString(",") { "${it.key}=${it.value}" },
+                )
+              }
+            },
+        )
         return when (exitCode) {
           KotlinSymbolProcessing.ExitCode.OK -> StepExecutionResults.SUCCESS
           KotlinSymbolProcessing.ExitCode.PROCESSING_ERROR ->
@@ -202,7 +235,8 @@ class Ksp2Step(
             .trimMargin(),
     )
     // Run!
-    val kotlinSymbolProcessing = KotlinSymbolProcessing(kspConfig, processorProviders, logger)
+    val kotlinSymbolProcessing =
+        KotlinSymbolProcessing(kspConfig, noOpDetector.wrap(processorProviders), logger)
     return kotlinSymbolProcessing.execute()
   }
 
@@ -262,6 +296,21 @@ class Ksp2Step(
       }
 
   companion object {
+    private val LOG: Logger = Logger.get(Ksp2Step::class.java)
+
+    private const val PROCESSOR_OUTPUT_EXTRAS_KEY = "ksp2_processor_generated_files"
+
+    /**
+     * Telemetry records only successful non-incremental runs that produced counts: an aborted run
+     * leaves never-ran processors reading zero, and in an incremental round a zero mixes genuine
+     * no-ops with legitimately idle processors.
+     */
+    fun shouldRecordProcessorCounts(
+        succeeded: Boolean,
+        hasCounts: Boolean,
+        ksp2Mode: Ksp2Mode,
+    ): Boolean = succeeded && hasCounts && ksp2Mode is Ksp2Mode.NonIncremental
+
     private val jdkHomeCache = java.util.concurrent.ConcurrentHashMap<String, File>()
     private val JAVA_HOME_REGEX = Regex("""java\.home\s*=\s*(.+)""")
 

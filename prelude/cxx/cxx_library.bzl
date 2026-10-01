@@ -15,8 +15,8 @@ load("@prelude//:attrs_validators.bzl", "get_attrs_validation_specs")
 load("@prelude//:paths.bzl", "paths")
 load(
     "@prelude//:resources.bzl",
-    "ResourceInfo",
     "gather_resources",
+    "make_resource_info",
 )
 load(
     "@prelude//android:android_providers.bzl",
@@ -64,8 +64,8 @@ load(
 load("@prelude//linking:execution_preference.bzl", "LinkExecutionPreference", "get_link_execution_preference")
 load(
     "@prelude//linking:link_groups.bzl",
+    "EMPTY_LINK_GROUP_LIB_INFO",
     "LinkGroupLib",  # @unused Used as a type
-    "LinkGroupLibInfo",
     "gather_link_group_libs",
     "merge_link_group_lib_info",
 )
@@ -101,7 +101,7 @@ load(
 )
 load(
     "@prelude//linking:linkable_graph.bzl",
-    "DlopenableLibraryInfo",
+    "DLOPENABLE_LIBRARY_INFO_MARKER",
     "LinkableRootInfo",
     "ReducedLinkableGraph",  # @unused used as a type
     "create_linkable_graph",
@@ -110,9 +110,18 @@ load(
     "linkable_deps",
     "reduce_linkable_graph",
 )
-load("@prelude//linking:shared_libraries.bzl", "NamedLinkedObject", "SharedLibraryInfo", "create_flavored_shared_libraries", "merge_shared_libraries")
+load(
+    "@prelude//linking:shared_libraries.bzl",
+    "EMPTY_SHARED_LIBRARY_INFO",
+    "NamedLinkedObject",
+    "SharedLibraryInfo",
+    "create_flavored_shared_libraries",
+    "merge_shared_libraries",
+)
 load("@prelude//linking:strip.bzl", "strip_debug_info")
 load("@prelude//linking:types.bzl", "Linkage")
+load("@prelude//target_stats:target_stats.bzl", "CycleMode", "target_stats_providers_and_subtargets")
+load("@prelude//target_stats:target_stats_config.bzl", "TARGET_STATS_ENABLED")
 load(
     "@prelude//third-party:build.bzl",
     "create_third_party_build_info",
@@ -128,7 +137,7 @@ load(
     "value_or",
 )
 load("@prelude//xplugins:debug_artifacts.bzl", "xplugins_get_debug_artifacts_info")
-load("@prelude//xplugins:utils.bzl", "get_xplugins_usage_info", "get_xplugins_usage_subtargets")
+load("@prelude//xplugins:utils.bzl", "get_xplugins_usage_info")
 load(":archive.bzl", "make_archive")
 load(
     ":argsfiles.bzl",
@@ -169,6 +178,7 @@ load(
 )
 load(
     ":cxx_library_utility.bzl",
+    "EMPTY_DEFAULT_INFO",
     "OBJECTS_SUBTARGET",
     "cxx_attr_dep_metadata",
     "cxx_attr_deps",
@@ -414,7 +424,6 @@ def cxx_library_parameterized(ctx: AnalysisContext, impl_params: CxxRuleConstruc
     """
     Defines the outputs for a cxx library, return the default output and any subtargets and providers based upon the requested params.
     """
-
     if not cxx_platform_supported(ctx):
         sub_targets = {}
 
@@ -425,7 +434,7 @@ def cxx_library_parameterized(ctx: AnalysisContext, impl_params: CxxRuleConstruc
         return _CxxLibraryParameterizedOutput(
             providers = [
                 DefaultInfo(default_output = None, sub_targets = sub_targets),
-                SharedLibraryInfo(set = None),
+                EMPTY_SHARED_LIBRARY_INFO,
             ],
             sub_targets = sub_targets,
         )
@@ -586,6 +595,7 @@ def cxx_library_parameterized(ctx: AnalysisContext, impl_params: CxxRuleConstruc
 
     if impl_params.generate_sub_targets.argsfiles:
         sub_targets[ARGSFILES_SUBTARGET] = [get_argsfiles_output(ctx, compiled_srcs.compile_cmds.argsfiles.relative, ARGSFILES_SUBTARGET)]
+    if impl_params.generate_sub_targets.xcode_data:
         sub_targets[XCODE_ARGSFILES_SUB_TARGET] = [get_argsfiles_output(ctx, compiled_srcs.compile_cmds.argsfiles.xcode, XCODE_ARGSFILES_SUB_TARGET)]
 
     if impl_params.generate_sub_targets.clang_remarks:
@@ -991,7 +1001,7 @@ def cxx_library_parameterized(ctx: AnalysisContext, impl_params: CxxRuleConstruc
                 own_exported_preprocessors.extend(header_unit_preprocessors)
         else:
             sub_targets["header-unit"] = [
-                DefaultInfo(),
+                EMPTY_DEFAULT_INFO,
                 cxx_merge_cpreprocessors(
                     ctx.actions,
                     own_exported_preprocessors,
@@ -1071,8 +1081,8 @@ def cxx_library_parameterized(ctx: AnalysisContext, impl_params: CxxRuleConstruc
                 frameworks_linkable = frameworks_linkable,
                 swiftmodule_linkable = swiftmodule_linkable,
             ),
-            LinkGroupLibInfo(libs = {}),
-            SharedLibraryInfo(set = None),
+            EMPTY_LINK_GROUP_LIB_INFO,
+            EMPTY_SHARED_LIBRARY_INFO,
         ] + additional_providers
 
     if getattr(ctx.attrs, "supports_header_symlink_subtarget", False):
@@ -1130,7 +1140,7 @@ def cxx_library_parameterized(ctx: AnalysisContext, impl_params: CxxRuleConstruc
     sub_targets.update(mod_dep_graph_subtargets)
     providers.append(mod_dep_graph_info)
 
-    linker_flags = cxx_attr_linker_flags_all(ctx)
+    linker_flags = cxx_attr_linker_flags_all(ctx, impl_params.cxx_flags)
 
     # Omnibus root provider.
     linkable_root = None
@@ -1187,7 +1197,7 @@ def cxx_library_parameterized(ctx: AnalysisContext, impl_params: CxxRuleConstruc
 
         # Mark libraries that support `dlopen`.
         if getattr(ctx.attrs, "supports_python_dlopen", False):
-            providers.append(DlopenableLibraryInfo())
+            providers.append(DLOPENABLE_LIBRARY_INFO_MARKER)
 
     # Augment and provide the linkable graph.
     if impl_params.generate_providers.linkable_graph:
@@ -1205,6 +1215,10 @@ def cxx_library_parameterized(ctx: AnalysisContext, impl_params: CxxRuleConstruc
                     # If we don't have link input for this link style, we pass in `None` so
                     # that omnibus knows to avoid it.
                     include_in_android_mergemap = getattr(ctx.attrs, "include_in_android_merge_map_output", True) and default_output != None,
+                    # Attach this library's per-source compile commands so app rules can aggregate a
+                    # native compile-command database. Gated (default off) to keep this off the graph
+                    # for normal builds; see _emit_native_build_commands.
+                    compile_cmds = compiled_srcs.compile_cmds.src_compile_cmds if getattr(ctx.attrs, "_emit_native_build_commands", False) else [],
                     link_infos = library_outputs.link_infos,
                     shared_libs = shared_libs,
                     linker_flags = linker_flags,
@@ -1221,13 +1235,13 @@ def cxx_library_parameterized(ctx: AnalysisContext, impl_params: CxxRuleConstruc
     if impl_params.generate_providers.resources:
         resources = cxx_attr_resources(ctx)
         providers.append(
-            ResourceInfo(
-                resources = gather_resources(
+            make_resource_info(
+                gather_resources(
                     label = ctx.label,
                     resources = resources,
                     deps = deps_all_non_exported_first,
-                )
-            )
+                ),
+            ),
         )
         if impl_params.generate_providers.cxx_resources_as_apple_resources:
             apple_resource_graph = create_resource_graph(
@@ -1345,8 +1359,8 @@ def cxx_library_parameterized(ctx: AnalysisContext, impl_params: CxxRuleConstruc
             linkage_providers = [
                 linkage_merged_link_info,
                 propagated_preprocessor,
-                LinkGroupLibInfo(libs = {}),
-                SharedLibraryInfo(set = None),
+                EMPTY_LINK_GROUP_LIB_INFO,
+                EMPTY_SHARED_LIBRARY_INFO,
             ]
 
             # Only create LinkableGraph if we have all required output styles for this linkage
@@ -1363,6 +1377,7 @@ def cxx_library_parameterized(ctx: AnalysisContext, impl_params: CxxRuleConstruc
                             deps = non_exported_deps,
                             exported_deps = exported_deps,
                             include_in_android_mergemap = getattr(ctx.attrs, "include_in_android_merge_map_output", True) and default_output != None,
+                            compile_cmds = compiled_srcs.compile_cmds.src_compile_cmds if getattr(ctx.attrs, "_emit_native_build_commands", False) else [],
                             link_infos = library_outputs.link_infos,
                             shared_libs = shared_libs,
                             linker_flags = linker_flags,
@@ -1382,11 +1397,9 @@ def cxx_library_parameterized(ctx: AnalysisContext, impl_params: CxxRuleConstruc
                 )
             sub_targets["prefer-{}".format(linkage.value)] = linkage_providers
 
-    # Propagate xplugins providers
     xplugins_usage_info = get_xplugins_usage_info(ctx.actions, deps_all_non_exported_first)
     if xplugins_usage_info:
         providers.append(xplugins_usage_info)
-        sub_targets.update(get_xplugins_usage_subtargets(ctx, xplugins_usage_info, link_group_info))
 
     xplugins_debug_info = xplugins_get_debug_artifacts_info(
         ctx,
@@ -1394,6 +1407,25 @@ def cxx_library_parameterized(ctx: AnalysisContext, impl_params: CxxRuleConstruc
     )
     if xplugins_debug_info:
         providers.append(xplugins_debug_info)
+
+    if TARGET_STATS_ENABLED:
+        target_stats_tools = get_cxx_toolchain_info(ctx).target_stats_tools
+        if target_stats_tools != None:
+            # Keyed by each file's path within the target, which is what a
+            # consumer can line up against the target's own source list.
+            target_stats_srcs = {src.file.short_path: src.file for src in impl_params.srcs + impl_params.additional.srcs}
+            target_stats_srcs.update(impl_params.target_stats_extra_srcs)
+            target_stats_providers, target_stats_subtargets = target_stats_providers_and_subtargets(
+                ctx,
+                tools = target_stats_tools,
+                srcs = target_stats_srcs,
+                deps = non_exported_deps + exported_deps,
+                cycle_mode = CycleMode(impl_params.target_stats_cycle_mode),
+                module_name = impl_params.target_stats_module_name or ctx.label.name,
+                swift_dot = impl_params.target_stats_swift_dot,
+            )
+            providers.extend(target_stats_providers)
+            sub_targets.update(target_stats_subtargets)
 
     if impl_params.generate_providers.default:
         if False:
@@ -1549,6 +1581,7 @@ def cxx_compile_srcs(
     add_coverage_instrumentation_compiler_flags: bool,
     compile_pch: CxxPrecompiledHeader | None = None,
     own_exported_preprocessors: list[CPreprocessor] = [],
+    filename_prefix: str = "",
 ) -> _CxxCompiledSourcesOutput:
     """
     Compile objects we'll need for archives and shared libraries.
@@ -1564,6 +1597,7 @@ def cxx_compile_srcs(
         inherited_preprocessor_infos = inherited_non_exported_preprocessor_infos + inherited_exported_preprocessor_infos,
         add_coverage_instrumentation_compiler_flags = add_coverage_instrumentation_compiler_flags,
         compile_pch = compile_pch,
+        filename_prefix = filename_prefix,
     )
 
     # Define header unit.
@@ -1714,7 +1748,7 @@ def _form_library_outputs(
     gcno_files = []
 
     linker_info = get_cxx_toolchain_info(ctx).linker_info
-    linker_flags = cxx_attr_linker_flags_all(ctx)
+    linker_flags = cxx_attr_linker_flags_all(ctx, impl_params.cxx_flags)
 
     # Add in exported linker flags.
     def ldflags(inner: LinkInfo) -> LinkInfo:
@@ -2351,7 +2385,7 @@ def _shared_library(
     # does, but the intent of exported link flags are to wrap the link output
     # that we propagate up the tree, rather than being used locally when
     # generating a link product.
-    linker_flags = cxx_attr_linker_flags_all(ctx)
+    linker_flags = cxx_attr_linker_flags_all(ctx, impl_params.cxx_flags)
     link_info = LinkInfo(
         dist_thin_lto_codegen_flags = getattr(ctx.attrs, "dist_thin_lto_codegen_flags", []),
         pre_flags = (linker_flags.flags + linker_flags.exported_flags + getattr(ctx.attrs, "local_linker_flags", [])),

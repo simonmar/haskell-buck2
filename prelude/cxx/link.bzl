@@ -32,6 +32,7 @@ load(
     "@prelude//cxx/dist_lto/darwin:dist_lto.bzl",
     "cxx_darwin_dist_link",
 )
+load("@prelude//linking:add_elf_sections.bzl", "add_elf_sections_to_executable")
 load("@prelude//linking:execution_preference.bzl", "LinkExecutionPreference", "LinkExecutionPreferenceInfo", "get_action_execution_attributes")
 load(
     "@prelude//linking:link_info.bzl",
@@ -59,6 +60,7 @@ load(
 )
 load(":bitcode.bzl", "make_bitcode_bundle")
 load(":cxx_context.bzl", "get_cxx_toolchain_info")
+load(":cxx_library_utility.bzl", "EMPTY_DEFAULT_INFO")
 load(
     ":cxx_link_utility.bzl",
     "LinkArgsOutput",
@@ -177,6 +179,8 @@ def cxx_link_into(
     output: Artifact,
     result_type: CxxLinkResultType,
     opts: LinkOptions,
+    output_has_content_based_path: bool = False,
+    build_info_json: Artifact | None = None,
 ) -> CxxLinkResult:
     cxx_toolchain_info = opts.cxx_toolchain or get_cxx_toolchain_info(ctx)
     linker_info = cxx_toolchain_info.linker_info
@@ -246,6 +250,7 @@ def cxx_link_into(
                 gc_sections_output,
                 dwp_tool_available,
                 is_result_executable,
+                build_info_json,
             )
             extra_outputs = {}
         else:
@@ -457,6 +462,14 @@ def cxx_link_into(
 
     enable_late_build_info_stamping = is_result_executable and cxx_stamp_build_info(ctx)
 
+    if is_incremental_link:
+        allow_cache_upload = False
+    elif enable_late_build_info_stamping:
+        allow_cache_upload = True
+    else:
+        # Preserves `None`: no preference, as opposed to a decision not to upload.
+        allow_cache_upload = opts.allow_cache_upload
+
     ctx.actions.run(
         command,
         prefer_local = action_execution_properties.prefer_local and not is_incremental_link,
@@ -466,10 +479,9 @@ def cxx_link_into(
         category = category,
         identifier = opts.identifier,
         force_full_hybrid_if_capable = action_execution_properties.full_hybrid,
-        allow_cache_upload = (opts.allow_cache_upload or enable_late_build_info_stamping) and not is_incremental_link,
+        allow_cache_upload = allow_cache_upload,
         error_handler = opts.error_handler,
         no_outputs_cleanup = is_incremental_link,
-        eager_materialization_enabled = True,
     )
 
     external_debug_info = link_external_debug_info(
@@ -484,6 +496,7 @@ def cxx_link_into(
         strip_args = opts.strip_args_factory(ctx) if opts.strip_args_factory else cmd_args()
         output = strip_object(ctx, cxx_toolchain_info, output, strip_args, opts.category_suffix, allow_cache_upload = enable_late_build_info_stamping)
 
+    prebolt_output = output
     use_bolt = is_result_executable and cxx_use_bolt(ctx)
     if use_bolt:
         bolt_output = bolt(ctx, output, external_debug_info, opts.identifier, dwp_tool_available, allow_cache_upload = enable_late_build_info_stamping)
@@ -527,13 +540,19 @@ def cxx_link_into(
         output = renamed
 
     if is_result_executable:
-        output = stamp_build_info(ctx, output, links = opts.links)
+        output = add_elf_sections_to_executable(ctx, output, has_content_based_path = output_has_content_based_path)
+        output = stamp_build_info(
+            ctx,
+            output,
+            links = opts.links,
+            build_info_json = build_info_json,
+        )
 
     linked_object = LinkedObject(
         output = output,
         link_args = opts.links + opts.binary_links,
         bitcode_bundle = bitcode_artifact.artifact if bitcode_artifact else None,
-        prebolt_output = output,
+        prebolt_output = prebolt_output,
         unstripped_output = unstripped_output,
         dwp = dwp_artifact,
         external_debug_info = external_debug_info,
@@ -585,7 +604,7 @@ def _anon_link_impl(ctx):
     split_debug_output_placeholder = ctx.actions.write("placeholder_split_debug_output", "", has_content_based_path = False)
 
     return [
-        DefaultInfo(),
+        EMPTY_DEFAULT_INFO,
         _AnonLinkInfo(result = link_result),
         _AnonLinkInfoPlaceholder(dwp = dwp_placeholder, split_debug_output = split_debug_output_placeholder),
     ]

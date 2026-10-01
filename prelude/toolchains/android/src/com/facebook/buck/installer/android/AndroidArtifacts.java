@@ -10,26 +10,29 @@
 
 package com.facebook.buck.installer.android;
 
-import com.facebook.buck.android.exopackage.InstallTimings;
 import com.facebook.buck.core.filesystems.AbsPath;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.Comparator;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Sets;
 import java.util.EnumMap;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Locale;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import javax.annotation.Nullable;
 
-/** Holds android install related artifacts (apk options, manifest path, etc) */
-class AndroidArtifacts implements InstallTimings {
+/**
+ * Holds android install related artifacts (apk options, manifest path, etc)
+ *
+ * <p>Shared across the gRPC handler threads that deliver artifacts, the threads that push them, and
+ * the install that reads them, so every member is guarded by this object's monitor.
+ */
+class AndroidArtifacts {
   private AbsPath androidManifestPath;
   private AndroidInstallApkOptions apkOptions;
   private AbsPath apk;
+  private ImmutableSet<String> apkAbis;
   private Optional<AbsPath> secondaryDexExopackageInfoDirectory = Optional.empty();
   private Optional<AbsPath> secondaryDexExopackageInfoMetadata = Optional.empty();
   private Optional<AbsPath> nativeLibraryExopackageInfoDirectory = Optional.empty();
@@ -38,189 +41,76 @@ class AndroidArtifacts implements InstallTimings {
   private Optional<AbsPath> resourcesExopackageInfoAssetsHash = Optional.empty();
   private Optional<AbsPath> resourcesExopackageInfoRes = Optional.empty();
   private Optional<AbsPath> resourcesExopackageInfoResHash = Optional.empty();
-  // Artifact name -> wall-clock arrival. Written from concurrent gRPC handler threads.
+  // Artifact name -> wall-clock arrival.
   private final Map<String, Long> fileArrivalMillis = new HashMap<>();
+  // What buck said it would send, split by payload. A class with no entry is one this build does
+  // not produce, which is why it can never be complete.
+  private final Map<ArtifactClass, Set<String>> expectedByClass =
+      new EnumMap<>(ArtifactClass.class);
+
+  /** Records which artifacts buck said it would send, before any of them arrive. */
+  public synchronized void setExpectedArtifacts(Set<String> expectedArtifacts) {
+    expectedByClass.clear();
+    for (String artifactName : expectedArtifacts) {
+      expectedByClass
+          .computeIfAbsent(ArtifactClass.of(artifactName), unused -> new HashSet<>())
+          .add(artifactName);
+    }
+  }
+
+  /**
+   * True once every artifact this build declared for {@code artifactClass} has arrived, and false
+   * if it declared none.
+   *
+   * <p>Checked against what buck said it would send, not against what happens to be on disk: assets
+   * are optional for a build, so their absence is otherwise indistinguishable from their not having
+   * turned up yet.
+   */
+  public synchronized boolean hasAllArtifactsFor(ArtifactClass artifactClass) {
+    Set<String> declared = expectedByClass.get(artifactClass);
+    return declared != null && fileArrivalMillis.keySet().containsAll(declared);
+  }
+
+  /**
+   * True once every artifact buck declared has arrived, and false if it declared none.
+   *
+   * <p>Independent of how names bucket into classes: it asks whether anything is still coming, not
+   * which payload it belongs to.
+   */
+  public synchronized boolean allArtifactsArrived() {
+    return !expectedByClass.isEmpty() && undeliveredArtifacts().isEmpty();
+  }
+
+  /**
+   * Artifacts buck declared but never delivered.
+   *
+   * <p>Only meaningful once buck says it has sent everything; before that an artifact is missing
+   * simply because it has not arrived. A name here means the two sides disagree about what an
+   * artifact is called, which leaves its class permanently incomplete and its payload unstreamed.
+   */
+  public synchronized ImmutableSet<String> undeliveredArtifacts() {
+    return expectedByClass.values().stream()
+        .flatMap(Set::stream)
+        .filter(artifactName -> !fileArrivalMillis.containsKey(artifactName))
+        .collect(ImmutableSet.toImmutableSet());
+  }
 
   /**
    * Records that {@code artifactName} was delivered by buck at {@code timestampMillis}. Must be
    * called when the file is actually received, not when the installer gets around to consuming it,
    * or every artifact is stamped with the same instant and the spans below all collapse to zero.
    */
-  public void recordFileArrival(String artifactName, long timestampMillis) {
-    synchronized (fileArrivalMillis) {
-      fileArrivalMillis.putIfAbsent(artifactName, timestampMillis);
-    }
+  public synchronized void recordFileArrival(String artifactName, long timestampMillis) {
+    fileArrivalMillis.putIfAbsent(artifactName, timestampMillis);
   }
 
-  // Stage timings, written from the install thread and read once the install is over.
-  private final Map<String, long[]> pushWindows = new LinkedHashMap<>();
-  private long deviceSetupMillis;
-  private long apkInstallMillis;
-  private long deviceWorkMillis;
-
-  @Override
-  public synchronized void recordDeviceSetup(long startMillis, long endMillis) {
-    deviceSetupMillis += endMillis - startMillis;
-  }
-
-  @Override
-  public synchronized void recordPush(String group, long startMillis, long endMillis) {
-    // A group may be pushed as several concurrent shards; the group spans all of them.
-    pushWindows.merge(
-        group,
-        new long[] {startMillis, endMillis},
-        (a, b) -> new long[] {Math.min(a[0], b[0]), Math.max(a[1], b[1])});
-  }
-
-  @Override
-  public synchronized void recordApkInstall(long startMillis, long endMillis) {
-    apkInstallMillis += endMillis - startMillis;
-  }
-
-  @Override
-  public synchronized void recordDeviceWork(long startMillis, long endMillis) {
-    deviceWorkMillis += endMillis - startMillis;
-  }
-
-  /**
-   * How the install went, as one timeline. Every value is seconds.milliseconds, measured from the
-   * first artifact arriving.
-   *
-   * <p>Each class of artifact reports when buck finished delivering it ({@code _arrival_s}) and how
-   * long moving it to the device took ({@code _transfer_s}), in arrival order. Control artifacts
-   * are read on the host, so they never transfer.
-   *
-   * <p>{@code critical_path_s} replays this same install against these same durations, but starts
-   * each payload the moment its own artifacts were there instead of waiting for all of them. {@code
-   * potential_saving_s} is {@code total_s} minus that: time the device spent waiting for an
-   * artifact it did not yet need. Neither says anything about transferring faster, only about
-   * waiting less.
-   */
-  public synchronized Map<String, String> getInstallMetrics(long installCompleteMillis) {
-    Map<String, Long> arrivals;
-    synchronized (fileArrivalMillis) {
-      if (fileArrivalMillis.isEmpty()) {
-        return Map.of();
-      }
-      arrivals = new HashMap<>(fileArrivalMillis);
-    }
-    long first = Collections.min(arrivals.values());
-
-    Map<ArtifactClass, Long> readyByClass = new EnumMap<>(ArtifactClass.class);
-    for (Map.Entry<String, Long> arrival : arrivals.entrySet()) {
-      readyByClass.merge(ArtifactClass.of(arrival.getKey()), arrival.getValue(), Math::max);
-    }
-    long controlReady = readyByClass.getOrDefault(ArtifactClass.CONTROL, first);
-    long apkReady = readyByClass.getOrDefault(ArtifactClass.APK, first);
-
-    // Replay: one pusher, each payload started as soon as it was available.
-    List<long[]> payloads = new ArrayList<>(); // {availableAt, durationMillis}
-    long metadataMillis = 0L;
-    for (Map.Entry<String, long[]> push : pushWindows.entrySet()) {
-      long duration = push.getValue()[1] - push.getValue()[0];
-      ArtifactClass pushed = ArtifactClass.forPushGroup(push.getKey());
-      if (pushed == null) {
-        metadataMillis += duration; // metadata is derived, so it can only follow every payload
-        continue;
-      }
-      long availableAt = readyByClass.getOrDefault(pushed, controlReady);
-      payloads.add(new long[] {Math.max(availableAt, controlReady), duration});
-    }
-    payloads.sort(Comparator.comparingLong(payload -> payload[0]));
-
-    // Replay onto as many pushers as the install actually used, so the estimate tracks the
-    // implementation. With one pusher this is a queue; with several it is a list schedule.
-    long[] pushers = new long[observedConcurrency()];
-    Arrays.fill(pushers, controlReady + deviceSetupMillis);
-    for (long[] payload : payloads) {
-      int earliest = 0;
-      for (int i = 1; i < pushers.length; i++) {
-        if (pushers[i] < pushers[earliest]) {
-          earliest = i;
-        }
-      }
-      pushers[earliest] = Math.max(pushers[earliest], payload[0]) + payload[1];
-    }
-    long clock = controlReady + deviceSetupMillis;
-    for (long pusher : pushers) {
-      clock = Math.max(clock, pusher);
-    }
-    clock += metadataMillis;
-    clock = Math.max(clock, apkReady) + apkInstallMillis;
-    // Device work that is not one of the stages above still has to happen, so charge it too.
-    // Without this the replay looks faster than anything achievable and every install appears to
-    // have a saving.
-    long modelled = deviceSetupMillis + apkInstallMillis;
-    for (long[] window : pushWindows.values()) {
-      modelled += window[1] - window[0];
-    }
-    clock += Math.max(0L, deviceWorkMillis - modelled);
-
-    long total = installCompleteMillis - first;
-    long criticalPath = clock - first;
-
-    Map<String, String> metrics = new LinkedHashMap<>();
-    readyByClass.entrySet().stream()
-        .sorted(Map.Entry.comparingByValue())
-        .forEach(
-            ready -> {
-              String artifactClass = ready.getKey().metricName;
-              metrics.put(artifactClass + "_arrival_s", seconds(ready.getValue() - first));
-              metrics.put(artifactClass + "_transfer_s", seconds(transferMillis(ready.getKey())));
-            });
-    metrics.put("device_setup_s", seconds(deviceSetupMillis));
-    if (metadataMillis > 0L) {
-      metrics.put("metadata_transfer_s", seconds(metadataMillis));
-    }
-    metrics.put("critical_path_s", seconds(criticalPath));
-    metrics.put("total_s", seconds(total));
-    metrics.put("potential_saving_s", seconds(Math.max(0L, total - criticalPath)));
-    return metrics;
-  }
-
-  /** How long this class of artifact took to reach the device, or zero if it is not transferred. */
-  private long transferMillis(ArtifactClass artifactClass) {
-    if (artifactClass == ArtifactClass.APK) {
-      return apkInstallMillis;
-    }
-    for (Map.Entry<String, long[]> push : pushWindows.entrySet()) {
-      if (ArtifactClass.forPushGroup(push.getKey()) == artifactClass) {
-        return push.getValue()[1] - push.getValue()[0];
-      }
-    }
-    return 0L;
-  }
-
-  private static String seconds(long millis) {
-    return String.format(Locale.ROOT, "%.3f", millis / 1000.0);
-  }
-
-  /**
-   * How many payloads the install had in flight at once, from their observed windows. One if the
-   * pushes did not overlap.
-   */
-  private int observedConcurrency() {
-    List<long[]> edges = new ArrayList<>();
-    for (long[] window : pushWindows.values()) {
-      if (window[1] > window[0]) {
-        edges.add(new long[] {window[0], 1L});
-        edges.add(new long[] {window[1], -1L});
-      }
-    }
-    // Ends before starts at the same instant, so touching windows are not counted as overlapping.
-    edges.sort(
-        Comparator.<long[]>comparingLong(edge -> edge[0]).thenComparingLong(edge -> edge[1]));
-    int concurrent = 0;
-    int peak = 0;
-    for (long[] edge : edges) {
-      concurrent += (int) edge[1];
-      peak = Math.max(peak, concurrent);
-    }
-    return Math.max(1, peak);
+  /** When each artifact was delivered, for whoever is measuring the install. */
+  public synchronized ImmutableMap<String, Long> arrivals() {
+    return ImmutableMap.copyOf(fileArrivalMillis);
   }
 
   /** Groups install artifacts by the exopackage payload they belong to. */
-  private enum ArtifactClass {
+  enum ArtifactClass {
     SECONDARY_DEX("dex"),
     NATIVE_LIBRARY("native"),
     RESOURCES("resources"),
@@ -232,6 +122,10 @@ class AndroidArtifacts implements InstallTimings {
     ArtifactClass(String metricName) {
       this.metricName = metricName;
     }
+
+    /** The classes that are exopackage payloads, each pushable to the device on its own. */
+    static final ImmutableSet<ArtifactClass> EXOPACKAGE_PAYLOADS =
+        Sets.immutableEnumSet(SECONDARY_DEX, NATIVE_LIBRARY, RESOURCES);
 
     /** The class whose arrival gates pushing {@code pushGroup}, or null if it is derived. */
     @Nullable
@@ -268,96 +162,112 @@ class AndroidArtifacts implements InstallTimings {
     }
   }
 
-  public void setAndroidManifestPath(AbsPath androidManifestPath) {
+  public synchronized void setAndroidManifestPath(AbsPath androidManifestPath) {
     this.androidManifestPath = androidManifestPath;
   }
 
-  public AbsPath getAndroidManifestPath() {
+  public synchronized AbsPath getAndroidManifestPath() {
     return this.androidManifestPath;
   }
 
-  public void setApkOptions(AndroidInstallApkOptions apkOptions) {
+  public synchronized void setApkOptions(AndroidInstallApkOptions apkOptions) {
     this.apkOptions = apkOptions;
   }
 
-  public AndroidInstallApkOptions getApkOptions() {
+  public synchronized AndroidInstallApkOptions getApkOptions() {
     return this.apkOptions;
   }
 
-  public AbsPath getApk() {
+  /**
+   * The ABIs the apk carries native code for, or null until buck has sent the cpu filters. Empty
+   * means the filters named nothing this installer recognises.
+   */
+  @Nullable
+  public synchronized ImmutableSet<String> getApkAbis() {
+    return apkAbis;
+  }
+
+  public synchronized void setApkAbis(ImmutableSet<String> apkAbis) {
+    this.apkAbis = apkAbis;
+  }
+
+  public synchronized AbsPath getApk() {
     return apk;
   }
 
-  public void setApk(AbsPath apk) {
+  public synchronized void setApk(AbsPath apk) {
     this.apk = apk;
   }
 
-  public Optional<AbsPath> getSecondaryDexExopackageInfoDirectory() {
+  public synchronized Optional<AbsPath> getSecondaryDexExopackageInfoDirectory() {
     return secondaryDexExopackageInfoDirectory;
   }
 
-  public void setSecondaryDexExopackageInfoDirectory(
+  public synchronized void setSecondaryDexExopackageInfoDirectory(
       Optional<AbsPath> secondaryDexExopackageInfoDirectory) {
     this.secondaryDexExopackageInfoDirectory = secondaryDexExopackageInfoDirectory;
   }
 
-  public Optional<AbsPath> getSecondaryDexExopackageInfoMetadata() {
+  public synchronized Optional<AbsPath> getSecondaryDexExopackageInfoMetadata() {
     return secondaryDexExopackageInfoMetadata;
   }
 
-  public void setSecondaryDexExopackageInfoMetadata(
+  public synchronized void setSecondaryDexExopackageInfoMetadata(
       Optional<AbsPath> secondaryDexExopackageInfoMetadata) {
     this.secondaryDexExopackageInfoMetadata = secondaryDexExopackageInfoMetadata;
   }
 
-  public Optional<AbsPath> getNativeLibraryExopackageInfoDirectory() {
+  public synchronized Optional<AbsPath> getNativeLibraryExopackageInfoDirectory() {
     return nativeLibraryExopackageInfoDirectory;
   }
 
-  public void setNativeLibraryExopackageInfoDirectory(
+  public synchronized void setNativeLibraryExopackageInfoDirectory(
       Optional<AbsPath> nativeLibraryExopackageInfoDirectory) {
     this.nativeLibraryExopackageInfoDirectory = nativeLibraryExopackageInfoDirectory;
   }
 
-  public Optional<AbsPath> getNativeLibraryExopackageInfoMetadata() {
+  public synchronized Optional<AbsPath> getNativeLibraryExopackageInfoMetadata() {
     return nativeLibraryExopackageInfoMetadata;
   }
 
-  public void setNativeLibraryExopackageInfoMetadata(
+  public synchronized void setNativeLibraryExopackageInfoMetadata(
       Optional<AbsPath> nativeLibraryExopackageInfoMetadata) {
     this.nativeLibraryExopackageInfoMetadata = nativeLibraryExopackageInfoMetadata;
   }
 
-  public Optional<AbsPath> getResourcesExopackageInfoAssets() {
+  public synchronized Optional<AbsPath> getResourcesExopackageInfoAssets() {
     return resourcesExopackageInfoAssets;
   }
 
-  public void setResourcesExopackageInfoAssets(Optional<AbsPath> resourcesExopackageInfoAssets) {
+  public synchronized void setResourcesExopackageInfoAssets(
+      Optional<AbsPath> resourcesExopackageInfoAssets) {
     this.resourcesExopackageInfoAssets = resourcesExopackageInfoAssets;
   }
 
-  public Optional<AbsPath> getResourcesExopackageInfoAssetsHash() {
+  public synchronized Optional<AbsPath> getResourcesExopackageInfoAssetsHash() {
     return resourcesExopackageInfoAssetsHash;
   }
 
-  public void setResourcesExopackageInfoAssetsHash(
+  public synchronized void setResourcesExopackageInfoAssetsHash(
       Optional<AbsPath> resourcesExopackageInfoAssetsHash) {
     this.resourcesExopackageInfoAssetsHash = resourcesExopackageInfoAssetsHash;
   }
 
-  public Optional<AbsPath> getResourcesExopackageInfoRes() {
+  public synchronized Optional<AbsPath> getResourcesExopackageInfoRes() {
     return resourcesExopackageInfoRes;
   }
 
-  public void setResourcesExopackageInfoRes(Optional<AbsPath> resourcesExopackageInfoRes) {
+  public synchronized void setResourcesExopackageInfoRes(
+      Optional<AbsPath> resourcesExopackageInfoRes) {
     this.resourcesExopackageInfoRes = resourcesExopackageInfoRes;
   }
 
-  public Optional<AbsPath> getResourcesExopackageInfoResHash() {
+  public synchronized Optional<AbsPath> getResourcesExopackageInfoResHash() {
     return resourcesExopackageInfoResHash;
   }
 
-  public void setResourcesExopackageInfoResHash(Optional<AbsPath> resourcesExopackageInfoResHash) {
+  public synchronized void setResourcesExopackageInfoResHash(
+      Optional<AbsPath> resourcesExopackageInfoResHash) {
     this.resourcesExopackageInfoResHash = resourcesExopackageInfoResHash;
   }
 }

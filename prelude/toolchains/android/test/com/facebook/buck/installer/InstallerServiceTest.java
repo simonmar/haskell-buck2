@@ -48,6 +48,11 @@ public class InstallerServiceTest {
     final AtomicInteger handedOver = new AtomicInteger();
 
     @Override
+    public String name() {
+      return "fake";
+    }
+
+    @Override
     public InstallResult fileReady(String artifact, Path artifactPath, InstallId installId) {
       handedOver.incrementAndGet();
       return InstallResult.success();

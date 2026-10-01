@@ -18,6 +18,7 @@ load("@prelude//:sh_test.bzl", "sh_test_impl")
 load("@prelude//:test_suite.bzl", "test_suite_impl")
 load("@prelude//android:android.bzl", _android_implemented_rules = "implemented_rules")
 load("@prelude//android:configuration.bzl", "is_building_android_binary_attr")
+load("@prelude//android:native_build_commands.bzl", "EMIT_NATIVE_BUILD_COMMANDS")
 load("@prelude//apple:apple_common.bzl", "apple_common")
 load("@prelude//apple:apple_rules_decls.bzl", "apple_rules")
 load("@prelude//apple:apple_rules_impl.bzl", _apple_extra_attributes = "extra_attributes", _apple_implemented_rules = "implemented_rules")
@@ -26,6 +27,7 @@ load("@prelude//csharp:csharp.bzl", "csharp_library_impl", "prebuilt_dotnet_libr
 load("@prelude//cxx:bitcode.bzl", "llvm_link_bitcode_impl")
 load("@prelude//cxx:cuda.bzl", "CudaCompileStyle")
 load("@prelude//cxx:cxx.bzl", "cxx_binary_impl", "cxx_library_impl", "cxx_precompiled_header_impl", "cxx_test_impl", "prebuilt_cxx_library_impl")
+load("@prelude//cxx:cxx_flags.bzl", "cxx_flags_impl")
 load("@prelude//cxx:cxx_toolchain.bzl", "cxx_toolchain_extra_attributes", "cxx_toolchain_impl")
 load("@prelude//cxx:cxx_toolchain_types.bzl", "CxxPlatformInfo", "CxxToolchainInfo")
 load("@prelude//cxx:headers.bzl", "CPrecompiledHeaderInfo", "HeaderMode")
@@ -177,6 +179,7 @@ extra_implemented_rules = struct(
     prebuilt_dotnet_library = prebuilt_dotnet_library_impl,
     # c++
     cxx_binary = cxx_binary_impl,
+    cxx_flags = cxx_flags_impl,
     cxx_test = cxx_test_impl,
     cxx_toolchain = cxx_toolchain_impl,
     cxx_genrule = genrule_impl,
@@ -305,6 +308,7 @@ control how the dependencies of this library are linked, use `link_style` instea
         "third_party_project": attrs.option(attrs.string(), default = None),
         "_cxx_hacks": attrs.default_only(attrs.dep(default = "prelude//cxx/tools:cxx_hacks")),
         "_cxx_toolchain": toolchains_common.cxx(),
+        "_emit_native_build_commands": attrs.default_only(attrs.bool(default = EMIT_NATIVE_BUILD_COMMANDS)),
         "_is_building_android_binary": is_building_android_binary_attr(),
     }
     | apple_common.extra_xcode_sources()
@@ -312,6 +316,13 @@ control how the dependencies of this library are linked, use `link_style` instea
 )
 
 cxx_extra_attributes = {
+    "cxx_binary": {
+        "_gen_build_info": attrs.option(attrs.exec_dep(providers = [RunInfo]), default = None),
+        "_generated_build_info_data": attrs.option(attrs.source(), default = None),
+        "_generated_build_info_enabled": attrs.bool(default = False),
+        "_generated_build_info_mode": attrs.enum(["full", "stable"], default = "stable"),
+        "_generated_build_info_spec": BUILD_INFO_ATTR,
+    },
     "cxx_genrule": genrule_attributes()
     | {
         "_cxx_toolchain": toolchains_common.cxx(),
@@ -319,7 +330,14 @@ cxx_extra_attributes = {
     },
     "cxx_library": _cxx_extra_library_attrs,
     "cxx_precompiled_header": _cxx_extra_library_attrs,
-    "cxx_test": re_test_common.test_args(),
+    "cxx_test": re_test_common.test_args()
+    | {
+        "_gen_build_info": attrs.option(attrs.exec_dep(providers = [RunInfo]), default = None),
+        "_generated_build_info_data": attrs.option(attrs.source(), default = None),
+        "_generated_build_info_enabled": attrs.bool(default = False),
+        "_generated_build_info_mode": attrs.enum(["full", "stable"], default = "stable"),
+        "_generated_build_info_spec": BUILD_INFO_ATTR,
+    },
     "cxx_toolchain": cxx_toolchain_extra_attributes(is_toolchain_rule = False),
     "llvm_link_bitcode": {
         "_cxx_toolchain": toolchains_common.cxx(),
@@ -487,7 +505,22 @@ _python_extra_attributes = {
 }
 
 _rust_extra_attributes = {
-    "rust_test": {},
+    "rust_binary": {
+        "_gen_build_info": attrs.option(attrs.exec_dep(providers = [RunInfo]), default = None),
+        "_generated_build_info_args": attrs.list(attrs.arg(), default = []),
+        "_generated_build_info_data": attrs.option(attrs.source(), default = None),
+        "_generated_build_info_enabled": attrs.bool(default = False),
+        "_generated_build_info_mode": attrs.enum(["full", "stable"], default = "stable"),
+        "_generated_build_info_spec": BUILD_INFO_ATTR,
+    },
+    "rust_test": {
+        "_gen_build_info": attrs.option(attrs.exec_dep(providers = [RunInfo]), default = None),
+        "_generated_build_info_args": attrs.list(attrs.arg(), default = []),
+        "_generated_build_info_data": attrs.option(attrs.source(), default = None),
+        "_generated_build_info_enabled": attrs.bool(default = False),
+        "_generated_build_info_mode": attrs.enum(["full", "stable"], default = "stable"),
+        "_generated_build_info_spec": BUILD_INFO_ATTR,
+    },
 }
 
 _core_extra_attributes = (

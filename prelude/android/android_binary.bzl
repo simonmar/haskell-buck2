@@ -14,6 +14,7 @@ load(
     "AndroidBinaryNativeLibsInfo",  # @unused Used as type
     "AndroidBinaryResourcesInfo",  # @unused Used as type
     "AndroidBuildConfigInfo",  # @unused Used as type
+    "AndroidPreprocessedJavaClassesInfo",  # @unused Used as type
     "BuildConfigField",
     "DexFilesInfo",
     "merge_android_packageable_info",
@@ -27,8 +28,6 @@ load("@prelude//android:exopackage.bzl", "get_exopackage_flags")
 load("@prelude//android:preprocess_java_classes.bzl", "get_preprocessed_java_classes")
 load("@prelude//android:util.bzl", "create_enhancement_context")
 load("@prelude//android:voltron.bzl", "get_target_to_module_mapping")
-load("@prelude//java:dex.bzl", "get_dex_produced_from_java_library")
-load("@prelude//java:dex_toolchain.bzl", "DexToolchainInfo")
 load(
     "@prelude//java:java_providers.bzl",
     "JavaPackagingDep",  # @unused Used as type
@@ -40,18 +39,6 @@ load(
 load("@prelude//java:proguard.bzl", "get_proguard_output")
 load("@prelude//utils:expect.bzl", "expect")
 
-def _preprocessed_jars_args(jars: list[Artifact]):
-    return cmd_args(jars)
-
-# Holds the preprocessed jar set in a single node so that each pre_dex action can reference one
-# shared projection. Handing the raw list to every action instead retains a copy of it per action,
-# which is quadratic in the number of jars.
-PreprocessedJarsTSet = transitive_set(
-    args_projections = {
-        "jars": _preprocessed_jars_args,
-    },
-)
-
 AndroidBinaryInfo = record(
     sub_targets = dict,
     java_packaging_deps = list[JavaPackagingDep],
@@ -61,12 +48,14 @@ AndroidBinaryInfo = record(
     native_library_info = AndroidBinaryNativeLibsInfo,
     resources_info = AndroidBinaryResourcesInfo,
     materialized_artifacts = list[Artifact],
+    preprocessed_java_classes_info = AndroidPreprocessedJavaClassesInfo | None,
     validation_outputs = list[Artifact],
 )
 
 def get_binary_info(ctx: AnalysisContext, use_proto_format: bool) -> AndroidBinaryInfo:
     sub_targets = {}
     materialized_artifacts = []
+    preprocessed_java_classes_info = None
 
     deps_by_platform = get_deps_by_platform(ctx)
     primary_platform = CPU_FILTER_FOR_PRIMARY_PLATFORM if CPU_FILTER_FOR_PRIMARY_PLATFORM in deps_by_platform else CPU_FILTER_FOR_DEFAULT_PLATFORM
@@ -87,8 +76,6 @@ def get_binary_info(ctx: AnalysisContext, use_proto_format: bool) -> AndroidBina
         ctx.attrs.proguard_config != None or ctx.attrs.android_sdk_proguard_config == "default" or ctx.attrs.android_sdk_proguard_config == "optimized"
     )
     should_pre_dex = not ctx.attrs.disable_pre_dex and not has_proguard_config and not ctx.attrs.preprocess_java_classes_bash
-
-    preprocess_predex_merge = ctx.attrs.preprocess_java_classes_bash and not has_proguard_config and not ctx.attrs.disable_pre_dex
 
     enhancement_ctx = create_enhancement_context(ctx)
     if target_to_module_mapping_file:
@@ -132,7 +119,7 @@ def get_binary_info(ctx: AnalysisContext, use_proto_format: bool) -> AndroidBina
         use_proto_format = use_proto_format,
         referenced_resources_lists = referenced_resources_lists,
         manifest_entries = ctx.attrs.manifest_entries,
-        generate_strings_and_ids_separately = should_pre_dex or preprocess_predex_merge,
+        generate_strings_and_ids_separately = should_pre_dex,
         aapt2_preferred_density = ctx.attrs.aapt2_preferred_density,
     )
     sub_targets["manifest"] = [DefaultInfo(default_output = resources_info.manifest)]
@@ -157,7 +144,7 @@ def get_binary_info(ctx: AnalysisContext, use_proto_format: bool) -> AndroidBina
                 default_output = r_dot_java_info.source_zipped,
             ),
         ]
-    validation_outputs = []
+    validation_outputs = list(native_library_info.validation_outputs)
     dex_java_packaging_deps = [
         packaging_dep for packaging_dep in java_packaging_deps if packaging_dep.dex and packaging_dep.dex.dex.owner.raw_target() not in no_dx_target_labels
     ]
@@ -192,9 +179,9 @@ def get_binary_info(ctx: AnalysisContext, use_proto_format: bool) -> AndroidBina
             )
 
         if ctx.attrs.preprocess_java_classes_bash:
-            jars_to_owners, materialized_artifacts_dir = get_preprocessed_java_classes(enhancement_ctx, jars_to_owners)
-            if materialized_artifacts_dir:
-                materialized_artifacts.append(materialized_artifacts_dir)
+            jars_to_owners, preprocessed_java_classes_info = get_preprocessed_java_classes(enhancement_ctx, jars_to_owners)
+            if preprocessed_java_classes_info:
+                materialized_artifacts.append(preprocessed_java_classes_info.materialized_artifacts_dir)
         if has_proguard_config:
             additional_proguard_configs = (
                 [resources_info.proguard_config_file] if not ctx.attrs.ignore_aapt_proguard_config and resources_info.proguard_config_file else []
@@ -236,75 +223,7 @@ def get_binary_info(ctx: AnalysisContext, use_proto_format: bool) -> AndroidBina
         else:
             proguard_output = None
 
-        if preprocess_predex_merge:
-            dex_toolchain = ctx.attrs._dex_toolchain[DexToolchainInfo]
-            preprocessed_jars = list(jars_to_owners.keys())
-
-            # R.java jars are byte-light but field-heavy (one field per resource id) and are
-            # re-dexed from scratch here. Dexing them with the default weight factor packs the
-            # whole R.java jar into a single secondary dex, overflowing the 64K field-reference
-            # limit. Preserve the r_dot_java_weight_factor that compiled_r_dot_java_deps applies
-            # on the non-preprocessed path so R.java spreads across secondary dexes here too.
-            r_dot_java_jar_basenames = [dep.jar.basename for dep in compiled_r_dot_java_deps]
-
-            # Every jar desugars against the whole preprocessed set, so the classpath is identical
-            # for all of them. Share one projection and one classpath file rather than rebuilding
-            # both per jar.
-            desugar_deps = ctx.actions.tset(PreprocessedJarsTSet, value = preprocessed_jars).project_as_args("jars")
-            desugar_deps_file = ctx.actions.write(
-                "preprocessed_desugar_deps_file.txt",
-                desugar_deps,
-                has_content_based_path = True,
-            )
-            pre_dexed_libs = []
-            pre_dexed_artifacts_to_owners = {}
-            for jar in preprocessed_jars:
-                weight_factor = 1
-                for r_dot_java_jar_basename in r_dot_java_jar_basenames:
-                    if jar.basename.endswith(r_dot_java_jar_basename):
-                        weight_factor = android_toolchain.r_dot_java_weight_factor * 2
-                        break
-                pre_dexed_lib = get_dex_produced_from_java_library(
-                    ctx,
-                    dex_toolchain = dex_toolchain,
-                    jar_to_dex = jar,
-                    needs_desugar = True,
-                    desugar_deps = desugar_deps,
-                    weight_factor = weight_factor,
-                    desugar_deps_file = desugar_deps_file,
-                )
-                pre_dexed_libs.append(pre_dexed_lib)
-                if pre_dexed_lib.dex:
-                    pre_dexed_artifacts_to_owners[pre_dexed_lib.dex] = jars_to_owners[jar]
-            if ctx.attrs.use_split_dex:
-                multidex_min_api = ctx.attrs.multidex_min_api
-                if multidex_min_api == None:
-                    multidex_min_api = getattr(ctx.attrs, "_dex_min_sdk_version", None)
-                if multidex_min_api == None:
-                    multidex_min_api = ctx.attrs.min_sdk_version
-                if multidex_min_api != None and int(multidex_min_api) > 21 and not ctx.attrs.primary_dex_patterns:
-                    dex_files_info = get_multi_dex(
-                        ctx,
-                        android_toolchain,
-                        pre_dexed_artifacts_to_owners,
-                        ctx.attrs.primary_dex_patterns,
-                        apk_module_graph_file = target_to_module_mapping_file,
-                        enable_bootstrap_dexes = ctx.attrs.enable_bootstrap_dexes,
-                        multidex_min_api = str(multidex_min_api),
-                        pre_dexed_inputs = True,
-                    )
-                else:
-                    dex_files_info = merge_to_split_dex(
-                        ctx,
-                        android_toolchain,
-                        pre_dexed_libs,
-                        get_split_dex_merge_config(ctx, android_toolchain),
-                        target_to_module_mapping_file,
-                        enable_bootstrap_dexes = ctx.attrs.enable_bootstrap_dexes,
-                    )
-            else:
-                dex_files_info = merge_to_single_dex(ctx, android_toolchain, pre_dexed_libs)
-        elif ctx.attrs.use_split_dex:
+        if ctx.attrs.use_split_dex:
             dex_files_info = get_multi_dex(
                 ctx,
                 android_toolchain,
@@ -344,6 +263,7 @@ def get_binary_info(ctx: AnalysisContext, use_proto_format: bool) -> AndroidBina
         native_library_info = native_library_info,
         resources_info = resources_info,
         materialized_artifacts = materialized_artifacts,
+        preprocessed_java_classes_info = preprocessed_java_classes_info,
         validation_outputs = validation_outputs,
     )
 

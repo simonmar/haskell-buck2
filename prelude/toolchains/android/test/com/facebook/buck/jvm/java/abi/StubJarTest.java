@@ -12,7 +12,6 @@ package com.facebook.buck.jvm.java.abi;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.fail;
 
 import com.facebook.buck.cd.model.java.AbiGenerationMode;
 import com.facebook.buck.core.filesystems.AbsPath;
@@ -97,11 +96,33 @@ public class StubJarTest {
   }
 
   public boolean isKotlin22() {
-    return EnvVariablesProvider.getSystemEnv().get("KOTLIN_VERSION").equals("2.2.0");
+    return isKotlinVersion("2.2");
+  }
+
+  public boolean isKotlin23() {
+    return isKotlinVersion("2.3");
   }
 
   public boolean isKotlin20() {
-    return EnvVariablesProvider.getSystemEnv().get("KOTLIN_VERSION").equals("2.0.20");
+    return isKotlinVersion("2.0");
+  }
+
+  private boolean isKotlinVersion(String majorMinor) {
+    return EnvVariablesProvider.getSystemEnv().get("KOTLIN_VERSION").startsWith(majorMinor + ".");
+  }
+
+  private String metadataForKotlinVersion(String metadata22, String metadata20) {
+    if (isKotlin23()) {
+      String kotlin22Version = "mv={2, 2, 0}";
+      if (!metadata22.contains(kotlin22Version)) {
+        throw new IllegalArgumentException("Missing Kotlin 2.2 metadata version: " + metadata22);
+      }
+      return metadata22.replace(kotlin22Version, "mv={2, 3, 0}");
+    }
+    if (isKotlin22()) {
+      return metadata22;
+    }
+    return metadata20;
   }
 
   private static final ImmutableSortedSet<Path> EMPTY_CLASSPATH = ImmutableSortedSet.of();
@@ -169,7 +190,7 @@ public class StubJarTest {
             "",
             "  // compiled from: A.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "",
             "  // access flags 0x1",
             "  public <init>()V",
@@ -300,7 +321,7 @@ public class StubJarTest {
             "",
             "  // compiled from: A.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "",
             "  // access flags 0x1",
             "  public <init>()V",
@@ -384,7 +405,7 @@ public class StubJarTest {
             "",
             "  // compiled from: A.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "",
             "  // access flags 0x1",
             "  public <init>()V",
@@ -469,7 +490,7 @@ public class StubJarTest {
             "",
             "  // compiled from: A.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "",
             "  // access flags 0x1",
             "  public <init>()V",
@@ -548,7 +569,7 @@ public class StubJarTest {
             "",
             "  // compiled from: A.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "",
             "  // access flags 0x1",
             "  public <init>()V",
@@ -671,7 +692,7 @@ public class StubJarTest {
             "",
             "  OUTERCLASS com/example/buck/AKt test (I)Lkotlin/jvm/functions/Function0;",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "  // access flags 0x19",
             "  public final static INNERCLASS com/example/buck/AKt$test$1 null null",
             "",
@@ -788,10 +809,13 @@ public class StubJarTest {
             "",
             "  OUTERCLASS com/example/buck/AKt test ()Lkotlin/jvm/functions/Function2;",
             "",
-            "  @Lkotlin/coroutines/jvm/internal/DebugMetadata;(f=\"A.kt\", l={}, i={}, s={}, n={},"
-                + " m=\"invokeSuspend\", c=\"com.example.buck.AKt$test$1\")",
+            isKotlin23()
+                ? "  @Lkotlin/coroutines/jvm/internal/DebugMetadata;(f=\"A.kt\", l={}, nl={}, i={},"
+                    + " s={}, n={}, m=\"invokeSuspend\", c=\"com.example.buck.AKt$test$1\", v=2)"
+                : "  @Lkotlin/coroutines/jvm/internal/DebugMetadata;(f=\"A.kt\", l={}, i={}, s={},"
+                    + " n={}, m=\"invokeSuspend\", c=\"com.example.buck.AKt$test$1\")",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "  // access flags 0x19",
             "  public final static INNERCLASS com/example/buck/AKt$test$1 null null",
             "",
@@ -984,7 +1008,7 @@ public class StubJarTest {
             "",
             "  OUTERCLASS com/example/buck/AKt test (I)Lkotlin/jvm/functions/Function1;",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "  // access flags 0x19",
             "  public final static INNERCLASS com/example/buck/AKt$test$1 null null",
             "  // access flags 0x19",
@@ -1062,7 +1086,7 @@ public class StubJarTest {
             "  // compiled from: A.kt",
             "  OUTERCLASS com/example/buck/AKt$test$1 invoke (I)Lkotlin/jvm/functions/Function1;",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "  // access flags 0x19",
             "  public final static INNERCLASS com/example/buck/AKt$test$1 null null",
             "  // access flags 0x19",
@@ -1180,7 +1204,7 @@ public class StubJarTest {
             "",
             "  // compiled from: A.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "",
             "  // access flags 0x1",
             "  public <init>()V",
@@ -1250,7 +1274,7 @@ public class StubJarTest {
             "",
             "  // compiled from: A.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "",
             "  // access flags 0x1",
             "  public <init>()V",
@@ -1385,7 +1409,7 @@ public class StubJarTest {
             "",
             "  // compiled from: B.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "",
             "  // access flags 0x19",
             "  public final static getString(Lcom/example/buck/A;)Ljava/lang/String;",
@@ -1442,9 +1466,9 @@ public class StubJarTest {
             "",
             "  OUTERCLASS com/example/buck/BKt getString (Lcom/example/buck/A;)Ljava/lang/String;",
             "",
-            isKotlin22()
-                ? "  @Lkotlin/Metadata;(mv={2, 2, 0}, k=3, xi=176)"
-                : "  @Lkotlin/Metadata;(mv={2, 0, 0}, k=3, xi=176)",
+            metadataForKotlinVersion(
+                "  @Lkotlin/Metadata;(mv={2, 2, 0}, k=3, xi=176)",
+                "  @Lkotlin/Metadata;(mv={2, 0, 0}, k=3, xi=176)"),
             "  // access flags 0x19",
             "  public final static INNERCLASS com/example/buck/BKt$getString$1 null null",
             "",
@@ -1573,7 +1597,7 @@ public class StubJarTest {
             "",
             "  // compiled from: A.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "",
             "  // access flags 0x1",
             "  public <init>()V",
@@ -1682,9 +1706,9 @@ public class StubJarTest {
             "  OUTERCLASS com/example/buck/A someMethod$default"
                 + " (Lcom/example/buck/A;Lkotlin/jvm/functions/Function1;ILjava/lang/Object;)V",
             "",
-            isKotlin22()
-                ? "  @Lkotlin/Metadata;(mv={2, 2, 0}, k=3, xi=176)"
-                : "  @Lkotlin/Metadata;(mv={2, 0, 0}, k=3, xi=176)",
+            metadataForKotlinVersion(
+                "  @Lkotlin/Metadata;(mv={2, 2, 0}, k=3, xi=176)",
+                "  @Lkotlin/Metadata;(mv={2, 0, 0}, k=3, xi=176)"),
             "  // access flags 0x19",
             "  public final static INNERCLASS com/example/buck/A$someMethod$1 null null",
             "",
@@ -1832,7 +1856,7 @@ public class StubJarTest {
             "",
             "  // compiled from: B.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "",
             "  // access flags 0x19",
             "  public final static useSomeInterface(Lcom/example/buck/A;)V",
@@ -1884,7 +1908,7 @@ public class StubJarTest {
             "",
             "  OUTERCLASS com/example/buck/BKt useSomeInterface (Lcom/example/buck/A;)V",
             "",
-            isKotlin22() ? innerMetadata21 : innerMetadata20,
+            metadataForKotlinVersion(innerMetadata21, innerMetadata20),
             "  // access flags 0x609",
             "  public static abstract INNERCLASS com/example/buck/A$SomeInterface"
                 + " com/example/buck/A SomeInterface",
@@ -2016,7 +2040,7 @@ public class StubJarTest {
             "",
             "  // compiled from: B.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "  // access flags 0x9",
             "  public static INNERCLASS com/example/buck/B$C com/example/buck/B C",
             "",
@@ -2031,7 +2055,7 @@ public class StubJarTest {
             "",
             "  // compiled from: B.kt",
             "",
-            isKotlin22() ? innerMetadata21 : innerMetadata20,
+            metadataForKotlinVersion(innerMetadata21, innerMetadata20),
             "  // access flags 0x9",
             "  public static INNERCLASS com/example/buck/B$C com/example/buck/B C",
             "",
@@ -2088,7 +2112,7 @@ public class StubJarTest {
             "",
             "  OUTERCLASS com/example/buck/B$C useSomeInterface ()V",
             "",
-            isKotlin22() ? innerInnerMetadata21 : innerInnerMetadata20,
+            metadataForKotlinVersion(innerInnerMetadata21, innerInnerMetadata20),
             "  // access flags 0x609",
             "  public static abstract INNERCLASS com/example/buck/A$SomeInterface"
                 + " com/example/buck/A SomeInterface",
@@ -2209,7 +2233,7 @@ public class StubJarTest {
             "",
             "  // compiled from: B.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "",
             "  // access flags 0x19",
             "  // signature"
@@ -2277,9 +2301,9 @@ public class StubJarTest {
             "  // compiled from: B.kt",
             "  OUTERCLASS com/example/buck/BKt null",
             "",
-            isKotlin22()
-                ? "  @Lkotlin/Metadata;(mv={2, 2, 0}, k=3, xi=176)"
-                : "  @Lkotlin/Metadata;(mv={2, 0, 0}, k=3, xi=176)",
+            metadataForKotlinVersion(
+                "  @Lkotlin/Metadata;(mv={2, 2, 0}, k=3, xi=176)",
+                "  @Lkotlin/Metadata;(mv={2, 0, 0}, k=3, xi=176)"),
             "  // access flags 0x19",
             "  public final static INNERCLASS com/example/buck/BKt$sam$i$java_lang_Runnable$0 null"
                 + " null",
@@ -4308,7 +4332,7 @@ public class StubJarTest {
             "",
             "  // compiled from: A.kt",
             "",
-            isKotlin22() ? innerMetadata21 : innerMetadata20,
+            metadataForKotlinVersion(innerMetadata21, innerMetadata20),
             "  // access flags 0x1A",
             "  private final static INNERCLASS com/example/buck/A$B com/example/buck/A B",
             "",
@@ -4329,7 +4353,7 @@ public class StubJarTest {
             "",
             "  // compiled from: A.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "  // access flags 0x1A",
             "  private final static INNERCLASS com/example/buck/A$B com/example/buck/A B",
             "",
@@ -5699,7 +5723,7 @@ public class StubJarTest {
             "",
             "  // compiled from: A.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "",
             "  // access flags 0x1",
             "  public <init>()V",
@@ -5811,7 +5835,7 @@ public class StubJarTest {
             "",
             "  // compiled from: A.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "",
             "  // access flags 0x1",
             "  public <init>()V",
@@ -7562,7 +7586,7 @@ public class StubJarTest {
             "",
             "  // compiled from: Obj.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "",
             "  // access flags 0x19",
             "  public final static Lcom/example/buck/Obj; INSTANCE",
@@ -7635,7 +7659,7 @@ public class StubJarTest {
             "",
             "  // compiled from: A.kt",
             "",
-            isKotlin22() ? metadata22 : metadata20,
+            metadataForKotlinVersion(metadata22, metadata20),
             "",
             "  // access flags 0x1",
             "  public <init>()V",
@@ -7828,7 +7852,6 @@ public class StubJarTest {
 
     private final List<String> expectedStubDirectory = new ArrayList<>();
     private final List<String> actualStubDirectory = new ArrayList<>();
-    private final List<String> actualFullDirectory = new ArrayList<>();
     private final Map<String, List<String>> expectedFullAbis = new HashMap<>();
     private final Map<String, List<String>> actualFullAbis = new HashMap<>();
     private final Map<String, List<String>> expectedStubs = new HashMap<>();
@@ -7860,7 +7883,6 @@ public class StubJarTest {
 
     private void resetActuals() {
       actualStubDirectory.clear();
-      actualFullDirectory.clear();
       actualFullAbis.clear();
       actualStubs.clear();
       stubJarPath = null;
@@ -8210,70 +8232,6 @@ public class StubJarTest {
       assertNotEquals(originalHash, Files.asByteSource(stubJarPath.toFile()).hash(Hashing.sha1()));
     }
 
-    @SuppressWarnings("unused")
-    public Tester dumpTestCode(boolean includeFullAbi) throws IOException {
-      if (includeFullAbi) {
-        compileFullJar();
-        dumpFullJarAbi();
-      }
-      createStubJar();
-      dumpStubJar();
-
-      String indent = "            ";
-      StringBuilder result = new StringBuilder();
-      result.append("Test lines:\n");
-      result.append("    tester\n");
-      result.append("        .setSourceFile(\n");
-      result.append(indent);
-      result.append('"');
-      result.append(sourceFileName);
-      for (String sourceLine : sourceFileContents.split("\n")) {
-        result.append("\",\n");
-        result.append(indent);
-        result.append('"');
-        result.append(sourceLine.replace("\"", "\\\""));
-      }
-      result.append("\")\n");
-      for (String fileName : actualFullDirectory) {
-        if (fileName.endsWith("/") || fileName.equals(JarFile.MANIFEST_NAME)) {
-          continue;
-        }
-        if (includeFullAbi) {
-          result.append("        .addExpectedFullAbi(\n");
-          result.append(indent);
-          result.append('"');
-          result.append(fileName, 0, fileName.length() - ".class".length());
-
-          for (String abiLine : actualFullAbis.get(fileName)) {
-            result.append("\",\n");
-            result.append(indent);
-            result.append('"');
-            result.append(abiLine.replace("\"", "\\\""));
-          }
-          result.append("\")\n");
-        }
-
-        if (actualStubs.containsKey(fileName)) {
-          result.append("        .addExpectedStub(\n");
-          result.append(indent);
-          result.append('"');
-          result.append(fileName, 0, fileName.length() - ".class".length());
-
-          for (String stubLine : actualStubs.get(fileName)) {
-            result.append("\",\n");
-            result.append(indent);
-            result.append('"');
-            result.append(stubLine.replace("\"", "\\\""));
-          }
-          result.append("\")\n");
-        }
-      }
-      result.append("        .createAndCheckStubJar();\n");
-
-      fail(result.toString());
-      return this;
-    }
-
     protected void dumpStubJar() throws IOException {
       try (JarFile file = new JarFile(stubJarPath.toFile())) {
         Iterable<JarEntry> entries = file.stream()::iterator;
@@ -8299,7 +8257,6 @@ public class StubJarTest {
           if (JarFile.MANIFEST_NAME.equals(name)) {
             continue;
           }
-          actualFullDirectory.add(name);
           actualFullAbis.put(
               name,
               new JarDumper()

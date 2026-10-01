@@ -15,6 +15,7 @@ import com.facebook.buck.installer.android.AndroidInstallErrorTag
 import com.facebook.buck.installer.android.AndroidInstallException
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.Paths
 import java.security.MessageDigest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -30,6 +31,7 @@ import org.mockito.kotlin.eq
 import org.mockito.kotlin.inOrder
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
+import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 
@@ -257,22 +259,49 @@ class AndroidDeviceImplTest {
 
   @Test
   fun testIsEmulator() {
+    // A device caches the read-only properties it reads, so each case needs its own instance.
     // Setup for non-emulator
     whenever(mockAdbUtils.executeAdbShellCommand("getprop ro.kernel.qemu", serialNumber))
         .thenReturn("0")
 
-    assertFalse(androidDevice.isEmulator)
+    assertFalse(AndroidDeviceImpl(serialNumber, mockAdbUtils).isEmulator)
 
     // Setup for emulator
     whenever(mockAdbUtils.executeAdbShellCommand("getprop ro.kernel.qemu", serialNumber))
         .thenReturn("1")
 
-    assertTrue(androidDevice.isEmulator)
+    assertTrue(AndroidDeviceImpl(serialNumber, mockAdbUtils).isEmulator)
 
     // Setup for Genymotion device
     whenever(mockAdbUtils.executeAdbShellCommand("getprop ro.kernel.qemu", serialNumber))
         .thenReturn("0")
     assertTrue(AndroidDeviceImpl("192.168.57.101:5555", mockAdbUtils).isEmulator)
+  }
+
+  @Test
+  fun testReadOnlyPropertiesAreOnlyQueriedOnce() {
+    whenever(mockAdbUtils.executeAdbShellCommand("getprop ro.product.cpu.abilist", serialNumber))
+        .thenReturn("arm64-v8a")
+
+    androidDevice.getDeviceAbis()
+    androidDevice.getDeviceAbis()
+    androidDevice.getProperty("ro.product.cpu.abilist")
+
+    verify(mockAdbUtils, times(1))
+        .executeAdbShellCommand("getprop ro.product.cpu.abilist", serialNumber)
+  }
+
+  /** Anything outside `ro.` can change mid-install, so it must be read through every time. */
+  @Test
+  fun testMutablePropertiesAreNotCached() {
+    whenever(mockAdbUtils.executeAdbShellCommand("getprop sys.boot_completed", serialNumber))
+        .thenReturn("1")
+
+    androidDevice.getProperty("sys.boot_completed")
+    androidDevice.getProperty("sys.boot_completed")
+
+    verify(mockAdbUtils, times(2))
+        .executeAdbShellCommand("getprop sys.boot_completed", serialNumber)
   }
 
   @Test
@@ -833,5 +862,44 @@ class AndroidDeviceImplTest {
         .verify(mockAdbUtils)
         .executeAdbCommand(eq("uninstall com.meta.ar.helixserver"), eq(serialNumber), any())
     inOrder.verify(mockAdbUtils).executeAdbCommand(eq(plainInstall), eq(serialNumber), any())
+  }
+
+  @Test
+  fun testInstallBuildUuidFileSetsTheUmaskInTheShellThatWritesTheFile() {
+    val result =
+        androidDevice.installBuildUuidFile(
+            Paths.get("/data/local/tmp/build_metadata"),
+            packageName,
+            "some-build-uuid",
+        )
+
+    // One command, not two: `umask` is per-process, so one set in its own `adb shell` is gone by
+    // the time a second shell's redirect creates the file, which then takes adbd's default mode
+    // rather than 0644. Pinning the single chained command is what holds that.
+    assertTrue(result)
+    verify(mockAdbUtils)
+        .executeAdbShellCommand(
+            "umask 022 && mkdir -p /data/local/tmp/build_metadata/$packageName && " +
+                "echo some-build-uuid > /data/local/tmp/build_metadata/$packageName/build_uuid.txt",
+            serialNumber,
+            false,
+        )
+  }
+
+  @Test
+  fun testInstallBuildUuidFileDoesNotFailTheInstallWhenTheDeviceRefusesTheWrite() {
+    // doAnswer, not thenThrow: Kotlin emits no `throws` clause, so Mockito rejects a checked
+    // exception as a stubbed one even though the code under test can observe it.
+    doAnswer { throw AdbCommandFailedException("read-only file system") }
+        .whenever(mockAdbUtils)
+        .executeAdbShellCommand(any(), eq(serialNumber), any())
+
+    assertTrue(
+        androidDevice.installBuildUuidFile(
+            Paths.get("/data/local/tmp/build_metadata"),
+            packageName,
+            "some-build-uuid",
+        ),
+    )
   }
 }
