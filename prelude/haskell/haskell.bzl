@@ -90,6 +90,7 @@ load(
     "is_haskell_src",
     "output_extensions",
     "src_to_module_name",
+    "module_name_to_file",
     "srcs_to_pairs",
 )
 load(
@@ -369,10 +370,10 @@ def haskell_prebuilt_library_impl(ctx: AnalysisContext) -> list[Provider]:
 
 def _srcs_to_objfiles(ctx: AnalysisContext, odir: Artifact, osuf: str) -> list[Artifact]:
     objfiles = []
-    for src, _ in srcs_to_pairs(ctx.attrs.srcs):
+    for modl, src in srcs_to_pairs(ctx.attrs.srcs):
         # Don't link boot sources, as they're only meant to be used for compiling.
         if is_haskell_src(src):
-            objfiles.append(odir.project(paths.replace_extension(src, "." + osuf)))
+            objfiles.append(odir.project(module_name_to_file(modl, osuf)))
     return objfiles
 
 _REGISTER_PACKAGE = """\
@@ -437,7 +438,7 @@ def _make_package(
     hi_link_style = hi_link_style if hi_link_style != None else link_style
 
     # Don't expose boot sources, as they're only meant to be used for compiling.
-    modules = [src_to_module_name(x) for x, _ in srcs_to_pairs(ctx.attrs.srcs) if is_haskell_src(x)]
+    modules = [x for x, src in srcs_to_pairs(ctx.attrs.srcs) if is_haskell_src(src)]
 
     if enable_profiling:
         # Add the `-p` suffix otherwise ghc will look for objects

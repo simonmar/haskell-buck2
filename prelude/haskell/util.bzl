@@ -42,15 +42,18 @@ def srcs_to_pairs(srcs) -> list[(str, Artifact)]:
     if type(srcs) == type({}):
         return srcs.items()
     else:
-        return [(src.short_path, src) for src in srcs]
+        return [(src_to_module_name(src.short_path), src) for src in srcs]
 
-def is_haskell_src(x: str) -> bool:
-    _, ext = paths.split_extension(x)
+def is_haskell_src(x: Artifact) -> bool:
+    _, ext = paths.split_extension(x.short_path)
     return ext in HASKELL_EXTENSIONS
 
 def src_to_module_name(x: str) -> str:
     base, _ext = paths.split_extension(x)
     return base.replace("/", ".")
+
+def module_name_to_file(x: str, ext: str) -> str:
+    return x.replace(".", "/") + "." + ext
 
 def attr_deps(ctx: AnalysisContext) -> list[Dependency]:
     return ctx.attrs.deps

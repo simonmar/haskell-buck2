@@ -21,6 +21,8 @@
 
 load("//buck2:alex_happy.bzl", "alex", "happy")
 load("//buck2:hsc2hs.bzl", "hsc2hs")
+load("@prelude//haskell/util.bzl", "src_to_module_name")
+load("@prelude//paths.bzl", "paths")
 
 # Packages implicitly needed by every Haskell target.
 AUTO_PACKAGES = ["base", "rts"]
@@ -206,15 +208,8 @@ def hs_module_path(path):
             return path[:-len(ext)] + ".hs"
     return path
 
-def _resolve_src(name, path, src, deps, hsc_flags):
-    # `path` is the module-derived path this source should end up at (e.g.
-    # what its module name maps to); `src` is the actual file, which may
-    # differ from `path` for a source living outside its module's directory
-    # layout (see the dict form of `srcs`, below). Whatever we return here
-    # always ends up in a plain *list* passed to the native rule - srcs as a
-    # dict is deprecated - so every branch must produce an artifact whose
-    # own path already matches `path`.
-    out = hs_module_path(path)
+def _resolve_src(name, src, deps, hsc_flags):
+    out = paths.replace_extension(src, ".hs")
     if src.endswith(".hsc"):
         rule_name = name + "-hsc-" + out.replace("/", "_")
         hsc2hs(name = rule_name, hsc_file = src, out = out, deps = deps, extra_flags = hsc_flags)
@@ -227,41 +222,12 @@ def _resolve_src(name, path, src, deps, hsc_flags):
         rule_name = name + "-happy-" + out.replace("/", "_")
         happy(name = rule_name, src = src, out = out)
         return ":" + rule_name
-    elif path == src or src.endswith("[" + path + "]"):
-        # Already at the right path: either a real file living exactly
-        # there, or a sub-target reference (e.g. from thrift_compile() via
-        # thrift_library() in thrift.bzl) whose bracketed key already
-        # equals `path` - its own artifact's
-        # short_path is already correct, so relocating it again would just
-        # be a redundant copy.
-        return src
     else:
-        # A real (already-.hs) source that doesn't live at its module path -
-        # relocate it with export_file() (the same ctx.actions.copy_file()
-        # primitive export_file.bzl itself uses), so the native rule always
-        # sees a correctly-pathed source. This is what makes a module
-        # registered correctly in the package db even when nothing in this
-        # target imports it directly (i.e. it's only consumed by a *different*
-        # target depending on this one) - confirmed empirically: a plain
-        # (non-relocated) src with the wrong derived path still compiles
-        # within its own target (GHC resolves same-target imports from the
-        # sources' own `module X where` headers, not buck2's bookkeeping),
-        # but a cross-target `import` of it fails, since haskell_library()
-        # registers the *derived* path as the exposed module name.
-        rule_name = name + "-mv-" + path.replace("/", "_")
-        native.export_file(name = rule_name, src = src, out = path)
-        return ":" + rule_name
+        return src
 
-# `srcs` is usually a list, where each file's own path (relative to this
-# BUCK package) determines its module name. A dict `{modulePath: file}` is
-# also accepted for the rare case where a source doesn't live at the path
-# its module name implies (e.g. a shared `plugins/` directory holding
-# modules that belong under the main package's namespace) - internally
-# resolved to a plain list (see _resolve_src) since dict-form srcs on the
-# native rule is deprecated.
 def _resolve_srcs(name, srcs, deps, hsc_flags):
-    items = srcs.items() if type(srcs) == type({}) else [(src, src) for src in srcs]
-    return [_resolve_src(name, path, src, deps, hsc_flags) for path, src in items]
+    items = srcs.items() if type(srcs) == type({}) else [(src_to_module_name(src), src) for src in srcs]
+    return { modl: _resolve_src(name, src, deps, hsc_flags) for modl, src in items }
 
 def haskell_library(
         name,
