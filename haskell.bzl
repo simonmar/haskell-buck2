@@ -1,6 +1,8 @@
-# Wrappers around the native haskell_library()/haskell_binary() rules.
+# Wrappers around the native haskell_library()/haskell_binary() rules, and
+# a haskell_test() rule.
 #
 # These handle:
+#   - build modes: e.g. `-m opt` selects optimisation + static linking
 #   - package deps: `packages = ["text", ...]` instead of explicit
 #     `"@third-party-haskell//:text"` entries in `deps`.
 #   - a standard set of packages (base, rts) added to every target.
@@ -10,14 +12,10 @@
 #     listed in `deps`, same as any other buck2 target.
 #   - alex/happy: any `.x`/`.y` file in `srcs` is automatically run through
 #     the corresponding tool (see buck2/alex_happy.bzl).
-#   - a source living somewhere other than its module name implies (e.g. a
-#     shared `plugins/` directory) is relocated with export_file() rather
-#     than passed via the dict form of `srcs`, which is deprecated - see
-#     `srcs` given as a dict below.
-#
-# Note on -threaded: it only needs to reach the final link (it selects which
-# RTS to link against), not the per-module compile step, so pass it via
-# linker_flags on haskell_binary(), not compiler_flags.
+#   - support for build rules generated from Cabal packages:
+#     - `cabal_component = (pkg, component)` causes this component's
+#       `cabal_macros.h` file to be included when `{-# LANGUAGE CPP #-}`
+#       is on.
 
 load("//buck2:alex_happy.bzl", "alex", "happy")
 load("//buck2:hsc2hs.bzl", "hsc2hs")
@@ -39,21 +37,8 @@ def _cabal_macros_include_flags(cabal_component):
     label = "//" + autogen_dir + ":" + component + "-cabal-macros"
     return ["-optP-include", "-optP$(location " + label + ")"]
 
-# Build modes selected via `buck2 build ... -m
-# root//buck2/constraints:opt` (`dev` is the default - see the root
-# PACKAGE file). `dev` matches this migration's original, only
-# behaviour (shared libs, no optimisation - fast to rebuild); `opt` is
-# what an actual deployed `glean` binary wants (a single static
-# binary, optimised). Centralized here rather than passed by each BUCK
-# file, the same reasoning as FB_HASKELL_EXTENSIONS above - one place
-# to change, automatically applied to every haskell_library()/
-# haskell_binary() in the tree.
-#
-# `prof` (buck2/constraints/BUCK) also forces static, regardless of
-# dev/opt - GHC doesn't support profiled *shared* libraries (the prelude's
-# own haskell_library() build loop silently skips that combination), so
-# this needs its own nested arm rather than just concatenating with the
-# opt/dev choice, the same shape as cxx.bzl's asan+opt interaction.
+# Link style for executables: the default is dynamic, opt is static, and prof
+# must also be static - GHC doesn't support prof/dynamic.
 _BUILD_MODE_LINK_STYLE = select({
     "root//buck2/constraints:prof": "static",
     "DEFAULT": select({
@@ -62,48 +47,11 @@ _BUILD_MODE_LINK_STYLE = select({
     }),
 })
 
-# GHC's `-O` (Cabal's own default build has no explicit -O0/-O1/-O2
-# anywhere in glean.cabal.in, so `dev` matches that; `opt` turns on GHC's
-# standard optimisation level).
 _BUILD_MODE_HASKELL_FLAGS = select({
     "root//buck2/constraints:opt": ["-O"],
     "DEFAULT": [],
 })
 
-# haskell_library()'s own `preferred_linkage` (native prelude attr, not
-# something this file invented) - "any" (the native default, and this
-# project's own default before this) always builds *both* output
-# styles for every library, regardless of whether the final binary
-# consuming it ever uses one of them - confirmed directly: even a plain
-# `dev`-mode build (link_style "shared" everywhere) produces a real
-# `lib-static/lib....a` for every single haskell_library() in the tree.
-# That's not just idle disk space: prelude/haskell/haskell.bzl's own
-# `build_shared_too` is true whenever *both* static and shared output
-# styles are wanted for a `dynamic_ghc` toolchain (see that field's own
-# comment) - true for "any" unconditionally - so `dev` mode has been
-# doing a full extra `-dynamic-too` static-way compile of every single
-# Haskell module in the tree for no reason: nothing in `dev` mode ever
-# *links* the static way (every dev-mode `haskell_binary()` links
-# "shared" - see `_BUILD_MODE_LINK_STYLE` above), so that compile's own
-# output - the static archive - never actually gets used for anything.
-# `shared` linkage (`get_output_styles_for_linkage` in the vendored
-# `prelude/linking/link_info.bzl`) still produces a `pic_archive` (a
-# cheap `ar`-bundle of the same `-fPIC` objects the shared library
-# needs anyway - archiving doesn't link against anything, so this is a
-# side effect of the *same* compile, not a second one) alongside the
-# real `shared_lib`, just not the independently-compiled plain `archive`
-# only "any"/"static" produce - which is exactly the one `dynamic_too`
-# was fusing into every dev-mode compile for nothing.
-#
-# `prof`/`opt` both stay "any": `haskell_library_impl` itself already
-# special-cases enable_profiling + preferred_linkage=="any" (forcing
-# static, since GHC can't profile shared libraries) - giving it "any"
-# here is what lets that existing check fire correctly, rather than
-# duplicating "static" decisions in two places. `opt` genuinely can
-# need both ways (e.g. a target reached once via the ordinary opt
-# target platform and once via `root//buck2/platforms:exec-opt`, or
-# `haskell_prebuilt_library()` consumers expecting either), so it keeps
-# the original, safe "any" rather than narrowing like `dev` does.
 _BUILD_MODE_PREFERRED_LINKAGE = select({
     "root//buck2/constraints:prof": "any",
     "DEFAULT": select({
@@ -112,77 +60,6 @@ _BUILD_MODE_PREFERRED_LINKAGE = select({
     }),
 })
 
-# Why the toolchain needs to know whether GHC was linked dynamically
-# (dynamic_ghc):
-#
-# 1. Template Haskell splices need every package loadable the *dynamic*
-#    way: a dynamically-linked `ghc` binary's internal splice
-#    interpreter can only load packages that were also built the
-#    dynamic way - not a property of Template Haskell itself, just how
-#    that GHC binary happens to be built. (A *statically* linked GHC
-#    doesn't have this requirement at all - it never dlopen's anything
-#    for splices - which is exactly why this is now toolchain-derived
-#    rather than always-on.) Tried `-fexternal-interpreter` first (runs
-#    splices in a separate, non-dynamic `ghc-iserv` process instead),
-#    but that has two hard problems of its own, confirmed via direct
-#    GHC repros with no buck2 involved: `ghc-iserv`'s internal object
-#    loader can't handle the ELF TLS relocations modern C++ (e.g.
-#    folly) generates, and it eagerly loads *every* exposed package's
-#    native closure for the whole `ghc --make` session the moment any
-#    one splice needs it, not just that splice's own transitive deps.
-#    Using real dynamic linking instead (matching what Cabal already
-#    does) sidesteps both: a `.so`'s native deps resolve automatically
-#    via `DT_NEEDED`, and the OS dynamic linker (unlike GHC's internal
-#    one) handles every relocation type.
-#
-#    Crucially, this isn't just a `link_style = "static"` concern: GHC's
-#    splice interpreter needs a dynamic interface for a package whenever
-#    *any* consumer, anywhere in the build, needs that package in its
-#    *static* form and performs a splice reaching it - and a single
-#    compiled instance of a library is shared by every consumer
-#    regardless of each one's own link_style, so there's no way for a
-#    library to know at its own definition site whether some downstream
-#    binary somewhere will need it statically. Learned this the hard way:
-#    forcing `link_style = "static"` on one binary
-#    (`hsthrift//compiler:thrift-compiler`) broke a *different* library
-#    three hops away (`common/mangle`, via `fb-util`'s own `$(mangle
-#    ...)` splices) with "Failed to load dynamic interface file for
-#    Mangle.TH: ... hi-static/Mangle/TH.dyn_hi: ... does not exist" -
-#    fixed at the time by adding `dynamic_too = True` to that one
-#    library, which is exactly the wrong shape of fix (would need
-#    repeating for every library anything might ever reach statically,
-#    forever) - toolchain-wide (now: whenever GHC is dynamic) is the
-#    only version of this that's actually correct.
-#
-# 2. It's a pure efficiency win whenever a library builds both link
-#    styles anyway (`preferred_linkage = "any"`, the default - i.e.
-#    nearly always): see `build_shared_too` in `prelude/haskell/
-#    haskell.bzl` - when set, the *shared* way's compile is skipped
-#    entirely and derived from the *static* way's own `-dynamic-too`
-#    byproduct instead of two independent compiles (`prelude/haskell/
-#    compile.bzl`'s own comment on `dynamic_too` - GHC also guarantees
-#    the two interfaces are consistent with each other this way, sharing
-#    one compile's frontend work, unlike two independently-compiled
-#    variants). So this was never actually saving anything by being off
-#    in `dev` mode - it was doing strictly more work (two full compiles)
-#    for the same two outputs `preferred_linkage = "any"` already
-#    produces regardless (whenever GHC is dynamic - see point 1).
-#
-# `prof` needs the same treatment for the same underlying reason (this
-# GHC binary, not Template Haskell itself) but can't reuse `-dynamic-too`
-# for its *own* profiled compile pass (`-prof -dynamic-too` would mean a
-# profiled *and* dynamic secondary way, which GHC doesn't support) - no
-# special-casing needed here though: the prelude's own haskell_library()
-# already builds both `enable_profiling` values for every library
-# (compile.bzl's `build_shared_too` is forced off specifically for the
-# profiled pass, on regardless for the non-profiled one), so a dynamic
-# GHC's non-profiled pass already produces the dynamic way TH needs -
-# the profiled pass is untouched.
-
-# See buck2/constraints/BUCK's own comment: no Cabal `profiling` flag to
-# match, just GHC's standard `-prof` (the prelude's own haskell_library()/
-# haskell_binary() `enable_profiling` attr adds `-prof` and switches to
-# the `_p.a`/`p_o`/`p_hi` suffixed way - see prelude/haskell/compile.bzl).
 _PROF_ENABLED = select({
     "root//buck2/constraints:prof": True,
     "DEFAULT": False,
@@ -194,14 +71,6 @@ _ASAN_LINKER_FLAGS = select({
     "DEFAULT": [],
 })
 
-# The .hs path a source's module lives at once preprocessed: `path`
-# unchanged unless it still carries a raw preprocessor extension (true for
-# `srcs` given as a list, where `path == src`, or an explicit identity entry
-# in the dict form), in which case that extension is stripped and replaced
-# with .hs. Exported for callers (e.g. thrift_library() in thrift.bzl)
-# that need to compute the same key haskell_library()/haskell_binary()
-# would derive from a plain `srcs` list, to merge additional dict entries
-# into it without breaking that derivation.
 def hs_module_path(path):
     for ext in (".hsc", ".x", ".y"):
         if path.endswith(ext):
@@ -235,27 +104,9 @@ def haskell_library(
         packages = [],
         deps = [],
         compiler_flags = [],
-        # Extra -C-style flags for every .hsc file in `srcs` (see
-        # hsc2hs.bzl's `extra_flags`) - the buck2 equivalent of Cabal's
-        # per-library `hsc2hs-options` field.
         hsc_flags = [],
-        # `cabal_component = (pkg, component)` causes this component's
-        # `cabal_macros.h` file to be included when `{-# LANGUAGE CPP #-}`
-        # is on, which provides access to the MIN_VERSION_pkg(x,y,z) macros
-        # amongst other things. However, GHC also provides the MIN_VERSION
-        # macros by default, so unless you need anything else from
-        # cabal_macros.h there's no need to use this.
         cabal_component = None,
         **kwargs):
-    # No `link_style` here - unlike haskell_binary(), haskell_library()
-    # doesn't take one at all: a library builds whichever output styles its
-    # `preferred_linkage` calls for, and it's entirely the *consumer* doing
-    # the linking (ultimately some haskell_binary()) that picks which one
-    # to actually use. The build-mode link_style only needs to be set once,
-    # there - `preferred_linkage` is set once here instead, to just the one
-    # style `_BUILD_MODE_LINK_STYLE` says dev-mode binaries actually link
-    # (see `_BUILD_MODE_PREFERRED_LINKAGE`'s own comment for why "both, by
-    # default" was real, measurable wasted work in `dev` mode specifically).
     all_deps = deps + _package_deps(packages)
     kwargs.setdefault("preferred_linkage", _BUILD_MODE_PREFERRED_LINKAGE)
     native.haskell_library(
@@ -282,46 +133,12 @@ def haskell_binary(
     native.haskell_binary(
         name = name,
         srcs = _resolve_srcs(name, srcs, all_deps, hsc_flags),
-        # _ASAN_LINKER_FLAGS also goes into compiler_flags, not just
-        # linker_flags below - Cabal's own `-optc-fsanitize=address` /
-        # `-optl-fsanitize=address` are both plain `ghc-options`, applied
-        # to *every* ghc invocation Cabal makes for this component,
-        # compiling and linking alike (unlike buck2, it has no separate
-        # per-file-compile vs final-link flag lists) - and each is a no-op
-        # on a ghc invocation that doesn't do the corresponding thing
-        # (`-optl-...` during a compile-only invocation, `-optc-...` when
-        # nothing needs the C compiler), so adding both everywhere is the
-        # faithful equivalent, not redundant belt-and-braces.
         compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS + _ASAN_LINKER_FLAGS + _cabal_macros_include_flags(cabal_component),
         deps = all_deps,
         linker_flags = _ASAN_LINKER_FLAGS + linker_flags,
         **kwargs
     )
 
-# Cabal's test-suites are all `type: exitcode-stdio-1.0` -
-# a plain executable, exit code is the result - so `buck2 test` support
-# needs nothing Haskell-specific: this builds the exact same
-# haskell_binary() `name` would (so `buck2 run :name` is unaffected), plus
-# a same-named `:name-test` native.sh_test() wrapping it, which is enough
-# for `buck2 test :name-test` to work with zero .buckconfig changes.
-#
-# `test_args`/`test_env` cover the one real wrinkle: a test-suite that
-# shells out to another buck2-built tool (e.g. glean-clang's clang-index)
-# needs that tool's location passed in explicitly via a `$(exe ...)`
-# string-parameter macro, rather than relying on it being on `$PATH` -
-# more hermetic than this migration's own earlier practice of manually
-# prepending PATH by hand to reproduce these runs.
-#
-# `LANG` defaults to a UTF-8 locale: unlike `buck2 run` (which inherits
-# the caller's shell environment, `LANG` included), `buck2 test` runs
-# actions in a sanitized environment with no `LANG` at all - so GHC's
-# `hGetContents`/`readFile` fall back to the POSIX/ASCII encoding and
-# choke on any non-ASCII byte in a test fixture (found via
-# thrift-compiler-tests, whose fixtures include non-ASCII comments:
-# "hGetContents: invalid argument (cannot decode byte sequence starting
-# from 226)" - 226 = 0xE2, a UTF-8 lead byte). `C.UTF-8` is a glibc
-# locale alias needing no locale-generation step, so it's available
-# without depending on whatever locales happen to be installed.
 def haskell_test(name, test_args = [], test_env = {}, cwd = None, **kwargs):
     bin = name + "-bin"
     haskell_binary(name = bin, **kwargs)
@@ -337,4 +154,13 @@ def haskell_test(name, test_args = [], test_env = {}, cwd = None, **kwargs):
         test = test_target,
         args = args,
         env = {"LANG": "C.UTF-8"} | test_env,
+        # `LANG` defaults to a UTF-8 locale: unlike `buck2 run` (which
+        # inherits the caller's shell environment, `LANG` included),
+        # `buck2 test` runs actions in a sanitized environment with no
+        # `LANG` at all - so GHC's `hGetContents`/`readFile` fall back
+        # to the POSIX/ASCII encoding and choke on any non-ASCII byte
+        # in a test fixture.
     )
+
+
+
