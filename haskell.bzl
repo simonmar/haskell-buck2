@@ -21,7 +21,6 @@
 
 load("//buck2:alex_happy.bzl", "alex", "happy")
 load("//buck2:hsc2hs.bzl", "hsc2hs")
-load("@prelude//haskell/util.bzl", "src_to_module_name")
 load("@prelude//paths.bzl", "paths")
 
 # Packages implicitly needed by every Haskell target.
@@ -226,8 +225,10 @@ def _resolve_src(name, src, deps, hsc_flags):
         return src
 
 def _resolve_srcs(name, srcs, deps, hsc_flags):
-    items = srcs.items() if type(srcs) == type({}) else [(src_to_module_name(src), src) for src in srcs]
-    return { modl: _resolve_src(name, src, deps, hsc_flags) for modl, src in items }
+    if type(srcs) == type({}):
+        return { modl: _resolve_src(name, src, deps, hsc_flags) for modl, src in srcs.items() }
+    else:
+        return [ _resolve_src(name, src, deps, hsc_flags) for src in srcs ]
 
 def haskell_library(
         name,
