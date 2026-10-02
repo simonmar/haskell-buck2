@@ -13,10 +13,10 @@ load("//buck2:haskell.bzl", "haskell_library")
 # into a directory (`gen-hs2/...` by default) rather than a fixed file.
 # `outs`, if given, additionally names known files within that directory
 # (as plain module paths, e.g. "Foo/Types.hs" - not gen-hs2-prefixed) and
-# exposes each as its own correctly-pathed sub-target artifact (via
-# ctx.actions.copy_file() - the same primitive export_file.bzl uses), so a
-# caller who already knows what a .thrift file generates can put them
-# directly into a haskell_library()'s plain srcs *list*:
+# exposes each as its own sub-target artifact (via ctx.actions.copy_file()
+# - the same primitive export_file.bzl uses), so a caller who already
+# knows what a .thrift file generates can put them directly into a
+# haskell_library()'s `srcs` *dict*, keyed by module name:
 #
 #   thrift_compile(
 #       name = "gen-foo",
@@ -24,14 +24,17 @@ load("//buck2:haskell.bzl", "haskell_library")
 #       outs = ["Foo/Types.hs"],
 #   )
 #   haskell_library(
-#       srcs = [":gen-foo[Foo/Types.hs]"],
+#       srcs = {"Foo.Types": ":gen-foo[Foo/Types.hs]"},
 #       ...
 #   )
 #
-# This isn't just a style choice: haskell_library() derives each module's
-# name (for the package db, so cross-target `import`s of it resolve) from
-# its source artifact's own path - a bare copy of the whole gen-hs2/
+# The dict form (module name -> source) is what haskell_library() wants
+# here, rather than a plain list: with a list, each module's name (for
+# the package db, so cross-target `import`s of it resolve) is derived from
+# its source artifact's own path, and a bare copy of the whole gen-hs2/
 # directory would derive "gen.gen-hs2.Foo.Types" instead of "Foo.Types".
+# (thrift_srcs()/thrift_library() below do the path -> module name
+# conversion for `outs` entries themselves; see _module_name().)
 
 # thrift-compiler's default --gen-prefix; every caller in this repo relies
 # on the default, so `outs` entries are resolved as GEN_PREFIX + "/" + out
@@ -214,6 +217,13 @@ def _thrift_name(thrift_file, full_paths = False):
         return native.package_name() + "/" + thrift_file
     return thrift_file
 
+def _module_name(path):
+    # "Foo/Bar/Types.hs" -> "Foo.Bar.Types": the module name a Haskell
+    # source at that (module-derived) path declares, which is what the
+    # dict form of a haskell_*() rule's `srcs` is keyed by.
+    base = path[:path.rindex(".")] if "." in path.split("/")[-1] else path
+    return base.replace("/", ".")
+
 def _thrift_compile_all(name, thrift_files, thrift_flags, thrift_file_flags, deps, srcs, full_paths):
     # Shared by thrift_srcs() and thrift_library() below: declares one
     # thrift_compile() per thrift_files entry (each one's own `deps`
@@ -223,7 +233,9 @@ def _thrift_compile_all(name, thrift_files, thrift_flags, thrift_file_flags, dep
     # e.g. tests/if/A.thrift including B/C/D/E.thrift, all declared in the
     # same thrift_files dict, just works), and returns the resulting srcs
     # dict for a haskell_*() target.
-    all_srcs = dict(srcs) if type(srcs) == type({}) else {s: s for s in srcs}
+    # `srcs` is either a list of hand-written sources, whose module names
+    # are derived from their paths, or a dict keyed by module name already.
+    all_srcs = dict(srcs) if type(srcs) == type({}) else {_module_name(s): s for s in srcs}
     for thrift_file, outs in thrift_files.items():
         gen_name = name + "-thrift-" + _thrift_stem(thrift_file)
         thrift_compile(
@@ -236,7 +248,7 @@ def _thrift_compile_all(name, thrift_files, thrift_flags, thrift_file_flags, dep
             exec_compatible_with = ["root//buck2/constraints:opt"],
         )
         for out in outs:
-            all_srcs[out] = ":{}[{}]".format(gen_name, out)
+            all_srcs[_module_name(out)] = ":{}[{}]".format(gen_name, out)
     return all_srcs
 
 # Lower-level than thrift_library() below: creates the same per-file
