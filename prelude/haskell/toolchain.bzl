@@ -18,6 +18,9 @@ HaskellToolchainInfo = provider(
         "compiler": provider_field(typing.Any, default = None),
         "compiler_flags": provider_field(typing.Any, default = None),
         "compile_env": provider_field(typing.Any, default = {}),
+        # Environment for the link actions, unlike `compile_env` literally
+        # (not shell-evaluated).
+        "link_env": provider_field(typing.Any, default = {}),
         "dynamic_ghc": provider_field(bool, default = True),
         "linker": provider_field(typing.Any, default = None),
         "linker_flags": provider_field(typing.Any, default = None),

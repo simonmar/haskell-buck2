@@ -264,6 +264,13 @@ load(
     "shared_library_interface",
 )
 
+# The link of a shared library is uploaded to the remote action cache, if there
+# is one (see buck2/platforms/defs.bzl). Linking is otherwise never uploaded
+# (see `allow_cache_upload` in cxx_types.bzl): the result depends on the system
+# linker and libraries, and with the cache that is covered by the C toolchain
+# fingerprint in the action's command (see prelude/toolchains/cxx.bzl).
+_CACHE = read_root_config("cabal_buck2", "cache", "false") == "true"
+
 # A possible output of a `cxx_library`. This could be an archive or a shared library. Generally for an archive
 # it represents just the sources of the library target itself, while a shared library will bundle multiple libraries
 # together.
@@ -2433,6 +2440,7 @@ def _shared_library(
             enable_distributed_thinlto = getattr(ctx.attrs, "enable_distributed_thinlto", False),
             links = links,
             identifier = flavored_output(soname, separator = "_"),
+            allow_cache_upload = _CACHE,
             link_ordering = link_ordering,
             strip = impl_params.strip_executable,
             strip_args_factory = impl_params.strip_args_factory,

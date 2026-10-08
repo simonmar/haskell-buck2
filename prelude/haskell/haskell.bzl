@@ -604,6 +604,7 @@ def _link_haskell_shared_lib(
     ctx.actions.run(
         link,
         category = category,
+        env = haskell_toolchain.link_env,
     )
 
     return (
@@ -1482,7 +1483,7 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         # any given target's dependency graph actually has one.
         link.add("-optl", cmd_args("-Wl,-rpath-link,", symlink_dir, delimiter = ""))
 
-    ctx.actions.run(link, category = "haskell_link")
+    ctx.actions.run(link, category = "haskell_link", env = haskell_toolchain.link_env)
 
     if symlink_dir != None:
         run = cmd_args(output, hidden = symlink_dir)

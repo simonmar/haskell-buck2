@@ -11,6 +11,7 @@ def _haskell_toolchain_impl(ctx):
             compiler_flags = ctx.attrs.compiler_flags,
             linker_flags = ctx.attrs.linker_flags,
             compile_env = ctx.attrs.compile_env,
+            link_env = ctx.attrs.link_env,
             dynamic_ghc = ctx.attrs.dynamic_ghc,
         ),
         HaskellPlatformInfo(name = host_info().arch),
@@ -25,6 +26,7 @@ haskell_toolchain = rule(
         "compiler_flags": attrs.list(attrs.string(), default = []),
         "linker_flags": attrs.list(attrs.string(), default = []),
         "compile_env": attrs.dict(attrs.string(), attrs.string(), default = {}),
+        "link_env": attrs.dict(attrs.string(), attrs.string(), default = {}),
         # Whether the `compiler` above is itself dynamically linked -
         # see buck2/gen-haskell-prebuilt.py's own `_ghc_dynamic()` for
         # how this gets discovered (not assumed), and buck2/prelude/
