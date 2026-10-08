@@ -10,7 +10,7 @@
 #     include paths derived from `deps` (see buck2/hsc2hs.bzl) - so a `.hsc`
 #     file that needs a C++ dependency's headers just needs that dependency
 #     listed in `deps`, same as any other buck2 target.
-#   - alex/happy: any `.x`/`.y` file in `srcs` is automatically run through
+#   - alex/happy: any `.x`/`.y`/`.ly` file in `srcs` is automatically run through
 #     the corresponding tool (see buck2/alex_happy.bzl).
 #   - support for build rules generated from Cabal packages:
 #     - `cabal_component = (pkg, component)` causes this component's
@@ -76,7 +76,7 @@ _ASAN_LINKER_FLAGS = select({
 })
 
 def hs_module_path(path):
-    for ext in (".hsc", ".x", ".y"):
+    for ext in (".hsc", ".x", ".y", ".ly"):
         if path.endswith(ext):
             return path[:-len(ext)] + ".hs"
     return path
@@ -91,7 +91,7 @@ def _resolve_src(name, src, deps, hsc_flags, hsc_cxx):
         rule_name = name + "-alex-" + out.replace("/", "_")
         alex(name = rule_name, src = src, out = out)
         return ":" + rule_name
-    elif src.endswith(".y"):
+    elif src.endswith(".y") or src.endswith(".ly"):
         rule_name = name + "-happy-" + out.replace("/", "_")
         happy(name = rule_name, src = src, out = out)
         return ":" + rule_name
