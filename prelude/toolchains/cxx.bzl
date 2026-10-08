@@ -46,6 +46,10 @@ CxxToolsInfo = provider(
     },
 )
 
+# Object files are uploaded to the remote action cache, if there is one (see
+# buck2/platforms/defs.bzl).
+_CACHE = read_root_config("cabal_buck2", "cache", "false") == "true"
+
 def _legacy_equivalent_cxx_tools_info_windows(ctx: AnalysisContext, default_toolchain: CxxToolsInfo) -> CxxToolsInfo:
     return CxxToolsInfo(
         compiler = default_toolchain.compiler if ctx.attrs.compiler == None or ctx.attrs.compiler == "cl.exe" else ctx.attrs.compiler,
@@ -189,6 +193,7 @@ def _cxx_toolchain_from_cxx_tools_info(ctx: AnalysisContext, cxx_tools_info: Cxx
                 dwp = None,
             ),
             cxx_compiler_info = CxxCompilerInfo(
+                allow_cache_upload = _CACHE,
                 compiler = _run_info(cxx_tools_info.cxx_compiler),
                 preprocessor_flags = [],
                 compiler_flags = ctx.attrs.cxx_flags,
@@ -197,6 +202,7 @@ def _cxx_toolchain_from_cxx_tools_info(ctx: AnalysisContext, cxx_tools_info: Cxx
                 supports_content_based_paths = ctx.attrs.supports_content_based_paths,
             ),
             c_compiler_info = CCompilerInfo(
+                allow_cache_upload = _CACHE,
                 compiler = _run_info(cxx_tools_info.compiler),
                 preprocessor_flags = [],
                 compiler_flags = ctx.attrs.c_flags,

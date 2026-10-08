@@ -1,6 +1,6 @@
 load("@prelude//toolchains:demo.bzl", "system_demo_toolchains")
 load("@toolchains//haskell.bzl", "haskell_toolchain")
-load("@third-party-haskell//:tools.bzl", "GHC_DYNAMIC", "GHC_VERSION")
+load("@third-party-haskell//:tools.bzl", "GHC_DYNAMIC", "GHC_FINGERPRINT", "GHC_VERSION")
 
 # Defaults for other toolchains
 system_demo_toolchains()
@@ -49,8 +49,14 @@ haskell_toolchain(
     # actually correct while `c++` resolves to clang - if this project's
     # default cxx compiler ever moves to gcc, swap the runtime name to
     # `libasan.so` too (`gcc -print-file-name=libasan.so`).
+    # CABAL_BUCK2_GHC is not read by anything: it is there so that a
+    # fingerprint of the GHC installation (GHC_FINGERPRINT, see
+    # third-party/haskell/tools.bzl) is part of every compile action, and so of
+    # its cache key. `compiler` above is only a name found on the PATH, and the
+    # files of the installation aren't tracked by buck2.
     compile_env = select({
         "root//buck2/constraints:asan": {
+            "CABAL_BUCK2_GHC": GHC_FINGERPRINT,
             "LD_PRELOAD": "$(c++ -print-file-name=libclang_rt.asan-x86_64.so)",
             # This preload leaks into every subprocess GHC spawns while
             # compiling (not just the dlopen'd .so's it's actually for) -
@@ -64,7 +70,7 @@ haskell_toolchain(
             # _ASAN_LINKER_FLAGS), which is a separate, unaffected setting.
             "ASAN_OPTIONS": "detect_leaks=0",
         },
-        "DEFAULT": {},
+        "DEFAULT": {"CABAL_BUCK2_GHC": GHC_FINGERPRINT},
     }),
     visibility = ["PUBLIC"],
 )

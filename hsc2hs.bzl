@@ -4,6 +4,7 @@ load("@prelude//cxx:cxx_context.bzl", "get_cxx_toolchain_info")
 load("@prelude//cxx:preprocessor.bzl", "cxx_inherited_preprocessor_infos", "cxx_merge_cpreprocessors")
 load("@prelude//decls/toolchains_common.bzl", "toolchains_common")
 load("@prelude//haskell:toolchain.bzl", "HaskellToolchainInfo")
+load("@third-party-haskell//:tools.bzl", "GHC_FINGERPRINT")
 
 def _hsc2hs_include_args(pp_info):
     return [
@@ -47,7 +48,9 @@ def _hsc2hs_impl(ctx: AnalysisContext) -> list[Provider]:
         out.as_output(),
         ctx.attrs.hsc_file,
     )
-    ctx.actions.run(cmd, category = "hsc2hs")
+    # The fingerprint is not read by hsc2hs: it makes the GHC installation part
+    # of the action's cache key (see toolchains/BUCK).
+    ctx.actions.run(cmd, category = "hsc2hs", env = {"CABAL_BUCK2_GHC": GHC_FINGERPRINT})
 
     return [DefaultInfo(default_output = out)]
 
