@@ -35,9 +35,13 @@ def _hsc2hs_impl(ctx: AnalysisContext) -> list[Provider]:
     cxx_toolchain = get_cxx_toolchain_info(ctx)
     compiler = cxx_toolchain.cxx_compiler_info.compiler if ctx.attrs.cxx else cxx_toolchain.c_compiler_info.compiler
 
+    # hsc2hs wants a single program, but the compiler is a command (with the
+    # cache, it is `env` setting a fingerprint, then the compiler).
+    cc, cc_hidden = ctx.actions.write("cc.sh", ["#!/bin/sh", cmd_args("exec", compiler, '"$@"', delimiter = " ")], is_executable = True, allow_args = True)
+
     cmd = cmd_args(
         hsc2hs_tool,
-        cmd_args("--cc=", compiler, delimiter = ""),
+        cmd_args("--cc=", cmd_args(cc, hidden = cc_hidden), delimiter = ""),
         ["-C", "-std=c++20"] if ctx.attrs.cxx else [],
         "-C",
         "-D__HSC2HS__=1",
