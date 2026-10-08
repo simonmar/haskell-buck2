@@ -29,13 +29,16 @@ def _hsc2hs_impl(ctx: AnalysisContext) -> list[Provider]:
     ghc_version = ghc_compiler[len("ghc-"):] if ghc_compiler.startswith("ghc-") else ghc_compiler
     hsc2hs_tool = "hsc2hs-" + ghc_version
 
-    cxx_compiler = get_cxx_toolchain_info(ctx).cxx_compiler_info.compiler
+    # C++, unless told otherwise: some of the .hsc files need the headers of
+    # C++ code. A package that is only C (Cabal's way) must not be compiled as
+    # C++, which doesn't accept what hsc2hs generates for #alignment.
+    cxx_toolchain = get_cxx_toolchain_info(ctx)
+    compiler = cxx_toolchain.cxx_compiler_info.compiler if ctx.attrs.cxx else cxx_toolchain.c_compiler_info.compiler
 
     cmd = cmd_args(
         hsc2hs_tool,
-        cmd_args("--cc=", cxx_compiler, delimiter = ""),
-        "-C",
-        "-std=c++20",
+        cmd_args("--cc=", compiler, delimiter = ""),
+        ["-C", "-std=c++20"] if ctx.attrs.cxx else [],
         "-C",
         "-D__HSC2HS__=1",
         ctx.attrs.extra_flags,
@@ -60,8 +63,9 @@ def _hsc2hs_impl(ctx: AnalysisContext) -> list[Provider]:
 hsc2hs = rule(
     impl = _hsc2hs_impl,
     attrs = {
+        "cxx": attrs.bool(default = True),
         "deps": attrs.list(attrs.dep(), default = []),
-        "extra_flags": attrs.list(attrs.string(), default = []),
+        "extra_flags": attrs.list(attrs.arg(), default = []),
         "hsc_file": attrs.source(),
         "out": attrs.string(),
         "_cxx_toolchain": toolchains_common.cxx(),

@@ -185,6 +185,13 @@ haskell_library = prelude_rule(
             "ghci_preload_deps": attrs.set(attrs.dep(), sorted = True, default = []),
             "haddock_flags": attrs.list(attrs.arg(), default = []),
             "linker_flags": attrs.list(attrs.arg(), default = []),
+            # The name the library's package has in the package db, for
+            # `import "name" Module`. Not its id, which is derived from the
+            # label and is unique.
+            "package_name": attrs.option(attrs.string(), default = None),
+            # Its version, which GHC defines `VERSION_<package>` macros with:
+            # they must agree with the ones of the package's cabal_macros.h.
+            "package_version": attrs.option(attrs.string(), default = None),
             "platform": attrs.option(attrs.string(), default = None),
         }
         | buck.licenses_arg()

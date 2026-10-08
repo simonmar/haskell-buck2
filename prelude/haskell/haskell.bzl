@@ -453,8 +453,8 @@ def _make_package(
     library_dirs = [mk_artifact_dir("lib", profiled) for profiled in hi.keys()]
 
     conf = [
-        "name: " + pkgname,
-        "version: 1.0.0",
+        "name: " + (ctx.attrs.package_name or pkgname),
+        "version: " + (ctx.attrs.package_version or "1.0.0"),
         "id: " + pkgname,
         "key: " + pkgname,
         "exposed: False",
@@ -827,7 +827,7 @@ def _build_haskell_lib(
             import_dirs = {False: compiled.hi},
             stub_dirs = [compiled.stubs],
             libs = [shared_lib],
-            version = "1.0.0",
+            version = ctx.attrs.package_version or "1.0.0",
             is_prebuilt = False,
             profiling_enabled = False,
         )
@@ -858,7 +858,7 @@ def _build_haskell_lib(
         import_dirs = import_artifacts,
         stub_dirs = stub_dirs,
         libs = all_libs,
-        version = "1.0.0",
+        version = ctx.attrs.package_version or "1.0.0",
         is_prebuilt = False,
         profiling_enabled = enable_profiling,
     )

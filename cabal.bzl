@@ -11,8 +11,9 @@
 #
 #   {
 #     "schema": 1,
-#     "package": {"name": str, "dir": str},   # dir: relative to the cell root, "." at the root
+#     "package": {"name": str, "version": str, "dir": str},   # dir: relative to the cell root, "." at the root
 #     "ghc_options": [str],                   # supplied by the project, not the .cabal file
+#     "data": {"dir": str, "files": [str]},   # the package's data-dir and data-files (patterns)
 #     "components": [
 #       {
 #         "kind": "library" | "executable" | "test-suite" | "benchmark",
@@ -26,6 +27,7 @@
 #         "build_tools": [{"exe": str, "dir": str} | {"exe": str, "external": True}],
 #         "c_sources": [str], "cxx_sources": [str], "cxx_options": [str],
 #         "include_dirs": [str], "pkgconfig": [str],
+#         "generated_include_dirs": [str],    # headers that `./configure` generated (project-relative)
 #         "test_args": [str],                 # test-suites only
 #       },
 #     ],
@@ -79,7 +81,15 @@ def _srcs(c, pkg_dir):
         srcs[module] = _src(pkg_dir, src)
     return srcs
 
-def _haskell_flags(c, project_ghc_options):
+def _include_flags(c, pkg_dir):
+    # The package's own include directories, and where a configure script put
+    # the headers it generated: GHC needs both for CPP and for the C stubs of
+    # foreign imports. They are paths from the root of the project, which is
+    # where the compiler runs.
+    dirs = [d if pkg_dir == "." or d.startswith("/") else pkg_dir + "/" + d for d in c.get("include_dirs", [])]
+    return _nub(["-I" + d for d in dirs + c.get("generated_include_dirs", [])])
+
+def _haskell_flags(c, pkg_dir, project_ghc_options):
     # default-language isn't just documentation: GHC2021/GHC2024 each imply a
     # bundle of extensions, so leaving it out would silently fall back to
     # GHC's own default (Haskell2010). Project-supplied options come last, as
@@ -88,6 +98,7 @@ def _haskell_flags(c, project_ghc_options):
     if "language" in c:
         own.append("-X" + c["language"])
     own += ["-X" + e for e in c.get("extensions", [])]
+    own += _include_flags(c, pkg_dir)
     return _nub(own) + project_ghc_options
 
 def _linker_flags(c, project_ghc_options):
@@ -140,15 +151,17 @@ def _cxx_library(c, pkg_dir, pkgconfig_seen):
     # exported_preprocessor_flags is an opaque list of strings to buck2, so
     # (unlike srcs) its include paths have to be made relative to the cell
     # root by hand: cxx actions always run from there.
-    include_flags = _nub(["-I" + (d if pkg_dir == "." or d.startswith("/") else pkg_dir + "/" + d) for d in c.get("include_dirs", [])])
+    include_flags = _include_flags(c, pkg_dir)
     name = c["name"] + "-cxx"
     kwargs = {"name": name, "srcs": srcs, "visibility": ["PUBLIC"]}
     if include_flags:
         kwargs["exported_preprocessor_flags"] = include_flags
     if c.get("cxx_options"):
         kwargs["compiler_flags"] = _nub(c["cxx_options"])
-    if pkgconfig:
-        kwargs["deps"] = [":pkgconfig-" + p for p in pkgconfig]
+
+    # GHC's own headers (HsFFI.h): GHC adds them when it compiles C itself,
+    # but buck2 doesn't.
+    kwargs["deps"] = [_third_party_label("rts")] + [":pkgconfig-" + p for p in pkgconfig]
 
     # cxx_library() adds -std=c++20 to everything, which a C-only target
     # can't have.
@@ -172,10 +185,19 @@ def _haskell_kwargs(c, spec, cxx_deps):
         kwargs["cwd"] = pkg_dir
         if c.get("test_args"):
             kwargs["test_args"] = list(c["test_args"])
-    compiler_flags = _haskell_flags(c, project_ghc_options)
+    compiler_flags = _haskell_flags(c, pkg_dir, project_ghc_options)
+    hsc_flags = ["--cflag=" + f for f in _include_flags(c, pkg_dir)]
+    if hsc_flags:
+        kwargs["hsc_flags"] = hsc_flags
+
+    # hsc2hs compiles C, as in Cabal, unless there is C++ in the component.
+    kwargs["hsc_cxx"] = bool(c.get("cxx_sources") or c.get("cxx_options"))
     if compiler_flags:
         kwargs["compiler_flags"] = compiler_flags
     if kind == "library":
+        kwargs["package_name"] = spec["package"]["name"]
+        if "version" in spec["package"]:
+            kwargs["package_version"] = spec["package"]["version"]
         exported = _nub(["-l" + l for l in c.get("extra_libraries", [])])
         if exported:
             kwargs["exported_linker_flags"] = exported
@@ -246,3 +268,19 @@ def cabal_targets(spec, defaults = {}, overrides = {}, transform = None, rules =
             if kwargs == None:
                 continue
         rules.get(kind, _DEFAULT_RULES[kind])(**kwargs)
+    _data_files(spec, pkg_dir)
+
+def _data_files(spec, pkg_dir):
+    # The package's data-files, as a directory laid out like its data-dir:
+    # what a tool of the package (alex, happy) reads when it runs, to be
+    # found through its <package>_datadir environment variable.
+    data = spec.get("data")
+    if not data:
+        return
+    prefix = "" if data["dir"] in ("", ".") else data["dir"].rstrip("/") + "/"
+    files = native.glob([prefix + pattern for pattern in data["files"]])
+    native.filegroup(
+        name = spec["package"]["name"] + "-data",
+        srcs = {f[len(prefix):]: f for f in files},
+        visibility = ["PUBLIC"],
+    )

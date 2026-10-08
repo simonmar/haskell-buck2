@@ -36,6 +36,11 @@ def _cabal_macros_include_flags(cabal_component):
     label = "//" + autogen_dir + ":" + component + "-cabal-macros"
     return ["-optP-include", "-optP$(location " + label + ")"]
 
+def _cabal_macros_hsc_flags(cabal_component):
+    # hsc2hs wants the package's macros too (MIN_VERSION_base, say).
+    flags = _cabal_macros_include_flags(cabal_component)
+    return ["--cflag=-include", "--cflag=" + flags[1][len("-optP"):]] if flags else []
+
 # Link style for executables: the default is dynamic, opt is static, and prof
 # must also be static - GHC doesn't support prof/dynamic.
 _BUILD_MODE_LINK_STYLE = select({
@@ -76,11 +81,11 @@ def hs_module_path(path):
             return path[:-len(ext)] + ".hs"
     return path
 
-def _resolve_src(name, src, deps, hsc_flags):
+def _resolve_src(name, src, deps, hsc_flags, hsc_cxx):
     out = paths.replace_extension(src, ".hs")
     if src.endswith(".hsc"):
         rule_name = name + "-hsc-" + out.replace("/", "_")
-        hsc2hs(name = rule_name, hsc_file = src, out = out, deps = deps, extra_flags = hsc_flags)
+        hsc2hs(name = rule_name, hsc_file = src, out = out, deps = deps, extra_flags = hsc_flags, cxx = hsc_cxx)
         return ":" + rule_name
     elif src.endswith(".x"):
         rule_name = name + "-alex-" + out.replace("/", "_")
@@ -93,11 +98,11 @@ def _resolve_src(name, src, deps, hsc_flags):
     else:
         return src
 
-def _resolve_srcs(name, srcs, deps, hsc_flags):
+def _resolve_srcs(name, srcs, deps, hsc_flags, hsc_cxx):
     if type(srcs) == type({}):
-        return { modl: _resolve_src(name, src, deps, hsc_flags) for modl, src in srcs.items() }
+        return { modl: _resolve_src(name, src, deps, hsc_flags, hsc_cxx) for modl, src in srcs.items() }
     else:
-        return [ _resolve_src(name, src, deps, hsc_flags) for src in srcs ]
+        return [ _resolve_src(name, src, deps, hsc_flags, hsc_cxx) for src in srcs ]
 
 def haskell_library(
         name,
@@ -106,13 +111,14 @@ def haskell_library(
         deps = [],
         compiler_flags = [],
         hsc_flags = [],
+        hsc_cxx = True,
         cabal_component = None,
         **kwargs):
     all_deps = deps + _package_deps(packages)
     kwargs.setdefault("preferred_linkage", _BUILD_MODE_PREFERRED_LINKAGE)
     native.haskell_library(
         name = name,
-        srcs = _resolve_srcs(name, srcs, all_deps, hsc_flags),
+        srcs = _resolve_srcs(name, srcs, all_deps, hsc_flags + _cabal_macros_hsc_flags(cabal_component), hsc_cxx),
         compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS + _cabal_macros_include_flags(cabal_component),
         deps = all_deps,
         **kwargs
@@ -125,6 +131,7 @@ def haskell_binary(
         deps = [],
         compiler_flags = [],
         hsc_flags = [],
+        hsc_cxx = True,
         linker_flags = [],
         cabal_component = None,  # see haskell_library()
         **kwargs):
@@ -133,7 +140,7 @@ def haskell_binary(
     kwargs.setdefault("enable_profiling", _PROF_ENABLED)
     native.haskell_binary(
         name = name,
-        srcs = _resolve_srcs(name, srcs, all_deps, hsc_flags),
+        srcs = _resolve_srcs(name, srcs, all_deps, hsc_flags + _cabal_macros_hsc_flags(cabal_component), hsc_cxx),
         compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS + _ASAN_LINKER_FLAGS + _cabal_macros_include_flags(cabal_component),
         deps = all_deps,
         linker_flags = _ASAN_LINKER_FLAGS + linker_flags,
