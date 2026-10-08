@@ -26,6 +26,7 @@
 #         "deps": [dep],                      # see below
 #         "build_tools": [{"exe": str, "dir": str} | {"exe": str, "external": True}],
 #         "c_sources": [str], "cxx_sources": [str], "cxx_options": [str],
+#         "cmm_sources": [str],
 #         "include_dirs": [str], "pkgconfig": [str],
 #         "generated_include_dirs": [str],    # headers that `./configure` generated (project-relative)
 #         "test_args": [str],                 # test-suites only
@@ -39,6 +40,7 @@
 # named sub-library, and additionally has "dir" (the package's directory) if
 # the package is built by this project.
 
+load("//buck2:cmm.bzl", "cmm_library")
 load("//buck2:cxx.bzl", "cxx_library")
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library", "haskell_test")
 load("@prelude//third-party:pkgconfig.bzl", "external_pkgconfig_library")
@@ -170,6 +172,20 @@ def _cxx_library(c, pkg_dir, pkgconfig_seen):
     cxx_library(**kwargs)
     return [":" + name]
 
+def _cmm_library(c, spec):
+    # GHC compiles Cmm, given the component's options as for Haskell.
+    if not c.get("cmm_sources"):
+        return []
+    pkg_dir = spec["package"]["dir"]
+    name = c["name"] + "-cmm"
+    cmm_library(
+        name = name,
+        srcs = list(c["cmm_sources"]),
+        flags = _haskell_flags(c, pkg_dir, list(spec.get("ghc_options", []))),
+        visibility = ["PUBLIC"],
+    )
+    return [":" + name]
+
 def _haskell_kwargs(c, spec, cxx_deps):
     pkg_dir = spec["package"]["dir"]
     project_ghc_options = list(spec.get("ghc_options", []))
@@ -258,7 +274,7 @@ def cabal_targets(spec, defaults = {}, overrides = {}, transform = None, rules =
     pkgconfig_seen = {}
     for c in spec["components"]:
         kind = c["kind"]
-        cxx_deps = _cxx_library(c, pkg_dir, pkgconfig_seen)
+        cxx_deps = _cxx_library(c, pkg_dir, pkgconfig_seen) + _cmm_library(c, spec)
         kwargs = _haskell_kwargs(c, spec, cxx_deps)
         kwargs = _merge(kwargs, defaults.get("*", {}))
         kwargs = _merge(kwargs, defaults.get(kind, {}))
