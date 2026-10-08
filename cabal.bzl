@@ -28,6 +28,7 @@
 #         "c_sources": [str], "cxx_sources": [str], "cxx_options": [str],
 #         "cmm_sources": [str],
 #         "include_dirs": [str], "pkgconfig": [str],
+#         "hsc_options": [str],               # defines for hsc2hs's C compiler (the platform)
 #         "generated_include_dirs": [str],    # headers that `./configure` generated (project-relative)
 #         "test_args": [str],                 # test-suites only
 #       },
@@ -158,12 +159,16 @@ def _cxx_library(c, pkg_dir, pkgconfig_seen):
     kwargs = {"name": name, "srcs": srcs, "visibility": ["PUBLIC"]}
     if include_flags:
         kwargs["exported_preprocessor_flags"] = include_flags
-    if c.get("cxx_options"):
-        kwargs["compiler_flags"] = _nub(c["cxx_options"])
 
-    # GHC's own headers (HsFFI.h): GHC adds them when it compiles C itself,
-    # but buck2 doesn't.
-    kwargs["deps"] = [_third_party_label("rts")] + [":pkgconfig-" + p for p in pkgconfig]
+    # GHC includes its version header (which defines __GLASGOW_HASKELL__)
+    # in the C it compiles; the rts package supplies the header.
+    kwargs["compiler_flags"] = ["-include", "ghcversion.h"] + _nub(c.get("cxx_options", []))
+
+    # The headers that GHC adds when it compiles C itself, but buck2 doesn't:
+    # its own (HsFFI.h) and those of the packages the component depends on
+    # (HsUnixConfig.h, say).
+    packages, _ = _classify_deps(c.get("deps", []))
+    kwargs["deps"] = _nub([_third_party_label(p) for p in ["rts"] + packages]) + [":pkgconfig-" + p for p in pkgconfig]
 
     # cxx_library() adds -std=c++20 to everything, which a C-only target
     # can't have.
@@ -202,7 +207,7 @@ def _haskell_kwargs(c, spec, cxx_deps):
         if c.get("test_args"):
             kwargs["test_args"] = list(c["test_args"])
     compiler_flags = _haskell_flags(c, pkg_dir, project_ghc_options)
-    hsc_flags = ["--cflag=" + f for f in _include_flags(c, pkg_dir)]
+    hsc_flags = ["--cflag=" + f for f in c.get("hsc_options", []) + _include_flags(c, pkg_dir)]
     if hsc_flags:
         kwargs["hsc_flags"] = hsc_flags
 
