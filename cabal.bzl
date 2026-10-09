@@ -25,8 +25,10 @@
 #         "extra_libraries": [str],
 #         "deps": [dep],                      # see below
 #         "build_tools": [{"exe": str, "dir": str} | {"exe": str, "external": True}],
-#         "c_sources": [str], "cxx_sources": [str], "cxx_options": [str],
+#         "c_sources": [str], "cc_options": [str],
+#         "cxx_sources": [str], "cxx_options": [str],
 #         "cmm_sources": [str],
+#         "asm_sources": [str], "asm_options": [str],
 #         "include_dirs": [str], "pkgconfig": [str],
 #         "hsc_options": [str],               # defines for hsc2hs's C compiler (the platform)
 #         "generated_include_dirs": [str],    # headers that `./configure` generated (project-relative)
@@ -142,7 +144,7 @@ def _build_tool_depends(build_tools):
 
 def _cxx_library(c, pkg_dir, pkgconfig_seen):
     # Returns the labels the Haskell rule must additionally depend on.
-    srcs = list(c.get("c_sources", [])) + list(c.get("cxx_sources", []))
+    srcs = list(c.get("c_sources", [])) + list(c.get("cxx_sources", [])) + list(c.get("asm_sources", []))
     if not srcs:
         return []
     pkgconfig = _nub(c.get("pkgconfig", []))
@@ -162,7 +164,17 @@ def _cxx_library(c, pkg_dir, pkgconfig_seen):
 
     # GHC includes its version header (which defines __GLASGOW_HASKELL__)
     # in the C it compiles; the rts package supplies the header.
-    kwargs["compiler_flags"] = ["-include", "ghcversion.h"] + _nub(c.get("cxx_options", []))
+    kwargs["compiler_flags"] = ["-include", "ghcversion.h"]
+
+    # cc-options are for C and assembler (which GHC also gets the C compiler
+    # to preprocess), cxx-options for C++.
+    cc_options = _nub(c.get("cc_options", []))
+    lang_flags = {
+        "assembler_with_cpp": cc_options + _nub(c.get("asm_options", [])),
+        "c": cc_options,
+        "cxx": _nub(c.get("cxx_options", [])),
+    }
+    kwargs["lang_compiler_flags"] = {lang: flags for lang, flags in lang_flags.items() if flags}
 
     # The headers that GHC adds when it compiles C itself, but buck2 doesn't:
     # its own (HsFFI.h) and those of the packages the component depends on
@@ -207,7 +219,7 @@ def _haskell_kwargs(c, spec, cxx_deps):
         if c.get("test_args"):
             kwargs["test_args"] = list(c["test_args"])
     compiler_flags = _haskell_flags(c, pkg_dir, project_ghc_options)
-    hsc_flags = ["--cflag=" + f for f in c.get("hsc_options", []) + _include_flags(c, pkg_dir)]
+    hsc_flags = ["--cflag=" + f for f in c.get("hsc_options", []) + c.get("cc_options", []) + _include_flags(c, pkg_dir)]
     if hsc_flags:
         kwargs["hsc_flags"] = hsc_flags
 
