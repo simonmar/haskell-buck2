@@ -107,6 +107,11 @@ def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_v
 
     # Expose only the packages we depend on directly
     for lib in haskell_direct_deps_lib_infos:
+        # The rts has no modules to import, and is a dependency to be linked
+        # with. GHC warns about exposing a package that is not used
+        # (-Wunused-packages), which is an error in some projects.
+        if lib.name == "rts":
+            continue
         if lib.id:
             # Resolve by unit id rather than by name: unambiguous even when
             # another version of the same package is visible in another
