@@ -1206,7 +1206,7 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         ),
     )
 
-    output = ctx.actions.declare_output(ctx.attrs.name, has_content_based_path = False)
+    output = ctx.actions.declare_output(ctx.attrs.exe_name or ctx.attrs.name, has_content_based_path = False)
     link = cmd_args(
         [haskell_toolchain.compiler] + ["-o", output.as_output()] + [haskell_toolchain.linker_flags] + [ctx.attrs.linker_flags],
         hidden = compiled.stubs,

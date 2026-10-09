@@ -18,6 +18,7 @@
 #       {
 #         "kind": "library" | "executable" | "test-suite" | "benchmark",
 #         "name": str,                        # also the buck2 target name
+#         "exe_name": str,                    # executables only: the file name, if not the target name
 #         "srcs": {module: src},              # src: package-relative path | {"autogen": name}
 #         "main_is": src,                     # not for libraries; becomes module "Main"
 #         "ghc_options": [str], "cpp_options": [str],
@@ -214,6 +215,8 @@ def _haskell_kwargs(c, spec, cxx_deps):
         "srcs": _srcs(c, pkg_dir),
         "cabal_component": (pkg_dir, c["name"]),
     }
+    if "exe_name" in c:
+        kwargs["exe_name"] = c["exe_name"]
     if kind == "test-suite":
         kwargs["cwd"] = pkg_dir
         if c.get("test_args"):

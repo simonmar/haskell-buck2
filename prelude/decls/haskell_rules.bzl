@@ -36,6 +36,7 @@ haskell_binary = prelude_rule(
     attrs = (
         # @unsorted-dict-items
         {
+            "exe_name": attrs.option(attrs.string(), default = None, doc = "The file name of the executable, if not the name of the target."),
             "main": attrs.option(
                 attrs.string(),
                 default = None,
