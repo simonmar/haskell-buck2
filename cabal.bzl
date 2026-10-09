@@ -127,7 +127,7 @@ def _classify_deps(deps):
         if "dir" in d:
             local.append(_label(d["dir"], d.get("library", d["package"])))
         elif "library" in d:
-            external_sublibs.append(_third_party_label(d["library"]))
+            external_sublibs.append(_third_party_label(d["package"] + "--" + d["library"]))
         else:
             packages.append(d["package"])
     return _nub(packages), _nub(local + external_sublibs)
