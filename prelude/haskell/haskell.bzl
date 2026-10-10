@@ -433,6 +433,10 @@ def _make_package(
     # touches), so every package needs to be discoverable this way, not
     # just ones that use TH themselves.
     own_shared_lib: [Artifact, None] = None,
+    # Every library this one depends on, when it re-exports modules: the
+    # package the module is defined in may be one that the dependency re-exports it
+    # from, and ghc-pkg has to find it.
+    all_hlis: list[HaskellLibraryInfo] = [],
 ) -> Artifact:
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
     hi_link_style = hi_link_style if hi_link_style != None else link_style
@@ -456,9 +460,12 @@ def _make_package(
     # package databases whether or not the unit is exposed.
     reexports = []
     for new_name, (origin, original_name) in ctx.attrs.reexported_modules.items():
-        provider = origin.get(HaskellLibraryProvider)
-        origin_info = (provider.prof_lib if enable_profiling else provider.lib)[link_style]
-        reexports.append("{} from {}:{}".format(new_name, origin_info.id, original_name))
+        if origin == None:
+            origin_id = pkgname
+        else:
+            provider = origin.get(HaskellLibraryProvider)
+            origin_id = (provider.prof_lib if enable_profiling else provider.lib)[link_style].id
+        reexports.append("{} from {}:{}".format(new_name, origin_id, original_name))
 
     conf = [
         "name: " + (ctx.attrs.package_name or pkgname),
@@ -480,7 +487,7 @@ def _make_package(
 
     # While the list of hlis is unique, there may be multiple packages in the same db.
     # Cutting down the GHC_PACKAGE_PATH significantly speeds up GHC.
-    db_deps = {x.db: None for x in hlis}.keys()
+    db_deps = {x.db: None for x in hlis + all_hlis}.keys()
 
     # So that ghc-pkg can find the DBs for the dependencies. We might
     # be able to use flags for this instead, but this works.
@@ -695,6 +702,7 @@ def _build_haskell_lib(
 
     # only gather direct dependencies
     uniq_infos = [x[link_style].value for x in linfos]
+    all_hlis = [lib for x in linfos for lib in x[link_style].traverse()] if ctx.attrs.reexported_modules else []
 
     objfiles = _srcs_to_objfiles(ctx, compiled.objects, osuf)
 
@@ -827,6 +835,7 @@ def _build_haskell_lib(
             {False: shared_lib},
             enable_profiling = False,
             hi_link_style = link_style,
+            all_hlis = all_hlis,
         )
         shared_hlib = HaskellLibraryInfo(
             name = pkgname,
@@ -857,6 +866,7 @@ def _build_haskell_lib(
         library_artifacts,
         enable_profiling = enable_profiling,
         own_shared_lib = own_shared_lib,
+        all_hlis = all_hlis,
     )
 
     hlib = HaskellLibraryInfo(

@@ -25,7 +25,7 @@
 #         "language": str, "extensions": [str],
 #         "extra_libraries": [str],
 #         "deps": [dep],                      # see below
-#         "reexports": [{"module": str, "original": str, "from": dep}],  # libraries only
+#         "reexports": [{"module": str, "original": str, "from": dep}],  # libraries only; no "from" for a module of the library itself
 #         "build_tools": [{"exe": str, "dir": str} | {"exe": str, "external": True}],
 #         "c_sources": [str], "cc_options": [str],
 #         "cxx_sources": [str], "cxx_options": [str],
@@ -246,7 +246,7 @@ def _haskell_kwargs(c, spec, cxx_deps):
         if "version" in spec["package"]:
             kwargs["package_version"] = spec["package"]["version"]
         if c.get("reexports"):
-            kwargs["reexported_modules"] = {r["module"]: (_dep_label(r["from"]), r["original"]) for r in c["reexports"]}
+            kwargs["reexported_modules"] = {r["module"]: (_dep_label(r["from"]) if "from" in r else None, r["original"]) for r in c["reexports"]}
         exported = _nub(["-l" + l for l in c.get("extra_libraries", [])])
         if exported:
             kwargs["exported_linker_flags"] = exported
