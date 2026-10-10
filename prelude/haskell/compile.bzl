@@ -72,9 +72,8 @@ def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_v
         children = [lib.prof_info[link_style] if enable_profiling else lib.info[link_style] for lib in direct_deps_link_info],
     )
 
-    # base is special and gets exposed by default
     package_flag = _package_flag(haskell_toolchain)
-    exposed_package_args = cmd_args([package_flag, "base"])
+    exposed_package_args = cmd_args()
 
     packagedb_args = cmd_args()
     packagedb_set = {}

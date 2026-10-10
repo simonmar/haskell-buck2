@@ -5,7 +5,7 @@
 #   - build modes: e.g. `-m opt` selects optimisation + static linking
 #   - package deps: `packages = ["text", ...]` instead of explicit
 #     `"@third-party-haskell//:text"` entries in `deps`.
-#   - a standard set of packages (base, rts) added to every target.
+#   - a standard set of packages (rts) added to every target.
 #   - hsc2hs: any `.hsc` file in `srcs` is automatically preprocessed, with
 #     include paths derived from `deps` (see buck2/hsc2hs.bzl) - so a `.hsc`
 #     file that needs a C++ dependency's headers just needs that dependency
@@ -22,7 +22,7 @@ load("//buck2:hsc2hs.bzl", "hsc2hs")
 load("@prelude//paths.bzl", "paths")
 
 # Packages implicitly needed by every Haskell target.
-AUTO_PACKAGES = ["base", "rts"]
+AUTO_PACKAGES = ["rts"]
 
 def _package_deps(packages):
     all_pkgs = {p: None for p in (AUTO_PACKAGES + packages)}
