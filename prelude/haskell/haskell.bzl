@@ -452,13 +452,21 @@ def _make_package(
     import_dirs = [mk_artifact_dir("hi", profiled, hi_link_style) for profiled in hi.keys()]
     library_dirs = [mk_artifact_dir("lib", profiled) for profiled in hi.keys()]
 
+    # Reexports are named by the unit they come from, which GHC finds in the
+    # package databases whether or not the unit is exposed.
+    reexports = []
+    for new_name, (origin, original_name) in ctx.attrs.reexported_modules.items():
+        provider = origin.get(HaskellLibraryProvider)
+        origin_info = (provider.prof_lib if enable_profiling else provider.lib)[link_style]
+        reexports.append("{} from {}:{}".format(new_name, origin_info.id, original_name))
+
     conf = [
         "name: " + (ctx.attrs.package_name or pkgname),
         "version: " + (ctx.attrs.package_version or "1.0.0"),
         "id: " + pkgname,
         "key: " + pkgname,
         "exposed: False",
-        "exposed-modules: " + ", ".join(modules),
+        "exposed-modules: " + ", ".join(modules + reexports),
         "import-dirs:" + ", ".join(import_dirs),
         "library-dirs:" + ", ".join(library_dirs),
         "extra-libraries: " + libname,

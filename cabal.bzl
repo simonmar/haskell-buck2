@@ -25,6 +25,7 @@
 #         "language": str, "extensions": [str],
 #         "extra_libraries": [str],
 #         "deps": [dep],                      # see below
+#         "reexports": [{"module": str, "original": str, "from": dep}],  # libraries only
 #         "build_tools": [{"exe": str, "dir": str} | {"exe": str, "external": True}],
 #         "c_sources": [str], "cc_options": [str],
 #         "cxx_sources": [str], "cxx_options": [str],
@@ -116,6 +117,16 @@ def _linker_flags(c, project_ghc_options):
     own = ["-l" + l for l in c.get("extra_libraries", [])] + list(c.get("ghc_options", []))
     return _nub(own) + project_ghc_options
 
+def _dep_label(d):
+    # A dependency's target: a library of this project, or an external
+    # package's main library or sub-library.
+    if "dir" in d:
+        return _label(d["dir"], d.get("library", d["package"]))
+    if "library" in d:
+        # Libraries of different packages have the same names.
+        return _third_party_label(d["package"] + "--" + d["library"])
+    return _third_party_label(d["package"])
+
 def _classify_deps(deps):
     # `packages` only ever resolves an external package's main library;
     # everything else (local libraries, external sub-libraries) is a target
@@ -125,9 +136,9 @@ def _classify_deps(deps):
     external_sublibs = []
     for d in deps:
         if "dir" in d:
-            local.append(_label(d["dir"], d.get("library", d["package"])))
+            local.append(_dep_label(d))
         elif "library" in d:
-            external_sublibs.append(_third_party_label(d["package"] + "--" + d["library"]))
+            external_sublibs.append(_dep_label(d))
         else:
             packages.append(d["package"])
     return _nub(packages), _nub(local + external_sublibs)
@@ -234,6 +245,8 @@ def _haskell_kwargs(c, spec, cxx_deps):
         kwargs["package_name"] = spec["package"]["name"]
         if "version" in spec["package"]:
             kwargs["package_version"] = spec["package"]["version"]
+        if c.get("reexports"):
+            kwargs["reexported_modules"] = {r["module"]: (_dep_label(r["from"]), r["original"]) for r in c["reexports"]}
         exported = _nub(["-l" + l for l in c.get("extra_libraries", [])])
         if exported:
             kwargs["exported_linker_flags"] = exported
