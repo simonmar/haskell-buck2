@@ -17,9 +17,10 @@
 #     module (from a .hsc/.x/.y file) is put next to the generated source,
 #     which is where GHC looks for it.
 #   - support for build rules generated from Cabal packages:
-#     - `cabal_component = (pkg, component)` causes this component's
-#       `cabal_macros.h` file to be included when `{-# LANGUAGE CPP #-}`
-#       is on.
+#     - `cabal_component = (autogen, component)` causes this component's
+#       `cabal_macros.h` file (in `autogen`, the directory of the package's
+#       autogen files, from the project root) to be included when
+#       `{-# LANGUAGE CPP #-}` is on.
 
 load("//buck2:alex_happy.bzl", "alex", "happy")
 load("//buck2:hsc2hs.bzl", "hsc2hs")
@@ -35,8 +36,7 @@ def _package_deps(packages, auto_packages):
 def _cabal_macros_include_flags(cabal_component):
     if cabal_component == None:
         return []
-    pkg, component = cabal_component
-    autogen_dir = "cabal-buck2/autogen" if pkg == "." else pkg + "/cabal-buck2/autogen"
+    autogen_dir, component = cabal_component
     label = "//" + autogen_dir + ":" + component + "-cabal-macros"
     return ["-optP-include", "-optP$(location " + label + ")"]
 
@@ -97,19 +97,19 @@ def hs_module_path(path):
             return path[:-len(ext)] + ".hs"
     return path
 
-def _resolve_src(name, src, deps, hsc_flags, hsc_cxx):
+def _resolve_src(name, src, deps, hsc_flags, hsc_cxx, common):
     out = paths.replace_extension(src, ".hs")
     if src.endswith(".hsc"):
         rule_name = name + "-hsc-" + out.replace("/", "_")
-        hsc2hs(name = rule_name, hsc_file = src, out = out, deps = deps, extra_flags = hsc_flags, cxx = hsc_cxx)
+        hsc2hs(name = rule_name, hsc_file = src, out = out, deps = deps, extra_flags = hsc_flags, cxx = hsc_cxx, **common)
         return ":" + rule_name
     elif src.endswith(".x"):
         rule_name = name + "-alex-" + out.replace("/", "_")
-        alex(name = rule_name, src = src, out = out)
+        alex(name = rule_name, src = src, out = out, **common)
         return ":" + rule_name
     elif src.endswith(".y") or src.endswith(".ly"):
         rule_name = name + "-happy-" + out.replace("/", "_")
-        happy(name = rule_name, src = src, out = out)
+        happy(name = rule_name, src = src, out = out, **common)
         return ":" + rule_name
     else:
         return src
@@ -133,17 +133,20 @@ _with_boot = rule(
     },
 )
 
-def _resolve_srcs(name, srcs, boot_srcs, deps, hsc_flags, hsc_cxx):
+def _resolve_srcs(name, srcs, boot_srcs, deps, hsc_flags, hsc_cxx, kwargs):
+    # The rules that preprocess sources are compatible with the same
+    # configurations as the rule whose sources they are.
+    common = {"target_compatible_with": kwargs["target_compatible_with"]} if "target_compatible_with" in kwargs else {}
     if type(srcs) != type({}):
         if boot_srcs:
             fail("{}: boot_srcs needs srcs to be a dict, by module name".format(name))
-        return [ _resolve_src(name, src, deps, hsc_flags, hsc_cxx) for src in srcs ]
+        return [ _resolve_src(name, src, deps, hsc_flags, hsc_cxx, common) for src in srcs ]
     unknown = [modl for modl in boot_srcs if modl not in srcs]
     if unknown:
         fail("{}: boot_srcs for modules not in srcs: {}".format(name, ", ".join(unknown)))
     resolved = {}
     for modl, src in srcs.items():
-        resolved_src = _resolve_src(name, src, deps, hsc_flags, hsc_cxx)
+        resolved_src = _resolve_src(name, src, deps, hsc_flags, hsc_cxx, common)
         boot = boot_srcs.get(modl)
         if boot == None:
             resolved[modl] = resolved_src
@@ -152,7 +155,7 @@ def _resolve_srcs(name, srcs, boot_srcs, deps, hsc_flags, hsc_cxx):
             resolved[modl + "-boot"] = boot
         else:
             rule_name = name + "-boot-" + modl
-            _with_boot(name = rule_name, src = resolved_src, boot = boot, path = paths.replace_extension(src, ".hs"))
+            _with_boot(name = rule_name, src = resolved_src, boot = boot, path = paths.replace_extension(src, ".hs"), **common)
             resolved[modl] = ":" + rule_name + "[src]"
             resolved[modl + "-boot"] = ":" + rule_name + "[boot]"
     return resolved
@@ -174,7 +177,7 @@ def haskell_library(
     kwargs.setdefault("preferred_linkage", _BUILD_MODE_PREFERRED_LINKAGE)
     native.haskell_library(
         name = name,
-        srcs = _resolve_srcs(name, srcs, boot_srcs, all_deps + internal_deps, hsc_flags + _cabal_macros_hsc_flags(cabal_component), hsc_cxx),
+        srcs = _resolve_srcs(name, srcs, boot_srcs, all_deps + internal_deps, hsc_flags + _cabal_macros_hsc_flags(cabal_component), hsc_cxx, kwargs),
         compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS + _cabal_macros_include_flags(cabal_component),
         deps = all_deps,
         internal_deps = internal_deps,
@@ -199,7 +202,7 @@ def haskell_binary(
     kwargs.setdefault("enable_profiling", _PROF_ENABLED)
     native.haskell_binary(
         name = name,
-        srcs = _resolve_srcs(name, srcs, boot_srcs, all_deps, hsc_flags + _cabal_macros_hsc_flags(cabal_component), hsc_cxx),
+        srcs = _resolve_srcs(name, srcs, boot_srcs, all_deps, hsc_flags + _cabal_macros_hsc_flags(cabal_component), hsc_cxx, kwargs),
         compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS + _ASAN_LINKER_FLAGS + _cabal_macros_include_flags(cabal_component),
         deps = all_deps,
         linker_flags = _ASAN_LINKER_FLAGS + linker_flags,

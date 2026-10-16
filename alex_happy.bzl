@@ -44,8 +44,8 @@ _run_tool = rule(
 _ALEX_FLAGS = ["-g"]
 _HAPPY_FLAGS = ["-agc"]
 
-def alex(name, src, out):
-    _run_tool(name = name, src = src, out = out, tool = ALEX, tool_dep = ALEX_TARGET, data_dep = ALEX_DATA, data_env = ALEX_DATA_ENV, category = "alex", flags = _ALEX_FLAGS)
+def alex(name, src, out, **kwargs):
+    _run_tool(name = name, src = src, out = out, tool = ALEX, tool_dep = ALEX_TARGET, data_dep = ALEX_DATA, data_env = ALEX_DATA_ENV, category = "alex", flags = _ALEX_FLAGS, **kwargs)
 
-def happy(name, src, out):
-    _run_tool(name = name, src = src, out = out, tool = HAPPY, tool_dep = HAPPY_TARGET, data_dep = HAPPY_DATA, data_env = HAPPY_DATA_ENV, category = "happy", flags = _HAPPY_FLAGS)
+def happy(name, src, out, **kwargs):
+    _run_tool(name = name, src = src, out = out, tool = HAPPY, tool_dep = HAPPY_TARGET, data_dep = HAPPY_DATA, data_env = HAPPY_DATA_ENV, category = "happy", flags = _HAPPY_FLAGS, **kwargs)
