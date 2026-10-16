@@ -506,6 +506,11 @@ def _make_package(
             "extra-libraries: " + libname,
             cmd_args("dynamic-library-dirs: ", cmd_args([pkgroot_path(l, parent = 1) for l in dynamic_lib], delimiter = ", "), delimiter = ""),
         ]
+    include_dirs = ctx.attrs.include_dirs
+    if include_dirs:
+        conf.append(cmd_args("include-dirs: ", cmd_args([pkgroot_path(d) for d in include_dirs], delimiter = ", "), delimiter = ""))
+    if ctx.attrs.includes:
+        conf.append("includes: " + ", ".join(ctx.attrs.includes))
     pkg_conf = ctx.actions.write("pkg-" + db_variant + ".conf", conf, has_content_based_path = False)
 
     # While the list of hlis is unique, there may be multiple packages in the same db.
@@ -544,8 +549,9 @@ def _make_package(
                 "--force" if early else "",
                 haskell_toolchain.packager,
             ],
-            # needs hi, because ghc-pkg checks that the .hi files exist
-            hidden = [] if early else hi if library_less else hi + lib + dynamic_lib,
+            # needs hi, because ghc-pkg checks that the .hi files exist (and
+            # the include dirs)
+            hidden = [] if early else hi + include_dirs if library_less else hi + lib + dynamic_lib + include_dirs,
         ),
         category = "haskell_package",
         identifier = db_variant,
@@ -757,6 +763,7 @@ def _register_library(
         id = pkgname,
         import_dirs = import_artifacts,
         stub_dirs = stub_dirs,
+        include_dirs = ctx.attrs.include_dirs,
         libs = all_libs,
         native_libs = native_libs,
         data_dirs = own_data_dirs(ctx),
@@ -953,6 +960,13 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
             sub_targets[link_style.value.replace("_", "-")] = [
                 DefaultInfo(
                     default_outputs = libs,
+                )
+            ]
+
+            # useful for debugging, to see the package DB(s)
+            sub_targets["db-" + link_style.value.replace("_", "-")] =  [
+                DefaultInfo(
+                    default_outputs = [hlib.db],
                 )
             ]
 

@@ -42,7 +42,10 @@ def _package_db_args(ctx: AnalysisContext, link_style: LinkStyle) -> cmd_args:
             children.append(infos[link_style] if link_style in infos else infos.values()[0])
     libs = list(ctx.actions.tset(HaskellLibraryInfoTSet, children = children).traverse())
     dbs = {lib.db: None for lib in libs}
-    return cmd_args([cmd_args("-package-db", db) for db in dbs])
+    return cmd_args(
+        [cmd_args("-package-db", db) for db in dbs],
+        hidden = [lib.include_dirs for lib in libs],
+    )
 
 def _cmm_library_impl(ctx: AnalysisContext) -> list[Provider]:
     ghc = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]

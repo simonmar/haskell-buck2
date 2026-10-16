@@ -183,13 +183,14 @@ def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_v
                 interfaces = [f for m in lib.modules.values() for f in [m.hi, m.dyn_hi] if f != None]
             else:
                 interfaces = lib.import_dirs
-            hidden_args = cmd_args(hidden = [interfaces, lib.stub_dirs])
+            hidden_args = cmd_args(hidden = [interfaces, lib.stub_dirs, lib.include_dirs])
         else:
             packagedb_set[lib.db] = None
             hidden_args = cmd_args(
                 hidden = [
                     lib.import_dirs,
                     lib.stub_dirs,
+                    lib.include_dirs,
                     # libs of dependencies might be needed at compile time if
                     # we're using Template Haskell:
                     lib.libs,

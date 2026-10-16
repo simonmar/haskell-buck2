@@ -206,6 +206,11 @@ haskell_library = prelude_rule(
             # listing those makes no difference. The default, an empty list,
             # means that splices run no local library's code.
             "splice_depends": attrs.list(attrs.dep(), default = []),
+            # The include directories of the library's package (its
+            # `include-dirs`): GHC gives them to the C preprocessor and C
+            # compiler for what depends on the package, and finds the
+            # platform constants in those of the rts.
+            "include_dirs": attrs.list(attrs.source(allow_directory = True), default = []),
             # Libraries that are part of this one, as the C of a Cabal package
             # is part of its library: their objects are in its archive, and
             # linked into its shared library, and what depends on it isn't
@@ -218,6 +223,9 @@ haskell_library = prelude_rule(
             # package's C for each way): the profiled library has their
             # objects instead.
             "prof_internal_deps": attrs.list(attrs.dep(), default = []),
+            # Headers in them that GHC includes in the C it generates for what
+            # depends on the package (its `includes`).
+            "includes": attrs.list(attrs.string(), default = []),
             # Whether the library's package is exposed: for a GHC that uses
             # its package database as an installed one (as its global one,
             # say). The build itself hides all packages.

@@ -47,6 +47,8 @@ HaskellLibraryInfo = record(
     # splice variant (see Note [Link styles and profiling] in haskell.bzl).
     import_dirs = list[Artifact],
     stub_dirs = list[Artifact],
+    # The package's include dirs, inputs of what is compiled against it.
+    include_dirs = field(list[Artifact], []),
     # This field is only used as hidden inputs to compilation, to
     # support Template Haskell which may need access to the libraries
     # at compile time.  The real library flags are propagated up the
