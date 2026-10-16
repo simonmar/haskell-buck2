@@ -18,9 +18,10 @@
 #     module (from a .hsc/.x/.y file) is put next to the generated source,
 #     which is where GHC looks for it.
 #   - support for build rules generated from Cabal packages:
-#     - `cabal_component = (pkg, component)` causes this component's
-#       `cabal_macros.h` file to be included when `{-# LANGUAGE CPP #-}`
-#       is on.
+#     - `cabal_component = (autogen, component)` causes this component's
+#       `cabal_macros.h` file (in `autogen`, the directory of the package's
+#       autogen files, from the project root) to be included when
+#       `{-# LANGUAGE CPP #-}` is on.
 
 load("//buck2:alex_happy.bzl", "alex", "happy")
 load("//buck2:hsc2hs.bzl", "hsc2hs")
@@ -36,8 +37,7 @@ def _package_deps(packages, auto_packages):
 def _cabal_macros_include_flags(cabal_component):
     if cabal_component == None:
         return []
-    pkg, component = cabal_component
-    autogen_dir = "cabal-buck2/autogen" if pkg == "." else pkg + "/cabal-buck2/autogen"
+    autogen_dir, component = cabal_component
     label = "//" + autogen_dir + ":" + component + "-cabal-macros"
     return ["-optP-include", "-optP$(location " + label + ")"]
 
