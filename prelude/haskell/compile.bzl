@@ -85,6 +85,7 @@ def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_v
             hidden = [
                 lib.import_dirs.values(),
                 lib.stub_dirs,
+                lib.include_dirs,
                 # libs of dependencies might be needed at compile time if
                 # we're using Template Haskell:
                 lib.libs,

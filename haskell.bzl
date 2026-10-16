@@ -5,7 +5,7 @@
 #   - build modes: e.g. `-m opt` selects optimisation + static linking
 #   - package deps: `packages = ["text", ...]` instead of explicit
 #     `"@third-party-haskell//:text"` entries in `deps`.
-#   - a standard set of packages (rts) added to every target.
+#   - a standard set of packages (rts) added to every target (`auto_packages`).
 #   - hsc2hs: any `.hsc` file in `srcs` is automatically preprocessed, with
 #     include paths derived from `deps` (see buck2/hsc2hs.bzl) - so a `.hsc`
 #     file that needs a C++ dependency's headers just needs that dependency
@@ -28,8 +28,8 @@ load("@prelude//paths.bzl", "paths")
 # Packages implicitly needed by every Haskell target.
 AUTO_PACKAGES = ["rts"]
 
-def _package_deps(packages):
-    all_pkgs = {p: None for p in (AUTO_PACKAGES + packages)}
+def _package_deps(packages, auto_packages):
+    all_pkgs = {p: None for p in (auto_packages + packages)}
     return [("@third-party-haskell//:" + p) for p in sorted(all_pkgs.keys())]
 
 def _cabal_macros_include_flags(cabal_component):
@@ -167,9 +167,10 @@ def haskell_library(
         hsc_cxx = True,
         cabal_component = None,
         boot_srcs = {},
+        auto_packages = AUTO_PACKAGES,
         internal_deps = [],
         **kwargs):
-    all_deps = deps + _package_deps(packages)
+    all_deps = deps + _package_deps(packages, auto_packages)
     kwargs.setdefault("preferred_linkage", _BUILD_MODE_PREFERRED_LINKAGE)
     native.haskell_library(
         name = name,
@@ -191,8 +192,9 @@ def haskell_binary(
         linker_flags = [],
         cabal_component = None,  # see haskell_library()
         boot_srcs = {},  # see haskell_library()
+        auto_packages = AUTO_PACKAGES,  # see haskell_library()
         **kwargs):
-    all_deps = deps + _package_deps(packages)
+    all_deps = deps + _package_deps(packages, auto_packages)
     kwargs.setdefault("link_style", _BUILD_MODE_LINK_STYLE)
     kwargs.setdefault("enable_profiling", _PROF_ENABLED)
     native.haskell_binary(
