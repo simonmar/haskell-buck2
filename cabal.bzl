@@ -41,7 +41,7 @@
 #         "hsc_options": [str],               # defines for hsc2hs's C compiler (the platform)
 #         "includes": [str],                  # headers that GHC includes in what is compiled against the library
 #         "exposed": bool,                    # False: the library's package isn't exposed (a library's)
-#         "generated_include_dirs": [str],    # the targets of each of their directories
+#         "generated_include_dir": str,       # the target of their directory
 #         "generated_headers": str,           # the headers that `./configure` generated: a target in cabal-buck2/autogen
 #         "test_args": [str],                 # test-suites only
 #       },
@@ -82,7 +82,7 @@ load("//buck2:cxx.bzl", "cxx_binary", "cxx_library")
 load("//buck2:headers.bzl", "headers_of")
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library", "haskell_test")
 load("//buck2:variant.bzl", "variant")
-load("//cabal-buck2:packages.bzl", "OVERRIDES", "PACKAGES", "PACKAGE_SETS")
+load("//cabal-buck2:packages.bzl", "OVERRIDES", "PACKAGES", "PACKAGE_SETS", "PACKAGE_SET_MODIFIERS", "PACKAGE_SET_TRANSITIONS")
 load("@prelude//paths.bzl", "paths")
 load("@prelude//third-party:pkgconfig.bzl", "external_pkgconfig_library")
 
@@ -135,10 +135,15 @@ def _packages(spec):
 def _third_party_label(name):
     return "third-party-haskell//:" + name
 
-def _src(pkg_dir, src):
+def _autogen_dir(spec, pkg_dir):
+    # Where the package's autogen files of its package set are (see autogenDir
+    # in cabal-buck2's Write.hs).
+    dir = "cabal-buck2/autogen" + ("-" + spec["package_set"] if "package_set" in spec else "")
+    return dir if pkg_dir == "." else pkg_dir + "/" + dir
+
+def _src(c, src):
     if type(src) == type({}):
-        autogen_dir = "cabal-buck2/autogen" if pkg_dir == "." else pkg_dir + "/cabal-buck2/autogen"
-        return _label(autogen_dir, src["autogen"])
+        return _label(c["_autogen"], src["autogen"])
     return src
 
 def _provided(src):
@@ -161,10 +166,10 @@ def _main_module(c):
 def _srcs(c, pkg_dir):
     srcs = {}
     if "main_is" in c:
-        srcs[_main_module(c)] = _src(pkg_dir, c["main_is"])
+        srcs[_main_module(c)] = _src(c, c["main_is"])
     for module, src in c.get("srcs", {}).items():
         if not _provided(src):
-            srcs[module] = _src(pkg_dir, src)
+            srcs[module] = _src(c, src)
     return srcs
 
 def _check_provided(spec, c, srcs):
@@ -233,7 +238,7 @@ def _generated_headers(c, pkg_dir):
     # generated, which are needed where its own include directories are.
     if "generated_headers" not in c:
         return []
-    return [_label("cabal-buck2/autogen" if pkg_dir == "." else pkg_dir + "/cabal-buck2/autogen", c["generated_headers"])]
+    return [_label(c["_autogen"], c["generated_headers"])]
 
 # What an include directory has that a C preprocessor may include.
 _HEADER_PATTERNS = ["**/*.h", "**/*.hh", "**/*.hpp", "**/*.hxx", "**/*.inc"]
@@ -250,10 +255,10 @@ def _package_include_dirs(c, pkg_dir):
         native.filegroup(
             name = name,
             srcs = {f[len(prefix):]: f for f in native.glob([prefix + p for p in _HEADER_PATTERNS])},
+            **c["_common"]
         )
         dirs.append(":" + name)
-    autogen = "cabal-buck2/autogen" if pkg_dir == "." else pkg_dir + "/cabal-buck2/autogen"
-    return dirs + [_label(autogen, d) for d in c.get("generated_include_dirs", [])]
+    return dirs + ([_label(c["_autogen"], c["generated_include_dir"])] if "generated_include_dir" in c else [])
 
 def _this_unit_id(flags):
     # The unit id that a package's options give its library, as those of a
@@ -280,10 +285,13 @@ def _unit_id(spec, c, name):
     unit_id = package["name"] + ("-" + package["version"] if "version" in package else "") + "-inplace"
     return unit_id if name == package["name"] else unit_id + "-" + name
 
-def cabal_unit_id(spec, name):
+def cabal_unit_id(spec, name, package_set = None):
     """
     The unit id of the component `name` in the given package `spec`
+    with the given `package_set`.
     """
+    if type(spec) == type([]):
+        spec = [s for s in spec if s.get("package_set") == package_set][0]
     c = [c for c in spec["components"] if c["kind"] == "library" and c["name"] == name][0]
     return _unit_id(spec, c, name)
 
@@ -420,7 +428,7 @@ def _cxx_library(c, packages, pkg_dir, pkgconfig_seen, overrides):
     deps, has_rts = _header_deps(c, packages)
     kwargs["compiler_flags"] = (["-include", "ghcversion.h"] if has_rts else []) + _PROFILING_DEFINES + _NO_PIC
     headers = name + "-headers"
-    headers_of(name = headers, deps = deps)
+    headers_of(name = headers, deps = deps, **c["_common"])
     kwargs["deps"] = [":" + headers] + kwargs["deps"]
 
     # exported_preprocessor_flags is an opaque list of strings to buck2, so
@@ -437,7 +445,7 @@ def _cxx_library(c, packages, pkg_dir, pkgconfig_seen, overrides):
     kwargs["preferred_linkage"] = "static"
     kwargs["link_whole"] = True
     kwargs["use_archive"] = False
-    cxx_library(name = name, **_merge(kwargs, overrides))
+    cxx_library(name = name, **_merge(_merge(kwargs, c["_common"]), overrides))
     return [":" + name]
 
 # The extensions by which Cabal recognises a C or C++ main-is.
@@ -483,7 +491,7 @@ def _cxx_binary(c, packages, pkg_dir, pkgconfig_seen, overrides):
     linker_flags = _lib_dir_flags(c, pkg_dir) + ["-l" + l for l in c.get("extra_libraries", [])] + c.get("ld_options", [])
     if linker_flags:
         kwargs["linker_flags"] = _nub(linker_flags)
-    cxx_binary(**_merge(kwargs, overrides))
+    cxx_binary(**_merge(_merge(kwargs, c["_common"]), overrides))
 
 def _header_deps(c, packages):
     # The libraries whose headers the C or Cmm of a component may include:
@@ -508,7 +516,7 @@ def _cmm_library(c, spec, overrides):
         "deps": _generated_headers(c, pkg_dir) + _header_deps(c, _packages(spec))[0],
         "visibility": ["PUBLIC"],
     }
-    cmm_library(name = name, **_merge(kwargs, overrides))
+    cmm_library(name = name, **_merge(_merge(kwargs, c["_common"]), overrides))
     return [":" + name]
 
 def _profiled(label):
@@ -529,7 +537,7 @@ def _haskell_kwargs(c, spec, helpers):
         "name": c["name"],
         "srcs": _srcs(c, pkg_dir),
         "boot_srcs": dict(c.get("boot_srcs", {})),
-        "cabal_component": (pkg_dir, c["name"]),
+        "cabal_component": (c["_autogen"], c.get("_name", c["name"])),
     }
     if "exe_name" in c:
         kwargs["exe_name"] = c["exe_name"]
@@ -550,7 +558,8 @@ def _haskell_kwargs(c, spec, helpers):
         kwargs["package_name"] = spec["package"]["name"]
         if "version" in spec["package"]:
             kwargs["package_version"] = spec["package"]["version"]
-        kwargs["unit_id"] = _unit_id(spec, c, c["name"])
+        # The unit id of the package, whichever set's it is built as.
+        kwargs["unit_id"] = _unit_id(spec, c, c.get("_name", c["name"]))
         # The code of the helpers is part of the library, as in Cabal, which
         # compiles it for each way: for the profiled library, as built for
         # profiling.
@@ -599,7 +608,7 @@ def _haskell_kwargs(c, spec, helpers):
         kwargs["build_tool_depends"] = build_tool_depends
     if kind != "test-suite":
         kwargs["visibility"] = ["PUBLIC"]
-    return kwargs
+    return _merge(kwargs, c["_common"])
 
 _LIST_TYPES = (type([]), type(select({"DEFAULT": []})))
 
@@ -656,6 +665,69 @@ def cabal_targets(spec, defaults = {}, overrides = {}, transform = None, rules =
     _cxx_binary()), to which only its overrides apply: defaults, transform
     and rules are for the Haskell rules.
     """
+    if type(spec) == type([]):
+        _cabal_targets_of_sets(spec, defaults, overrides, transform, rules)
+        return
+    _cabal_targets_of_set(spec, defaults, overrides, transform, rules, extras = True)
+    for c in spec["components"]:
+        if "package_set" in spec:
+            _set_alias(c["name"], spec["package_set"])
+
+def _cabal_targets_of_sets(specs, defaults, overrides, transform, rules):
+    # The targets of a package that is in more than one package set (the
+    # project's and a later stage's, say): those of each set's spec, under
+    # names with the set in them (<component>.<set>, the project's set being
+    # "project"), which a later set's are only compatible with configurations
+    # of (so that `buck2 build //...` doesn't build them for the project's).
+    # Each component's own target is an alias of the one for the set of the
+    # configuration: what a target is built by (the stage, its compiler) is
+    # its configuration's.
+    impls = {}
+    for spec in specs:
+        set = spec.get("package_set")
+        components = []
+        for c in spec["components"]:
+            base = c["name"]
+            c = dict(c, name = base + "." + (set or "project"), _name = base)
+            if set != None:
+                c["_common"] = {"target_compatible_with": _set_constraints(set)}
+            if c["kind"] != "library":
+                c["exe_name"] = c.get("exe_name", base)
+            components.append(c)
+            impls.setdefault(base, {})[set] = ":" + c["name"]
+        _cabal_targets_of_set(dict(spec, components = components), defaults, overrides, transform, rules, extras = spec == specs[0])
+    for base, sets in impls.items():
+        arms = {_set_constraint(set): impl for set, impl in sets.items() if set != None}
+        arms["DEFAULT"] = sets[None] if None in sets else sets.values()[0]
+        native.alias(name = base, actual = select(arms), visibility = ["PUBLIC"])
+        for set in sets:
+            if set != None:
+                _set_alias(base, set)
+
+def _set_constraints(set):
+    # The configuration of a package set's targets: its PACKAGE_SET_MODIFIERS
+    # (in the project's cabal-buck2.bzl), which are constraints.
+    if set not in PACKAGE_SET_MODIFIERS:
+        fail("package set {} has no PACKAGE_SET_MODIFIERS in cabal-buck2.bzl".format(set))
+    return PACKAGE_SET_MODIFIERS[set]
+
+def _set_constraint(set):
+    constraints = _set_constraints(set)
+    if len(constraints) != 1:
+        fail("the PACKAGE_SET_MODIFIERS of package set {} must be one constraint (that the targets of the set are built with), not {}".format(set, constraints))
+    return constraints[0]
+
+def _set_alias(name, set):
+    # <component>-<set>: the component built for the set (with the project's
+    # PACKAGE_SET_TRANSITIONS), to build by hand.
+    if set not in PACKAGE_SET_TRANSITIONS:
+        fail("package set {} has no PACKAGE_SET_TRANSITIONS in cabal-buck2.bzl".format(set))
+    variant(name = name + "-" + set, actual = ":" + name, transition = PACKAGE_SET_TRANSITIONS[set], visibility = ["PUBLIC"])
+
+def _cabal_targets_of_set(spec, defaults, overrides, transform, rules, extras):
+    # The targets of a package's spec for one of its package sets; `extras`
+    # says whether to make those of the package as a whole (its data files,
+    # say), which are the same for each set.
     generated_by = spec.get("cabal_buck2")
     if generated_by != CABAL_BUCK2_VERSION:
         generator = "cabal-buck2 " + generated_by if generated_by else "an earlier release of cabal-buck2 (0.1.0.0)"
@@ -668,7 +740,9 @@ def cabal_targets(spec, defaults = {}, overrides = {}, transform = None, rules =
     project_overrides = OVERRIDES.get(spec["package"]["name"], {})
     pkgconfig_seen = {}
     for c in spec["components"]:
-        component_overrides = _merge(project_overrides.get(c["name"], {}), overrides.get(c["name"], {}))
+        base = c.get("_name", c["name"])
+        c = dict(c, _autogen = _autogen_dir(spec, pkg_dir), _common = c.get("_common", {}))
+        component_overrides = _merge(project_overrides.get(base, {}), overrides.get(base, {}))
 
         # These are for the rules of the component's C/C++/Cmm code.
         c = _with_foreign_sources(
@@ -699,9 +773,10 @@ def cabal_targets(spec, defaults = {}, overrides = {}, transform = None, rules =
         _check_provided(spec, c, kwargs.get("srcs", {}))
         rules.get(kind, _DEFAULT_RULES[kind])(**kwargs)
         for way, transition in variants.items():
-            variant(name = c["name"] + "-" + way, actual = ":" + c["name"], transition = transition, visibility = ["PUBLIC"])
-    _data_files(spec, pkg_dir)
-    _extra_source_files(spec)
+            variant(name = c["name"] + "-" + way, actual = ":" + c["name"], transition = transition, visibility = ["PUBLIC"], **c["_common"])
+    if extras:
+        _data_files(spec, pkg_dir)
+        _extra_source_files(spec)
 
 def _data_files(spec, pkg_dir):
     # The package's data-files, as a directory laid out like its data-dir:
