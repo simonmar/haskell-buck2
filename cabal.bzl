@@ -81,7 +81,7 @@ load("//buck2:cxx.bzl", "cxx_binary", "cxx_library")
 load("//buck2:headers.bzl", "headers_of")
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library", "haskell_test")
 load("//buck2:variant.bzl", "variant")
-load("//cabal-buck2:packages.bzl", "OVERRIDES", "PACKAGES", "PACKAGE_SETS", "PACKAGE_SET_MODIFIERS", "PACKAGE_SET_TRANSITIONS")
+load("//cabal-buck2:packages.bzl", "OVERRIDES", "PACKAGES", "PACKAGE_SETS", "PACKAGE_SET_MODIFIERS", "PACKAGE_SET_TRANSITIONS", "PROJECT_PACKAGE_SET")
 load("@prelude//paths.bzl", "paths")
 load("@prelude//third-party:pkgconfig.bzl", "external_pkgconfig_library")
 
@@ -604,15 +604,17 @@ def cabal_targets(spec, defaults = {}, overrides = {}, transform = None, rules =
         _cabal_targets_of_sets(spec, defaults, overrides, transform, rules)
         return
     _cabal_targets_of_set(spec, defaults, overrides, transform, rules, extras = True)
-    for c in spec["components"]:
-        if "package_set" in spec:
-            _set_alias(c["name"], spec["package_set"])
+    set = spec.get("package_set")
+    if _has_set_alias(set):
+        for c in spec["components"]:
+            _set_alias(c["name"], _set_name(set))
 
 def _cabal_targets_of_sets(specs, defaults, overrides, transform, rules):
     # The targets of a package that is in more than one package set (the
     # project's and a later stage's, say): those of each set's spec, under
     # names with the set in them (<component>.<set>, the project's set being
-    # "project"), which a later set's are only compatible with configurations
+    # PROJECT_PACKAGE_SET, else "project"), which a later set's are only
+    # compatible with configurations
     # of (so that `buck2 build //...` doesn't build them for the project's).
     # Each component's own target is an alias of the one for the set of the
     # configuration: what a target is built by (the stage, its compiler) is
@@ -623,7 +625,7 @@ def _cabal_targets_of_sets(specs, defaults, overrides, transform, rules):
         components = []
         for c in spec["components"]:
             base = c["name"]
-            c = dict(c, name = base + "." + (set or "project"), _name = base, _unit_id_label = ":" + base)
+            c = dict(c, name = base + "." + _set_name(set), _name = base, _unit_id_label = ":" + base)
             if set != None:
                 c["_common"] = {"target_compatible_with": [_set_constraint(set)]}
             if c["kind"] != "library":
@@ -636,8 +638,8 @@ def _cabal_targets_of_sets(specs, defaults, overrides, transform, rules):
         arms["DEFAULT"] = sets[None] if None in sets else sets.values()[0]
         native.alias(name = base, actual = select(arms), visibility = ["PUBLIC"])
         for set in sets:
-            if set != None:
-                _set_alias(base, set)
+            if _has_set_alias(set):
+                _set_alias(base, _set_name(set))
 
 def _set_constraint(set):
     # The constraint of a package set's configurations: the first of its
@@ -647,6 +649,17 @@ def _set_constraint(set):
     if not modifiers:
         fail("package set {} has no PACKAGE_SET_MODIFIERS in cabal-buck2.bzl".format(set))
     return modifiers[0]
+
+def _set_name(set):
+    # The name of a package set: a later stage's, or the project's own
+    # (`None`), which the project may name in its cabal-buck2.bzl.
+    return set or PROJECT_PACKAGE_SET or "project"
+
+def _has_set_alias(set):
+    # Whether a package set's components have <component>-<set> aliases: a
+    # later stage's do, and the project's own, if it names it and has a
+    # transition to it.
+    return set != None or (PROJECT_PACKAGE_SET != None and PROJECT_PACKAGE_SET in PACKAGE_SET_TRANSITIONS)
 
 def _set_alias(name, set):
     # <component>-<set>: the component built for the set (with the project's
