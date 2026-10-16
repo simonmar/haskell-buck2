@@ -44,6 +44,8 @@ HaskellLibraryInfo = record(
     # Import dirs indexed by profiling enabled/disabled
     import_dirs = dict[bool, Artifact],
     stub_dirs = list[Artifact],
+    # The package's include dirs, inputs of what is compiled against it.
+    include_dirs = field(list[Artifact], []),
     # This field is only used as hidden inputs to compilation, to
     # support Template Haskell which may need access to the libraries
     # at compile time.  The real library flags are propagated up the
@@ -86,6 +88,9 @@ HaskellLibraryInfo = record(
     # PerModuleClosures provider (see compile_per_module.bzl) maps each
     # module to its closure set.
     closures = field(typing.Any, None),
+    # GHC links the library itself (see hs_libraries), so an executable
+    # passes -package-id for it.
+    linked_by_ghc = field(bool, False),
 )
 
 HaskellLibraryInfoTSet = transitive_set()

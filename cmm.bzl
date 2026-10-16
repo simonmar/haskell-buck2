@@ -9,6 +9,9 @@
 # `internal_deps` of haskell_library().
 
 load("@prelude//cxx:cxx_context.bzl", "get_cxx_toolchain_info")
+load("@prelude//cxx:preprocessor.bzl", "cxx_inherited_preprocessor_infos", "cxx_merge_cpreprocessors")
+load("@prelude//haskell:library_info.bzl", "HaskellLibraryInfoTSet")
+load("@prelude//haskell:link_info.bzl", "HaskellLinkInfo")
 load(
     "@prelude//linking:link_info.bzl",
     "LibOutputStyle",
@@ -25,17 +28,39 @@ load("@prelude//decls/toolchains_common.bzl", "toolchains_common")
 load("@prelude//haskell:toolchain.bzl", "HaskellToolchainInfo")
 load("@third-party-haskell//:tools.bzl", "CC_FINGERPRINT", "GHC_FINGERPRINT")
 
+def _package_db_args(ctx: AnalysisContext, link_style: LinkStyle) -> cmd_args:
+    # The package databases of the Haskell libraries among the deps, and
+    # theirs: GHC finds the platform constants in the rts package.
+    # A library built only some ways (shared only, say) has the packages of
+    # those, which have the same rts in them.
+    children = []
+    for dep in ctx.attrs.deps:
+        info = dep.get(HaskellLinkInfo)
+        if info:
+            infos = info.prof_info if ctx.attrs.profiling else info.info
+            children.append(infos[link_style] if link_style in infos else infos.values()[0])
+    libs = list(ctx.actions.tset(HaskellLibraryInfoTSet, children = children).traverse())
+    dbs = {lib.db: None for lib in libs}
+    return cmd_args(
+        [cmd_args("-package-db", db) for db in dbs],
+        hidden = [lib.include_dirs for lib in libs],
+    )
+
 def _cmm_library_impl(ctx: AnalysisContext) -> list[Provider]:
     ghc = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     linker_type = get_cxx_toolchain_info(ctx).linker_info.type
+    pre = cxx_merge_cpreprocessors(ctx.actions, [], cxx_inherited_preprocessor_infos(ctx.attrs.deps))
+    pre_args = cmd_args(pre.set.project_as_args("args"), format = "-optCmmP={}")
     link_infos = {}
     for output_style, link_style, flags in (
         (LibOutputStyle("archive"), LinkStyle("static"), []),
         (LibOutputStyle("pic_archive"), LinkStyle("shared"), ["-dynamic", "-fPIC"]),
     ):
         variant = link_style.value
+        package_db_args = _package_db_args(ctx, link_style)
         objects = []
-        for src in ctx.attrs.srcs:
+        for entry in ctx.attrs.srcs:
+            src, src_flags = entry if type(entry) == type(()) else (entry, [])
             obj = ctx.actions.declare_output(variant, src.short_path + ".o")
             cmd = cmd_args(
                 ghc.compiler,
@@ -43,6 +68,9 @@ def _cmm_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 ["-prof"] if ctx.attrs.profiling else [],
                 flags,
                 ctx.attrs.flags,
+                package_db_args,
+                pre_args,
+                src_flags,
                 "-c",
                 src,
                 "-o",
@@ -87,10 +115,11 @@ def _cmm_library_impl(ctx: AnalysisContext) -> list[Provider]:
 _cmm_library = rule(
     impl = _cmm_library_impl,
     attrs = {
+        "deps": attrs.list(attrs.dep(), default = []),
         "flags": attrs.list(attrs.arg(), default = []),
         "labels": attrs.list(attrs.string(), default = []),
         "profiling": attrs.bool(default = False),
-        "srcs": attrs.list(attrs.source()),
+        "srcs": attrs.list(attrs.one_of(attrs.source(), attrs.tuple(attrs.source(), attrs.list(attrs.arg())))),
         "_cxx_toolchain": toolchains_common.cxx(),
         "_haskell_toolchain": toolchains_common.haskell(),
     },
@@ -101,13 +130,15 @@ _PROFILING = select({
     "DEFAULT": False,
 })
 
-def cmm_library(name, srcs, flags = [], **kwargs):
+def cmm_library(name, srcs, flags = [], deps = [], **kwargs):
     """A library of Cmm code, to depend on from haskell_library() (as one
     of its `internal_deps`).
 
     Args:
       name: the target name.
-      srcs: the .cmm files.
+      srcs: the .cmm files, each alone or paired with flags of its own.
       flags: options for GHC when it compiles them.
+      deps: the libraries whose headers they include: C libraries, and the
+          Haskell libraries of the packages the code depends on.
     """
-    _cmm_library(name = name, srcs = srcs, flags = flags, profiling = _PROFILING, **kwargs)
+    _cmm_library(name = name, srcs = srcs, flags = flags, deps = deps, profiling = _PROFILING, **kwargs)
