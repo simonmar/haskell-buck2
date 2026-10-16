@@ -499,6 +499,9 @@ def _haskell_kwargs(c, spec, helpers):
         unit_id = _this_unit_id(compiler_flags)
         if unit_id:
             kwargs["unit_id"] = unit_id
+        elif "_unit_id_label" in c:
+            # The unit id of the package, whichever set's it is built as.
+            kwargs["unit_id_label"] = c["_unit_id_label"]
         # The code of the helpers is part of the library, as in Cabal.
         if helpers:
             kwargs["internal_deps"] = helpers
@@ -620,7 +623,7 @@ def _cabal_targets_of_sets(specs, defaults, overrides, transform, rules):
         components = []
         for c in spec["components"]:
             base = c["name"]
-            c = dict(c, name = base + "." + (set or "project"), _name = base)
+            c = dict(c, name = base + "." + (set or "project"), _name = base, _unit_id_label = ":" + base)
             if set != None:
                 c["_common"] = {"target_compatible_with": _set_constraints(set)}
             if c["kind"] != "library":
