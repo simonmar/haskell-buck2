@@ -42,8 +42,9 @@ HaskellLibraryInfo = record(
     version = str,
     is_prebuilt = bool,
     profiling_enabled = bool,
-    # GHC links the library itself (see hs_libraries), so an executable
-    # passes -package-id for it.
+    # GHC links the library itself (choosing the variant of it for the way
+    # it links, as for the RTS), so an executable passes -package-id for it,
+    # and links nothing of it.
     linked_by_ghc = field(bool, False),
 )
 

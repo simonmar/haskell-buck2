@@ -208,20 +208,6 @@ haskell_library = prelude_rule(
             # The soname of the library's shared library, when it isn't its
             # file's name.
             "soname": attrs.option(attrs.string(), default = None),
-            # GHC links the library itself, as it links the libraries of the
-            # packages it is told to (the RTS, whose variant it chooses by the
-            # way it links): the library's package has these hs-libraries,
-            # which GHC finds in library_dir, named as GHC names them, for
-            # every way of linking. Its own library files aren't linked (nor
-            # built); library_dir's shared libraries are those of what is
-            # linked with it.
-            "hs_libraries": attrs.list(attrs.string(), default = []),
-            "library_dir": attrs.option(attrs.dep(), default = None),
-            # The names of the library's files (lib<name>.a, lib<name>_p.a
-            # profiled, lib<name>.so and its soname), instead of names from
-            # its label: those that GHC would look for (for library_dir).
-            "static_library_name": attrs.option(attrs.string(), default = None),
-            "shared_library_name": attrs.option(attrs.string(), default = None),
             "linker_flags": attrs.list(attrs.arg(), default = []),
             # The name the library's package has in the package db, for
             # `import "name" Module`. Not its id, which is derived from the
