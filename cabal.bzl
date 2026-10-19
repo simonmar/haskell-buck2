@@ -81,7 +81,7 @@ load("//buck2:cxx.bzl", "cxx_binary", "cxx_library")
 load("//buck2:headers.bzl", "headers_of")
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library", "haskell_test")
 load("//buck2:variant.bzl", "variant")
-load("//cabal-buck2:packages.bzl", "OVERRIDES", "PACKAGES", "PACKAGE_SETS", "PACKAGE_SET_MODIFIERS", "PACKAGE_SET_TRANSITIONS", "PROJECT_PACKAGE_SET")
+load("//cabal-buck2:packages.bzl", "OVERRIDES", "PACKAGES", "PACKAGE_SETS", "PACKAGE_SET_MODIFIERS", "PACKAGE_SET_TRANSITIONS", "PACKAGE_TARGETS", "PROJECT_PACKAGE_SET")
 load("@prelude//paths.bzl", "paths")
 load("@prelude//third-party:pkgconfig.bzl", "external_pkgconfig_library")
 
@@ -289,8 +289,12 @@ def _linker_flags(c, pkg_dir, project_ghc_options):
     return _nub(own) + project_ghc_options
 
 def _dep_label(packages, d):
-    # A dependency's target: a library of this project, or an external
-    # package's main library or sub-library.
+    # A dependency's target: a library of this project (or for its main
+    # library, the target that the project's PACKAGE_TARGETS gives, which it
+    # makes of the generated one, say), or an external package's main
+    # library or sub-library.
+    if d["package"] in packages and d["package"] in PACKAGE_TARGETS and "library" not in d:
+        return PACKAGE_TARGETS[d["package"]]
     if d["package"] in packages:
         return _label(packages[d["package"]], d.get("library", d["package"]))
     if "library" in d:
