@@ -967,7 +967,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     sub_targets = {}
 
     libname = haskell_library_name(ctx.label)
-    pkgname = ctx.attrs.unit_id or haskell_library_unit_id(ctx.attrs.unit_id_label.raw_target() if ctx.attrs.unit_id_label else ctx.label)
+    pkgname = ctx.attrs.unit_id or haskell_library_unit_id(ctx.label)
 
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     native_shared_libs_dir = (

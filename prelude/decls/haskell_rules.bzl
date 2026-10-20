@@ -222,9 +222,6 @@ haskell_library = prelude_rule(
             # a package GHC knows by its unit id, say: rts, ghc-internal).
             # Otherwise it is derived from the label.
             "unit_id": attrs.option(attrs.string(), default = None),
-            # The label to derive the unit id from, when it isn't the
-            # library's own (that of an alias that it is built as).
-            "unit_id_label": attrs.option(attrs.label(), default = None),
             # Its version, which GHC defines `VERSION_<package>` macros with:
             # they must agree with the ones of the package's cabal_macros.h.
             "package_version": attrs.option(attrs.string(), default = None),

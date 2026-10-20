@@ -60,11 +60,19 @@ def srcs_to_pairs(srcs) -> list[(str, Artifact)]:
 # while splicing in a letter so the component is never purely numeric
 # (e.g. "0.6.4.0" -> "0d6d4d0") is accepted regardless of position.
 def haskell_library_name(label: Label | TargetLabel) -> str:
-    return repr(label.path).replace("//", "_").replace("/", "_").replace(".", "d").removesuffix("_") + "_" + label.name
+    return _library_name(repr(label.path), label.name)
+
+def _library_name(path: str, name: str) -> str:
+    return path.replace("//", "_").replace("/", "_").replace(".", "d").removesuffix("_") + "_" + name
 
 # The unit id of a haskell_library(), from its label.
 def haskell_library_unit_id(label: Label | TargetLabel) -> str:
-    return haskell_library_name(label).replace("_", "-")
+    return haskell_unit_id(repr(label.path), label.name)
+
+# The unit id of the haskell_library() `name` in package `path` (e.g.
+# "root//libraries/base"), for a macro, which has no labels.
+def haskell_unit_id(path: str, name: str) -> str:
+    return _library_name(path, name).replace("_", "-")
 
 def is_haskell_src(x: Artifact) -> bool:
     _, ext = paths.split_extension(x.short_path)

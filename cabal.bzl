@@ -82,6 +82,7 @@ load("//buck2:headers.bzl", "headers_of")
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library", "haskell_test")
 load("//buck2:variant.bzl", "variant")
 load("//cabal-buck2:packages.bzl", "OVERRIDES", "PACKAGES", "PACKAGE_SETS", "PACKAGE_SET_MODIFIERS", "PACKAGE_SET_TRANSITIONS", "PACKAGE_TARGETS", "PROJECT_PACKAGE_SET")
+load("@prelude//haskell:util.bzl", "haskell_unit_id")
 load("@prelude//paths.bzl", "paths")
 load("@prelude//third-party:pkgconfig.bzl", "external_pkgconfig_library")
 
@@ -500,12 +501,12 @@ def _haskell_kwargs(c, spec, helpers):
         kwargs["package_name"] = spec["package"]["name"]
         if "version" in spec["package"]:
             kwargs["package_version"] = spec["package"]["version"]
-        unit_id = _this_unit_id(compiler_flags)
-        if unit_id:
-            kwargs["unit_id"] = unit_id
-        elif "_unit_id_label" in c:
-            # The unit id of the package, whichever set's it is built as.
-            kwargs["unit_id_label"] = c["_unit_id_label"]
+        # The unit id of the package, whichever set's it is built as (the
+        # one of the alias `<comp>`).
+        kwargs["unit_id"] = _this_unit_id(compiler_flags) or haskell_unit_id(
+            native.get_cell_name() + "//" + native.package_name(),
+            c.get("_name", c["name"]),
+        )
         # The code of the helpers is part of the library, as in Cabal.
         if helpers:
             kwargs["internal_deps"] = helpers
@@ -629,7 +630,7 @@ def _cabal_targets_of_sets(specs, defaults, overrides, transform, rules):
         components = []
         for c in spec["components"]:
             base = c["name"]
-            c = dict(c, name = base + "." + _set_name(set), _name = base, _unit_id_label = ":" + base)
+            c = dict(c, name = base + "." + _set_name(set), _name = base)
             if set != None:
                 c["_common"] = {"target_compatible_with": [_set_constraint(set)]}
             if c["kind"] != "library":
