@@ -1,3 +1,4 @@
+load("@prelude//haskell:ghc_api_tool.bzl", "haskell_ghc_api_tool")
 load("@prelude//utils:source_listing.bzl", "source_listing")
 
 oncall("build_infra")
@@ -9,6 +10,22 @@ prelude = native
 prelude.python_bootstrap_binary(
     name = "script_template_processor",
     main = "script_template_processor.py",
+    visibility = ["PUBLIC"],
+)
+
+# The tools of the per-module compiles (see compile_per_module in
+# prelude/haskell/compile_per_module.bzl).
+haskell_ghc_api_tool(
+    name = "per_module_deps",
+    srcs = glob(["ghc-api/*.hs"]),
+    main = "PerModuleDeps.hs",
+    visibility = ["PUBLIC"],
+)
+
+haskell_ghc_api_tool(
+    name = "per_module_compile",
+    srcs = glob(["ghc-api/*.hs"]),
+    main = "PerModuleCompile.hs",
     visibility = ["PUBLIC"],
 )
 

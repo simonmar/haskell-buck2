@@ -1,0 +1,11 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# A boot file that no import cycle needs: OB.B imports OB.U {-# SOURCE #-},
+# and OB.U doesn't import OB.B.
+haskell_library(
+    name = "ownboot",
+    srcs = {"OB.B": "OB/B.hs", "OB.U": "OB/U.hs"},
+    boot_srcs = {"OB.U": "OB/U.hs-boot"},
+    packages = ["base"],
+    per_module = True,
+)

@@ -1,0 +1,10 @@
+load("//buck2:haskell.bzl", "haskell_binary")
+
+# A Main module in a file named after something else, with no module
+# header.
+haskell_binary(
+    name = "server",
+    srcs = {"Helper": "app/Helper.hs", "Server": "app/Server.hs"},
+    packages = ["base"],
+    per_module = True,
+)

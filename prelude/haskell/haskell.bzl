@@ -60,6 +60,12 @@ load(
     "data_dirs_env",
 )
 load(
+    "@prelude//haskell:compile_per_module.bzl",
+    "compile_per_module",
+    "compiles_per_module",
+    "per_module_out_dir",
+)
+load(
     "@prelude//haskell:haskell_haddock.bzl",
     "haskell_haddock_lib",
 )
@@ -68,6 +74,7 @@ load(
     "HaskellLibraryInfo",
     "HaskellLibraryInfoTSet",
     "HaskellLibraryProvider",
+    "HaskellModuleFiles",
 )
 load(
     "@prelude//haskell:link_info.bzl",
@@ -388,9 +395,10 @@ set -eu
 DB=$1
 PKGCONF=$2
 ALWAYS_USE_CACHE=$3
-shift 3
+FORCE=$4
+shift 4
 "$@" init "$DB"
-"$@" register --package-conf "$DB" --no-expand-pkgroot $ALWAYS_USE_CACHE "$PKGCONF"
+"$@" register --package-conf "$DB" --no-expand-pkgroot $ALWAYS_USE_CACHE $FORCE "$PKGCONF"
 """
 
 # Create a package
@@ -436,8 +444,28 @@ def _make_package(
     # package the module is defined in may be one that the dependency re-exports it
     # from, and ghc-pkg has to find it.
     all_hlis: list[HaskellLibraryInfo] = [],
+    # For an early db (below): the link style of the compile whose output
+    # directory its interfaces are written to, when not link_style's (a
+    # "shared" package made with -dynamic-too has them in the static
+    # compile's).
+    hi_link_style: [LinkStyle, None] = None,
+    # Make the early db of a library compiled per-module instead: the
+    # package without its library, whose import directory is where its
+    # modules' interfaces will be written one by one (see Note [Compiling
+    # against dependencies module by module] in compile_per_module.bzl). It is
+    # registered before anything is compiled, against the dependencies'
+    # early dbs. ghc-pkg refuses a package whose interfaces don't exist yet,
+    # so it is registered with --force. It names no library on purpose: see
+    # Note [Template Haskell modules] in compile_per_module.bzl.
+    early: bool = False,
+    # Make the library-less db of a library built with --make instead: the
+    # package with its interfaces, but no library, for the per-module
+    # compiles of its dependents (see _package_dbs in
+    # compile_per_module.bzl).
+    library_less: bool = False,
 ) -> Artifact:
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
+    db_suffix = ("early-" if early else "nolib-" if library_less else "") + artifact_suffix
 
     # Don't expose boot sources, as they're only meant to be used for compiling.
     modules = [x for x, src in srcs_to_pairs(ctx.attrs.srcs) if is_haskell_src(src)]
@@ -447,7 +475,7 @@ def _make_package(
         # following this logic (https://fburl.com/code/3gmobm5x) and will fail.
         libname += "_p"
 
-    db = ctx.actions.declare_output("db-" + artifact_suffix, has_content_based_path = False)
+    db = ctx.actions.declare_output("db-" + db_suffix, has_content_based_path = False)
 
     # The package names the directories of the interfaces and libraries it
     # was given, wherever they are, by their paths relative to ${pkgroot}: the
@@ -455,7 +483,14 @@ def _make_package(
     def pkgroot_path(artifact: Artifact, parent: int = 0) -> cmd_args:
         return cmd_args(artifact, parent = parent, relative_to = (db, 1), format = '"${pkgroot}/{}"')
 
-    import_dirs = cmd_args([pkgroot_path(d) for d in hi.values()], delimiter = ", ")
+    if early:
+        # The directory the interfaces will be written to, which doesn't
+        # exist yet. Only this one: GHC's dependency analysis accepts
+        # interfaces that don't exist yet only when a package has a single
+        # import directory.
+        import_dirs = cmd_args('"${pkgroot}/' + per_module_out_dir(ctx, hi_link_style or link_style, enable_profiling) + '"')
+    else:
+        import_dirs = cmd_args([pkgroot_path(d) for d in hi.values()], delimiter = ", ")
     library_dirs = cmd_args([pkgroot_path(l, parent = 1) for l in lib.values()], delimiter = ", ")
 
     # Reexports are named by the unit they come from, which GHC finds in the
@@ -478,17 +513,20 @@ def _make_package(
         "exposed-modules: " + ", ".join([m for m in modules if m not in ctx.attrs.hidden_modules] + reexports),
         "hidden-modules: " + ", ".join(ctx.attrs.hidden_modules),
         cmd_args("import-dirs: ", import_dirs, delimiter = ""),
-        cmd_args("library-dirs: ", library_dirs, delimiter = ""),
-        "extra-libraries: " + libname,
         "depends: " + ", ".join([lib.id for lib in hlis]),
     ]
-    if own_shared_lib != None:
-        conf.append(cmd_args("dynamic-library-dirs: ", pkgroot_path(own_shared_lib, parent = 1), delimiter = ""))
-    pkg_conf = ctx.actions.write("pkg-" + artifact_suffix + ".conf", conf, has_content_based_path = False)
+    if not early and not library_less:
+        conf += [
+            cmd_args("library-dirs: ", library_dirs, delimiter = ""),
+            "extra-libraries: " + libname,
+        ]
+        if own_shared_lib != None:
+            conf.append(cmd_args("dynamic-library-dirs: ", pkgroot_path(own_shared_lib, parent = 1), delimiter = ""))
+    pkg_conf = ctx.actions.write("pkg-" + db_suffix + ".conf", conf, has_content_based_path = False)
 
     # While the list of hlis is unique, there may be multiple packages in the same db.
     # Cutting down the GHC_PACKAGE_PATH significantly speeds up GHC.
-    db_deps = {x.db: None for x in hlis + all_hlis}.keys()
+    db_deps = {(x.early_db if (early or library_less) and x.early_db != None else x.db): None for x in hlis + all_hlis}.keys()
 
     # So that ghc-pkg can find the DBs for the dependencies. We might
     # be able to use flags for this instead, but this works.
@@ -519,12 +557,13 @@ def _make_package(
                 db.as_output(),
                 pkg_conf,
                 use_cache_arg,
+                "--force" if early else "",
                 haskell_toolchain.packager,
             ],
             # needs hi, because ghc-pkg checks that the .hi files exist
-            hidden = hi.values() + lib.values() + ([own_shared_lib] if own_shared_lib != None else []),
+            hidden = [] if early else hi.values() if library_less else hi.values() + lib.values() + ([own_shared_lib] if own_shared_lib != None else []),
         ),
-        category = "haskell_package_" + artifact_suffix.replace("-", "_"),
+        category = "haskell_package_" + db_suffix.replace("-", "_"),
         env = {"GHC_PACKAGE_PATH": ghc_package_path} if db_deps else {},
     )
 
@@ -702,7 +741,7 @@ def _build_haskell_lib(
     dynamic_too = build_shared_too and link_style != LinkStyle("shared")
 
     # Compile the sources
-    compiled = compile(
+    compiled = (compile_per_module if compiles_per_module(ctx) else compile)(
         ctx,
         link_style,
         enable_profiling = enable_profiling,
@@ -729,6 +768,7 @@ def _build_haskell_lib(
     # only gather direct dependencies
     uniq_infos = [x[link_style].value for x in linfos]
     all_hlis = [lib for x in linfos for lib in x[link_style].traverse()] if ctx.attrs.reexported_modules else []
+    below = ctx.actions.tset(HaskellLibraryInfoTSet, children = [x[link_style] for x in linfos])
 
     objfiles = _srcs_to_objfiles(ctx, compiled.objects, osuf)
 
@@ -876,6 +916,7 @@ def _build_haskell_lib(
             version = ctx.attrs.package_version or "1.0.0",
             is_prebuilt = False,
             profiling_enabled = False,
+            **_per_module_fields(ctx, LinkStyle("shared"), pkgname, libname, uniq_infos, compiled, hi_link_style = link_style, all_hlis = all_hlis, shared_of_dynamic_too = True, hi = {False: compiled.hi}, below = below)
         )
         shared_output = HaskellLibBuildOutput(
             hlib = shared_hlib,
@@ -908,6 +949,7 @@ def _build_haskell_lib(
         version = ctx.attrs.package_version or "1.0.0",
         is_prebuilt = False,
         profiling_enabled = enable_profiling,
+        **_per_module_fields(ctx, link_style, pkgname, libstem, uniq_infos, compiled, enable_profiling = enable_profiling, all_hlis = all_hlis, hi = import_artifacts, below = below)
     )
 
     main_output = HaskellLibBuildOutput(
@@ -919,6 +961,39 @@ def _build_haskell_lib(
     )
 
     return (main_output, shared_output)
+
+# The HaskellLibraryInfo fields of a library compiled per-module (see
+# compile_per_module.bzl): its early db, and what its dependents' modules
+# read. For the "shared" package derived from a -dynamic-too compile, the
+# modules' interfaces are the .dyn_hi of the static compile.
+def _per_module_fields(
+        ctx: AnalysisContext,
+        link_style: LinkStyle,
+        pkgname: str,
+        libname: str,
+        hlis: list[HaskellLibraryInfo],
+        compiled: CompileResultInfo,
+        enable_profiling: bool = False,
+        hi_link_style: [LinkStyle, None] = None,
+        all_hlis: list[HaskellLibraryInfo] = [],
+        shared_of_dynamic_too: bool = False,
+        hi: dict[bool, Artifact] = {},
+        below: [TransitiveSet, None] = None) -> dict:
+    if compiled.modules == None:
+        # Built with --make: the library-less db its per-module dependents
+        # compile against, and its dependencies.
+        return {
+            "below": below,
+            "early_db": _make_package(ctx, link_style, pkgname, libname, hlis, hi, {}, enable_profiling = enable_profiling, hi_link_style = hi_link_style, all_hlis = all_hlis, library_less = True),
+        }
+    modules = compiled.modules
+    if shared_of_dynamic_too:
+        modules = {m: HaskellModuleFiles(hi = files.dyn_hi, abi = files.abi) for m, files in modules.items()}
+    return {
+        "early_db": _make_package(ctx, link_style, pkgname, libname, hlis, {}, {}, enable_profiling = enable_profiling, hi_link_style = hi_link_style, all_hlis = all_hlis, early = True),
+        "modules": modules,
+        "closures": compiled.closures,
+    }
 
 def _soname(ctx: AnalysisContext, libfile: str) -> str:
     # The soname of the library's shared library, whose file is `libfile`.
@@ -1325,7 +1400,7 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     )
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
 
-    compiled = compile(
+    compiled = (compile_per_module if compiles_per_module(ctx) else compile)(
         ctx,
         link_style,
         enable_profiling = enable_profiling,
