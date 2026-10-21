@@ -1,0 +1,30 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# A library compiled per-module below one built with --make: Chain.T
+# imports Chain.M, whose interface refers to Chain.P's, so GHC reads
+# Chain.P's interface too, through m (see Note [Compiling against
+# dependencies module by module]).
+haskell_library(
+    name = "p",
+    srcs = {"Chain.P": "Chain/P.hs"},
+    packages = ["base"],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)
+
+haskell_library(
+    name = "m",
+    srcs = {"Chain.M": "Chain/M.hs"},
+    packages = ["base"],
+    deps = [":p"],
+    visibility = ["PUBLIC"],
+)
+
+haskell_library(
+    name = "t",
+    srcs = {"Chain.T": "Chain/T.hs"},
+    packages = ["base"],
+    deps = [":m", ":p"],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)

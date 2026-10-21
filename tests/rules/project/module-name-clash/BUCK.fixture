@@ -1,0 +1,31 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# Three units with a module Utils: first's, second's and user's. User's X
+# uses bar through second's Re, which re-exports it from second's Utils.
+haskell_library(
+    name = "first",
+    srcs = {"Utils": "First/Utils.hs"},
+    packages = ["base"],
+    per_module = True,
+)
+
+haskell_library(
+    name = "second",
+    srcs = {
+        "Re": "Second/Re.hs",
+        "Utils": "Second/Utils.hs",
+    },
+    packages = ["base"],
+    per_module = True,
+)
+
+haskell_library(
+    name = "user",
+    srcs = {
+        "Utils": "User/Utils.hs",
+        "X": "User/X.hs",
+    },
+    packages = ["base"],
+    deps = [":first", ":second"],
+    per_module = True,
+)

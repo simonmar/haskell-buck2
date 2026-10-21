@@ -1,0 +1,10 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# Options for GHC's runtime among the compiler flags.
+haskell_library(
+    name = "rtsflags",
+    srcs = {"R.A": "R/A.hs"},
+    packages = ["base"],
+    compiler_flags = ["+RTS", "-A16m", "-RTS"],
+    per_module = True,
+)

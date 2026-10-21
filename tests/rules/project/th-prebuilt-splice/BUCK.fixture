@@ -1,0 +1,11 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# Depends on th-gen, but its splice runs only template-haskell's code.
+haskell_library(
+    name = "th-prebuilt-splice",
+    srcs = {"D.Splice": "D/Splice.hs"},
+    packages = ["base", "template-haskell"],
+    deps = ["//lib:lib", "//th-gen:th-gen"],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)

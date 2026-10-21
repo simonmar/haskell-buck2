@@ -25,6 +25,35 @@ buck2 build my-package:my-program -m opt
 
 There are other build options that can be selected in a similar way, such as `-m prof` to enable profiling. See `constraints/BUCK` for details.
 
+# Per-module compilation (experimental)
+
+By default each `haskell_library()`/`haskell_binary()` is compiled by one
+`ghc --make` action. With `per_module = True`, each module is compiled
+by an action of its own. That means that `buck2` can compile a target's
+modules in parallel with everything else it has to do, and rebuilds can
+be more minimal. Notably the dependency graph is cross-package, so modules
+in later packages can start compiling as soon as the specific modules they
+depend on are done, without having to wait for the full package.
+
+`per_module` is only tested on Linux.
+
+Template Haskell is supported with one restriction: a splice can only run
+code of prebuilt packages (from Hackage, say), not of the project's other
+libraries or of the target's own modules. So a module with Template Haskell
+doesn't wait for its dependencies' libraries to be linked, and keeps the
+cross-package parallelism. A target whose splices do run local code fails
+to compile, saying so: build it with `per_module = False`.
+
+The main cost of `per_module` is CPU. Each module's compile starts a GHC 
+and reads the interfaces of its imports, which `--make` does once per target, 
+so a target's modules take several times the CPU in total. The overhead is
+sufficiently high that `per_module` is often significantly worse than 
+`--make`, except when rebuilding a few modules after small edits.
+
+The recompilation check used by `per_module` is also currently slightly coarser
+than GHC's, in that GHC also looks at which definitions from a dependency are
+used by a module. We don't do this currently but we could do in future.
+
 # Compiler and linker flags from the environment
 
 buck2 runs every build action with a clean environment, so directories that
@@ -46,11 +75,15 @@ Both are space-separated lists of flags for every GHC invocation;
 
 # Testing this repo
 
-This repository has no tests or CI of its own: it is the Buck2 support code for
+This is the Buck2 support code for
 [cabal-buck2](https://github.com/simonmar/cabal-buck2), which includes it as a
 submodule (`buck2/`) and tests it, with an example project (`example/`:
 Template Haskell, hsc2hs, C++ via FFI and a Hackage dependency) and with its
 own build. Update the submodule there to test a change here.
+
+Some of the rules also have tests of their own, which don't rely
+on cabal-buck2 or Hackage: `tests/rules/run.sh GHC_BIN_DIR`, with `buck2` on
+`PATH`. See [tests/rules/README.md](tests/rules/README.md).
 
 `template/` has the `.buckconfig` and `PACKAGE` that `cabal buck2` copies to a
 project that doesn't have them.

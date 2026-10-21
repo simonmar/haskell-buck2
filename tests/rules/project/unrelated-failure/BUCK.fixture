@@ -1,0 +1,21 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# Not part of the main build: S.Broken doesn't compile. W.M imports only
+# S.Ok, so its compile mustn't wait for S.Broken (see check.py).
+haskell_library(
+    name = "s",
+    srcs = {
+        "S.Broken": "S/Broken.hs",
+        "S.Ok": "S/Ok.hs",
+    },
+    packages = ["base"],
+    per_module = True,
+)
+
+haskell_library(
+    name = "w",
+    srcs = {"W.M": "W/M.hs"},
+    packages = ["base"],
+    deps = [":s"],
+    per_module = True,
+)

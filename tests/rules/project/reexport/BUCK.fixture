@@ -1,0 +1,12 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# Re-exports lib's A.Base, which reexport-user imports through it.
+haskell_library(
+    name = "reexport",
+    srcs = {"R.R": "R/R.hs"},
+    packages = ["base"],
+    deps = ["//lib:lib"],
+    reexported_modules = {"A.Base": ("//lib:lib", "A.Base")},
+    per_module = True,
+    visibility = ["PUBLIC"],
+)

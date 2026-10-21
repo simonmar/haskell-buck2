@@ -1,0 +1,26 @@
+load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
+
+# MV.X moves from hi to lo, its dependency, in check_module_moved.
+haskell_library(
+    name = "lo",
+    srcs = {"MV.Lo": "MV/Lo.hs"},
+    packages = ["base"],
+    per_module = True,
+)
+
+haskell_library(
+    name = "hi",
+    srcs = {"MV.M": "MV/M.hs", "MV.X": "MV/X.hs", "MV.Y": "MV/Y.hs"},
+    packages = ["base"],
+    deps = [":lo"],
+    per_module = True,
+)
+
+# Prints MV.M's m.
+haskell_binary(
+    name = "main",
+    srcs = {"Main": "Main.hs"},
+    packages = ["base"],
+    deps = [":hi"],
+    per_module = True,
+)
