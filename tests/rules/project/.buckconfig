@@ -1,0 +1,29 @@
+[cells]
+  root = .
+  prelude = buck2/prelude
+  toolchains = buck2/toolchains
+  third-party-haskell = third-party/haskell
+  none = none
+
+[cell_aliases]
+  config = prelude
+  ovr_config = prelude
+  fbcode = none
+  fbsource = none
+  buck = none
+
+[parser]
+  target_platform_detector_spec = target:root//...->prelude//platforms:default \
+    target:prelude//...->prelude//platforms:default \
+    target:toolchains//...->prelude//platforms:default \
+    target:third-party-haskell//...->prelude//platforms:default
+
+[build]
+  execution_platforms = root//buck2/platforms:exec
+
+# The fixtures' build files are BUCK.fixture, which a project that has this
+# repository as its buck2/ doesn't read, so that its //... leaves them out
+# (buck2's defaults are BUCK and BUCK.v2). The repository's own, which this
+# project uses through its buck2/, are BUCK.
+[buildfile]
+  name = BUCK.fixture,BUCK

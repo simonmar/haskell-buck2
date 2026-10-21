@@ -1,0 +1,14 @@
+# Prints the path of a library's index (HaskellIndexInfo), built: the tree
+# that an indexer reads the .hie files from.
+load("@prelude//haskell:haskell.bzl", "HaskellIndexInfo")
+load("@prelude//linking:link_info.bzl", "LinkStyle")
+
+def _impl(ctx):
+    info = ctx.analysis(ctx.configured_targets(ctx.cli_args.target)).providers()[HaskellIndexInfo]
+    tset = info.info[LinkStyle("shared")]
+    ctx.output.print(ctx.output.ensure(tset.value).abs_path())
+
+index = bxl_main(
+    impl = _impl,
+    cli_args = {"target": cli_args.target_label()},
+)

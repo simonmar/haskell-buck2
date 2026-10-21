@@ -1,0 +1,82 @@
+
+==================== FINAL INTERFACE ====================
+2026-10-30 16:26:56.746721697 UTC
+
+interface main:Fix.M 9082
+  interface hash: 7fa60e53c31220aa61d58843dc415345
+  ABI hash: fbceba10765ddf5e120ddc9b7cba4bdf
+  export-list hash: f55f81dbb9a5149714fda176c6a6ee68
+  orphan hash: 693e9af84d3dfcc71e640e005bdc5e2e
+  flag hash: 912661d52ba64e25911ed2450c82bf43
+  opt_hash: a03ee3c0445ea447025b482e15ed9c52
+  hpc_hash: 93b885adfe0da089cdf634904fd59f71
+  plugin_hash: ad164012d6b1e14942349d58b1132007
+  src_hash: e7d8982dff936d77d7db51dbf29aa4a6
+  sig of: Nothing
+  used TH splices: True
+  where
+exports:
+  Fix.M.m
+  Fix.M.mb
+direct module dependencies: main:Fix.A main:Fix.B [boot] main:Fix.S
+boot module dependencies: (main, Fix.B {-# SOURCE #-})
+direct package dependencies: base-4.19.1.0
+                             template-haskell-2.21.0.0
+plugin package dependencies:
+trusted package dependencies: base-4.19.1.0
+orphans: base-4.19.1.0:GHC.Base base-4.19.1.0:GHC.Float
+         ghc-prim-0.11.0:GHC.Prim.Ext
+family instance modules: base-4.19.1.0:Control.Applicative
+                         base-4.19.1.0:Control.Arrow base-4.19.1.0:Data.Array.Byte
+                         base-4.19.1.0:Data.Functor.Const
+                         base-4.19.1.0:Data.Functor.Identity base-4.19.1.0:Data.Monoid
+                         base-4.19.1.0:Data.Semigroup base-4.19.1.0:Data.Semigroup.Internal
+                         base-4.19.1.0:Data.Type.Ord base-4.19.1.0:Data.Version
+                         base-4.19.1.0:GHC.Generics base-4.19.1.0:GHC.IO.Exception
+                         base-4.19.1.0:GHC.IsList base-4.19.1.0:GHC.RTS.Flags
+                         ghc-boot-th-9.8.2:GHC.ForeignSrcLang.Type
+                         ghc-boot-th-9.8.2:GHC.LanguageExtensions.Type
+                         template-haskell-2.21.0.0:Language.Haskell.TH.Syntax
+import  -/  base:Data.Foldable bb55c229e9f8cfcd3c6ce90c5c41708c
+import  -/  base:Data.List 8018b5a1c2b1b7f76a84b3effc27038a
+import  -/  base:Data.OldList 02c92810c3719d3427ed1370d572dcb1
+import  -/  base:GHC.Base 7005ab33aeb89db631d4bff83b554cb0
+import  -/  base:GHC.Num 8dbd961deb5127fab9ac9d203a4ee37f
+import  -/  base:Prelude cdb3bcad7e4db43703bf928ea9dd689b
+import  -/  main:Fix.A 6a88995fe5d6f35e07817af9a179c85c
+  exports: 8f5f29de9adad3fd1342b04f848ce85b
+  a 41c19b2e84068f7f4d5430d463c9fe75
+import  -/  main:Fix.B df6700710ab5ba41483acf76e1ad7238
+  exports: 9ea43b81d70a9d3349dcb25dcc6ef0d7
+  b 0a80246865ac5934e4e7b3ae81e992be
+import safe main:Fix.S 1646c9b68860cc4f4612bae234c73e63
+  exports: fff781de3181eedfdd00a5b0cd9347f0
+  s 207de9166f14336efb9cd4455c5cc2cf
+import  -/  template-haskell:Language.Haskell.TH.Syntax 07454035636854a8e113e0e75dbde56d
+addDependentFile "data.txt" 6137cde4893c59f76f005a8123d8e8e6
+addDependentFile "/nix/store/6s3492ny059pv9150y8d93i3fdnq2q68-ghc-9.8.2/lib/ghc-9.8.2/lib/../lib/x86_64-linux-ghc-9.8.2/libHSghc-prim-0.11.0-inplace-ghc9.8.2.so" 3e5c54e3db77a4008ece334dc888a1fc
+addDependentFile "/nix/store/6s3492ny059pv9150y8d93i3fdnq2q68-ghc-9.8.2/lib/ghc-9.8.2/lib/../lib/x86_64-linux-ghc-9.8.2/libHSghc-bignum-1.3-inplace-ghc9.8.2.so" 0331a6c7a8cc5d4d2d769409faa3c465
+addDependentFile "/nix/store/6s3492ny059pv9150y8d93i3fdnq2q68-ghc-9.8.2/lib/ghc-9.8.2/lib/../lib/x86_64-linux-ghc-9.8.2/libHSbase-4.19.1.0-inplace-ghc9.8.2.so" 3e5f37f4fd17ffeb393883786e5e2ad2
+addDependentFile "/nix/store/6s3492ny059pv9150y8d93i3fdnq2q68-ghc-9.8.2/lib/ghc-9.8.2/lib/../lib/x86_64-linux-ghc-9.8.2/libHSghc-boot-th-9.8.2-inplace-ghc9.8.2.so" 1f88d596bfe8e4e926038fde20ed50f7
+addDependentFile "/nix/store/6s3492ny059pv9150y8d93i3fdnq2q68-ghc-9.8.2/lib/ghc-9.8.2/lib/../lib/x86_64-linux-ghc-9.8.2/libHSarray-0.5.6.0-inplace-ghc9.8.2.so" ca9009e2a62029684010e0bc06d1a75c
+addDependentFile "/nix/store/6s3492ny059pv9150y8d93i3fdnq2q68-ghc-9.8.2/lib/ghc-9.8.2/lib/../lib/x86_64-linux-ghc-9.8.2/libHSdeepseq-1.5.0.0-inplace-ghc9.8.2.so" a8a1562479f3e849d7fdc6d46d6486ea
+addDependentFile "/nix/store/6s3492ny059pv9150y8d93i3fdnq2q68-ghc-9.8.2/lib/ghc-9.8.2/lib/../lib/x86_64-linux-ghc-9.8.2/libHSpretty-1.1.3.6-inplace-ghc9.8.2.so" 7a1a41894d82bc3928a4d54d99a70d90
+addDependentFile "/nix/store/6s3492ny059pv9150y8d93i3fdnq2q68-ghc-9.8.2/lib/ghc-9.8.2/lib/../lib/x86_64-linux-ghc-9.8.2/libHStemplate-haskell-2.21.0.0-inplace-ghc9.8.2.so" ac8d508e990fef0ccb1a5bdb3627202c
+87070237779c7f1ce962b0ca937541b3
+  $trModule :: GHC.Types.Module
+  []
+acba629c027b361c2424d251388ec834
+  m :: GHC.Types.Int
+  []
+2bccd049d1f11732aba0d7be32749d2f
+  mb :: () -> GHC.Types.Int
+  []
+Warnings:
+  Deprecated names:
+  Deprecated exports:
+trusted: trustworthy
+require own pkg trusted: False
+docs:
+  Nothing
+extensible fields:
+

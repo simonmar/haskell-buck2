@@ -1,0 +1,14 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# Cyc.A imports Cyc.B's boot file; Cyc.B imports Cyc.A.
+haskell_library(
+    name = "boot-cycle",
+    srcs = {
+        "Cyc.A": "Cyc/A.hs",
+        "Cyc.B": "Cyc/B.hs",
+    },
+    boot_srcs = {"Cyc.B": "Cyc/B.hs-boot"},
+    packages = ["base"],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)

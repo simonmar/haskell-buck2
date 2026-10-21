@@ -14,6 +14,7 @@ load(
 load(
     "@prelude//haskell:library_info.bzl",
     "HaskellLibraryInfoTSet",
+    "HaskellModuleFiles",
 )
 load(
     "@prelude//haskell:toolchain.bzl",
@@ -41,6 +42,10 @@ CompileResultInfo = record(
     hi = field(Artifact),
     stubs = field(Artifact),
     producing_indices = field(bool),
+    # Per-module compilation only: see HaskellLibraryInfo's fields of the
+    # same names.
+    modules = field(dict[str, HaskellModuleFiles] | None, None),
+    closures = field(typing.Any, None),
 )
 
 CompileArgsInfo = record(
@@ -63,17 +68,10 @@ def _package_flag(toolchain: HaskellToolchainInfo) -> str:
         return "-package"
 
 def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_version: bool, enable_profiling: bool) -> PackagesInfo:
-    haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
-
     # Collect library dependencies. Note that these don't need to be in a
     # particular order.
-    direct_deps_link_info = attr_deps_haskell_link_infos(ctx)
-    libs = ctx.actions.tset(
-        HaskellLibraryInfoTSet,
-        children = [lib.prof_info[link_style] if enable_profiling else lib.info[link_style] for lib in direct_deps_link_info],
-    )
+    libs = dependency_libs(ctx, link_style, enable_profiling)
 
-    package_flag = _package_flag(haskell_toolchain)
     exposed_package_args = cmd_args()
 
     packagedb_args = cmd_args()
@@ -99,6 +97,24 @@ def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_v
     # direct and transitive (e.g. `fbcode-common-hs-util-hs-array`)
     packagedb_args.add([cmd_args("-package-db", x) for x in packagedb_set])
 
+    exposed_package_args.add(get_exposed_package_args(ctx, link_style, specify_pkg_version, enable_profiling))
+
+    return PackagesInfo(
+        exposed_package_args = exposed_package_args,
+        packagedb_args = packagedb_args,
+        transitive_deps = libs,
+    )
+
+def dependency_libs(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool) -> HaskellLibraryInfoTSet:
+    direct_deps_link_info = attr_deps_haskell_link_infos(ctx)
+    return ctx.actions.tset(
+        HaskellLibraryInfoTSet,
+        children = [lib.prof_info[link_style] if enable_profiling else lib.info[link_style] for lib in direct_deps_link_info],
+    )
+
+def get_exposed_package_args(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_version: bool, enable_profiling: bool) -> cmd_args:
+    package_flag = _package_flag(ctx.attrs._haskell_toolchain[HaskellToolchainInfo])
+    exposed_package_args = cmd_args()
     haskell_direct_deps_lib_infos = attr_deps_haskell_lib_infos(
         ctx,
         link_style,
@@ -127,13 +143,9 @@ def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_v
 
         exposed_package_args.add(package_flag, pkg_name)
 
-    return PackagesInfo(
-        exposed_package_args = exposed_package_args,
-        packagedb_args = packagedb_args,
-        transitive_deps = libs,
-    )
+    return exposed_package_args
 
-def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname = None, suffix: str = "", native_shared_libs_dir: [Artifact, None] = None, dynamic_too: bool = False) -> CompileArgsInfo:
+def ghc_flags(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname = None, dynamic_too: bool = False) -> (cmd_args, cmd_args):
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
 
     compile_cmd = cmd_args()
@@ -193,6 +205,29 @@ def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: 
     if getattr(ctx.attrs, "main", None) != None:
         compile_args.add(["-main-is", ctx.attrs.main])
 
+    # Add args from preprocess-able inputs: for the C preprocessor of Haskell
+    # code, and for the C that GHC compiles itself. For example:
+    #   foreign import capi "Header.h ..." ...
+    # generates a C file that includes Header.h, so we need to pass the
+    # preprocessor options via -optc too.
+    inherited_pre = cxx_inherited_preprocessor_infos(attr_deps(ctx))
+    pre = cxx_merge_cpreprocessors(ctx.actions, [], inherited_pre)
+    pre_args = pre.set.project_as_args("args")
+    compile_args.add(cmd_args(pre_args, format = "-optP={}"))
+    compile_args.add(cmd_args(pre_args, format = "-optc={}"))
+
+    if pkgname:
+        compile_args.add(["-this-unit-id", pkgname])
+
+    return compile_cmd, compile_args
+
+def get_producing_indices(ctx: AnalysisContext) -> bool:
+    toolchain_flags = ctx.attrs._haskell_toolchain[HaskellToolchainInfo].compiler_flags or []
+    return "-fwrite-ide-info" in toolchain_flags + ctx.attrs.compiler_flags
+
+def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname = None, suffix: str = "", native_shared_libs_dir: [Artifact, None] = None, dynamic_too: bool = False) -> CompileArgsInfo:
+    compile_cmd, compile_args = ghc_flags(ctx, link_style, enable_profiling, pkgname, dynamic_too)
+
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling, suffix)
 
     objects = ctx.actions.declare_output(
@@ -226,20 +261,6 @@ def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: 
     compile_args.add(packages_info.exposed_package_args)
     compile_args.add(packages_info.packagedb_args)
 
-    # Add args from preprocess-able inputs: for the C preprocessor of Haskell
-    # code, and for the C that GHC compiles itself:
-    #   foreign import capi "Header.h ..." ...
-    # generates a C file that includes Header.h, so we need to pass the
-    # preprocessor options via -optc too.
-    inherited_pre = cxx_inherited_preprocessor_infos(attr_deps(ctx))
-    pre = cxx_merge_cpreprocessors(ctx.actions, [], inherited_pre)
-    pre_args = pre.set.project_as_args("args")
-    compile_args.add(cmd_args(pre_args, format = "-optP={}"))
-    compile_args.add(cmd_args(pre_args, format = "-optc={}"))
-
-    if pkgname:
-        compile_args.add(["-this-unit-id", pkgname])
-
     arg_srcs = []
     hidden_srcs = []
     for _, src in srcs_to_pairs(ctx.attrs.srcs):
@@ -253,8 +274,6 @@ def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: 
         arg_srcs,
         hidden = hidden_srcs,
     )
-
-    producing_indices = "-fwrite-ide-info" in ctx.attrs.compiler_flags
 
     if native_shared_libs_dir != None:
         # Template Haskell splices run *during* this compile action (not at
@@ -276,7 +295,7 @@ def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: 
             objects = objects,
             hi = hi,
             stubs = stubs,
-            producing_indices = producing_indices,
+            producing_indices = get_producing_indices(ctx),
         ),
         srcs = srcs,
         args_for_cmd = compile_cmd,
@@ -297,7 +316,47 @@ done
 exec "$@"
 """
 
-# Compile all the context's sources.
+# The environment that GHC runs in: compile_env from the toolchain, and the
+# build tools on PATH.
+def ghc_env(ctx: AnalysisContext, build_tool_dir: str):
+    haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
+
+    # compile_env's values are shell-evaluated (via `sh -c`) rather than
+    # passed straight through as literal env values - this lets a value
+    # like "$(clang -print-file-name=libclang_rt.asan-x86_64.so)" get
+    # resolved at actual build-action execution time, matching this
+    # project's existing convention of resolving tools via $PATH at
+    # build-action time rather than baking absolute host paths into .bzl
+    # or BUCK files (see toolchains/BUCK's `compiler`/`packager`).
+    script = "".join([
+        'export {}="{}"; '.format(name, value)
+        for name, value in haskell_toolchain.compile_env.items()
+    ]) if haskell_toolchain.compile_env else ""
+    args = []
+
+    # We smuggle the build tools in via an extra argument and make the shell
+    # command add them to the PATH.
+    build_tool_dirs = {
+        dep[DefaultInfo].default_outputs[0].basename: dep[DefaultInfo].default_outputs[0]
+        for dep in ctx.attrs.build_tool_depends
+    }
+    if build_tool_dirs:
+        script += 'export PATH="$PATH:$1"; shift; '
+        args.append(ctx.actions.symlinked_dir(build_tool_dir, build_tool_dirs, has_content_based_path = False))
+    return struct(script = script, args = args)
+
+# A command run in a GHC environment.
+def in_env(env, cmd: cmd_args) -> cmd_args:
+    if not env.script:
+        return cmd
+    return cmd_args(["sh", "-c", env.script + 'exec "$@"', "sh"] + env.args, cmd)
+
+# Whether the target has modules for GHC to compile (e.g. not a target whose
+# code is all C).
+def has_modules(ctx: AnalysisContext) -> bool:
+    return any([is_haskell_src(src) for _, src in srcs_to_pairs(ctx.attrs.srcs)])
+
+# Compile all the context's sources with `ghc --make`.
 #
 # `dynamic_from`, for a profiled compile, is the non-profiled compile of the
 # same sources whose .dyn_o objects GHC's (dynamic, unprofiled) internal
@@ -312,9 +371,7 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
 
     args = compile_args(ctx, link_style, enable_profiling, pkgname, native_shared_libs_dir = native_shared_libs_dir, dynamic_too = dynamic_too)
 
-    # A library with no modules (all its code is C, say) has nothing for GHC
-    # to compile.
-    if not [src for _, src in srcs_to_pairs(ctx.attrs.srcs) if is_haskell_src(src)]:
+    if not has_modules(ctx):
         result = args.result
         ctx.actions.run(
             cmd_args("mkdir", "-p", result.objects.as_output(), result.hi.as_output(), result.stubs.as_output()),
@@ -348,38 +405,8 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
             compile_cmd,
         )
 
-    # compile_env's values are shell-evaluated (via `sh -c`) rather than
-    # passed straight through as literal env values - this lets a value
-    # like "$(clang -print-file-name=libclang_rt.asan-x86_64.so)" get
-    # resolved fresh at actual build-action execution time, matching this
-    # project's existing convention of resolving tools via $PATH at
-    # build-action time rather than baking absolute host paths into .bzl
-    # or BUCK files (see toolchains/BUCK's `compiler`/`packager`).
-    run_cmd = compile_cmd
-    env_exports = "".join([
-        'export {}="{}"; '.format(name, value)
-        for name, value in haskell_toolchain.compile_env.items()
-    ]) if haskell_toolchain.compile_env else ""
-
-    build_tool_dirs = {
-        dep[DefaultInfo].default_outputs[0].basename: dep[DefaultInfo].default_outputs[0]
-        for dep in ctx.attrs.build_tool_depends
-    }
-    if build_tool_dirs:
-        build_tool_bin_dir = ctx.actions.symlinked_dir(
-            artifact_suffix + "-build-tool-depends",
-            build_tool_dirs,
-            has_content_based_path = False,
-        )
-        run_cmd = cmd_args(
-            ["sh", "-c", env_exports + 'export PATH="$PATH:$1"; shift; exec "$@"', "sh", build_tool_bin_dir],
-            compile_cmd,
-        )
-    elif haskell_toolchain.compile_env:
-        run_cmd = cmd_args(["sh", "-c", env_exports + 'exec "$@"', "sh"], compile_cmd)
-
     ctx.actions.run(
-        run_cmd,
+        in_env(ghc_env(ctx, artifact_suffix + "-build-tool-depends"), compile_cmd),
         category = "haskell_compile_" + artifact_suffix.replace("-", "_"),
         # Keep the previous run's -odir/-hidir so that `ghc --make` can do its
         # own recompilation checking and only rebuild the modules whose

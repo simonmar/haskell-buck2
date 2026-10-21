@@ -1,0 +1,79 @@
+
+==================== FINAL INTERFACE ====================
+2026-10-30 16:26:56.486989996 UTC
+
+interface main:Fix.M 9064
+  interface hash: cd5018ef57a135c9558dfad9df8664ba
+  ABI hash: c3d936642b47f8545622d799122bc87a
+  export-list hash: 5045189024337bb0040d2d724089eaf2
+  orphan hash: 693e9af84d3dfcc71e640e005bdc5e2e
+  flag hash: 912661d52ba64e25911ed2450c82bf43
+  opt_hash: cae746593252bd8baa901ea735b9360d
+  hpc_hash: 93b885adfe0da089cdf634904fd59f71
+  plugin_hash: ad164012d6b1e14942349d58b1132007
+  src_hash: e7d8982dff936d77d7db51dbf29aa4a6
+  sig of: Nothing
+  used TH splices: True
+  where
+exports:
+  Fix.M.m
+  Fix.M.mb
+direct module dependencies: main:Fix.A main:Fix.B [boot] main:Fix.S
+boot module dependencies: (main, Fix.B {-# SOURCE #-})
+direct package dependencies: base-4.18.2.0
+                             template-haskell-2.20.0.0
+plugin package dependencies:
+trusted package dependencies: base-4.18.2.0
+orphans: base-4.18.2.0:GHC.Base base-4.18.2.0:GHC.Float
+         ghc-prim-0.10.0:GHC.Prim.Ext
+family instance modules: base-4.18.2.0:Control.Applicative
+                         base-4.18.2.0:Control.Arrow base-4.18.2.0:Data.Array.Byte
+                         base-4.18.2.0:Data.Functor.Const
+                         base-4.18.2.0:Data.Functor.Identity base-4.18.2.0:Data.Monoid
+                         base-4.18.2.0:Data.Semigroup base-4.18.2.0:Data.Semigroup.Internal
+                         base-4.18.2.0:Data.Type.Ord base-4.18.2.0:Data.Version
+                         base-4.18.2.0:GHC.Generics base-4.18.2.0:GHC.IO.Exception
+                         base-4.18.2.0:GHC.IsList base-4.18.2.0:GHC.RTS.Flags
+                         ghc-boot-th-9.6.4:GHC.ForeignSrcLang.Type
+                         ghc-boot-th-9.6.4:GHC.LanguageExtensions.Type
+                         template-haskell-2.20.0.0:Language.Haskell.TH.Syntax
+import  -/  base:Data.Foldable 37d8b44e2b26697f0bf316460a82287c
+import  -/  base:Data.List 3e168490a8f5bfd8fa39a529bc1395b7
+import  -/  base:Data.OldList 01b13b2f85c9b34d011d43dc79317bd0
+import  -/  base:GHC.Base 5a01ca574e3fc3196c3612cbcf5879b9
+import  -/  base:GHC.Num ea8b1f3a62ef54a9fb64ffc32cb719e9
+import  -/  base:Prelude a1ae76d73d35cc0683dc06ee0b1f4dc2
+import  -/  main:Fix.A efd2e036ab4f9a94380f605f8d689ab8
+  exports: 24345a8c99543b1354312e4d1678bf99
+  a 41c19b2e84068f7f4d5430d463c9fe75
+import  -/  main:Fix.B db063f076544e1d4528be49323504cf5
+  exports: c6a88bdf7eefe4709165526d61e2c597
+  b 0a80246865ac5934e4e7b3ae81e992be
+import safe main:Fix.S 130a69a694b3b4f1b71088663f21ef04
+  exports: ba7f141d3221fd70e24d751e4a023493
+  s 207de9166f14336efb9cd4455c5cc2cf
+import  -/  template-haskell:Language.Haskell.TH.Syntax 20d2f412107fcfdecb6945e169dc7702
+addDependentFile "data.txt" 6137cde4893c59f76f005a8123d8e8e6
+addDependentFile "/nix/store/0gvk1ahg6f26c32fd6qw2lz7v8zrp0kv-ghc-9.6.4/lib/ghc-9.6.4/lib/../lib/x86_64-linux-ghc-9.6.4/libHSghc-prim-0.10.0-ghc9.6.4.so" 0d76900b43ba910b8b2a279f3b515f5a
+addDependentFile "/nix/store/0gvk1ahg6f26c32fd6qw2lz7v8zrp0kv-ghc-9.6.4/lib/ghc-9.6.4/lib/../lib/x86_64-linux-ghc-9.6.4/libHSghc-bignum-1.3-ghc9.6.4.so" 577936bc76d91d1cb3e26e357d83205a
+addDependentFile "/nix/store/0gvk1ahg6f26c32fd6qw2lz7v8zrp0kv-ghc-9.6.4/lib/ghc-9.6.4/lib/../lib/x86_64-linux-ghc-9.6.4/libHSbase-4.18.2.0-ghc9.6.4.so" 85cb9c2dca1da91b5a398263228fb67f
+addDependentFile "/nix/store/0gvk1ahg6f26c32fd6qw2lz7v8zrp0kv-ghc-9.6.4/lib/ghc-9.6.4/lib/../lib/x86_64-linux-ghc-9.6.4/libHSghc-boot-th-9.6.4-ghc9.6.4.so" 0415a2acba84acdf72ba32c095cfbd4b
+addDependentFile "/nix/store/0gvk1ahg6f26c32fd6qw2lz7v8zrp0kv-ghc-9.6.4/lib/ghc-9.6.4/lib/../lib/x86_64-linux-ghc-9.6.4/libHSarray-0.5.6.0-ghc9.6.4.so" 87d065a0b2ac21dca9563bf45589c8f9
+addDependentFile "/nix/store/0gvk1ahg6f26c32fd6qw2lz7v8zrp0kv-ghc-9.6.4/lib/ghc-9.6.4/lib/../lib/x86_64-linux-ghc-9.6.4/libHSdeepseq-1.4.8.1-ghc9.6.4.so" 491072a75ea02591ab244cc7b3d493c9
+addDependentFile "/nix/store/0gvk1ahg6f26c32fd6qw2lz7v8zrp0kv-ghc-9.6.4/lib/ghc-9.6.4/lib/../lib/x86_64-linux-ghc-9.6.4/libHSpretty-1.1.3.6-ghc9.6.4.so" bb349f35adb64d98656bebdfe6775f45
+addDependentFile "/nix/store/0gvk1ahg6f26c32fd6qw2lz7v8zrp0kv-ghc-9.6.4/lib/ghc-9.6.4/lib/../lib/x86_64-linux-ghc-9.6.4/libHStemplate-haskell-2.20.0.0-ghc9.6.4.so" 1ef54d20a0ee2d151585baeb767ccc18
+87070237779c7f1ce962b0ca937541b3
+  $trModule :: GHC.Types.Module
+  []
+acba629c027b361c2424d251388ec834
+  m :: GHC.Types.Int
+  []
+2bccd049d1f11732aba0d7be32749d2f
+  mb :: () -> GHC.Types.Int
+  []
+trusted: trustworthy
+require own pkg trusted: False
+docs:
+  Nothing
+extensible fields:
+

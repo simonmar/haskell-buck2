@@ -1,0 +1,86 @@
+
+==================== FINAL INTERFACE ====================
+2026-10-30 16:26:57.594130958 UTC
+
+interface main:Fix.M [self-recomp] 9141
+  ABI hash: 76be571575d6454099c418bb8a7ef2bc
+  interface hash: 48107c6047411d742f70ea6d425f5749
+  export avails hash: 313a1c79bf1289f618d9819f1df67324
+  orphan-like hash: c8f97d1dd14756cd0583b4c24fb4602b
+Self-Recomp
+  src hash: e7d8982dff936d77d7db51dbf29aa4a6
+  flags: fingerprint: 919b262ff57787e1e4da6d8a6c3c4036
+         flags: no detailed info, recompile with -fwrite-if-self-recomp-flags
+  opt hash: 3b47163d50aa7c7ab50dabe1ce1cd755
+  hpc hash: 93b885adfe0da089cdf634904fd59f71
+  plugin hash: ad164012d6b1e14942349d58b1132007
+  usages: [import  -/  base-4.22.0.0-8e2f:Data.List 44cf270393a67a852fda7dd3fbddfec7,
+           import  -/  base-4.22.0.0-8e2f:Prelude 9512fa4c3fea42ea42b1cfd81f06f1a8,
+           import  -/  ghc-internal:GHC.Internal.Base 4b58ca53cb277903ee756ff355143661,
+           import  -/  ghc-internal:GHC.Internal.Data.Foldable c5a440ea30ba2276699462afbdc58874,
+           import  -/  ghc-internal:GHC.Internal.Data.OldList 3441e84bd8465fccb123ce9ed5745d56,
+           import  -/  ghc-internal:GHC.Internal.Num 9c1ced8c1ed4e62d57026d5493a4e544,
+           import  -/  ghc-internal:GHC.Internal.TH.Lift 3b6f1a50071f95d43cf831a36bcfcc24,
+           import  -/  ghc-internal:GHC.Internal.TH.Syntax 17e8de9c11483539036545c1ad890043,
+           import  -/  main:Fix.A bb77f4448cfc4752ed3ee380d5e9f3af
+             exports: {orphan_like: dc9c6742aab726abfcbada12de9b07c6 , imported avails: {explicit: [Fix.A.a] , implicit_parents: {}}}
+             a 24ab2434cd8bb3c962da5a4e8390df9a,
+           import  -/  main:Fix.B 7b8696a5f3c08236dce0854b621b5569
+             exports: {orphan_like: dc9c6742aab726abfcbada12de9b07c6 , imported avails: {explicit: [Fix.B.b] , implicit_parents: {}}}
+             b daa17147b434effb072ac7634dfcb3d7,
+           import safe main:Fix.S f9f7e22504c52f1ff062dbc9d247af56
+             exports: {orphan_like: bc5d382d8d8ed932f9bc56cdede09e0b , imported avails: {explicit: [Fix.S.s] , implicit_parents: {}}}
+             s 633572db696902ea5e18260c1a7931c6,
+           import  -/  template-haskell-2.24.0.0-c485:Language.Haskell.TH.Syntax a0caf505575679039d3c2fb4e9943f04,
+           addDependentFile "data.txt" 6137cde4893c59f76f005a8123d8e8e6,
+           addDependentFile "/nix/store/0288hpkhz13h5mw6q5id3dkm59wfl024-ghc-9.14.1/lib/ghc-9.14.1/lib/../lib/x86_64-linux-ghc-9.14.1-f97f/libHSghc-internal-9.1401.0-0eae-ghc9.14.1.so" 1e8d4db0f75b54b12e4c2cf337fd6fb4]
+  orphan hash: 693e9af84d3dfcc71e640e005bdc5e2e
+  sig of: Nothing
+  where
+exports:
+  Fix.M.m
+  Fix.M.mb
+defaults:
+direct module dependencies: normal main:Fix.A main:Fix.B [boot]
+                            normal main:Fix.S
+boot module dependencies: (main, Fix.B {-# SOURCE #-})
+direct package dependencies: (normal, base-4.22.0.0)
+                             (normal, template-haskell-2.24.0.0)
+plugin package dependencies:
+trusted package dependencies: base-4.22.0.0
+orphans: ghc-internal-9.1401.0:GHC.Internal.Base
+         ghc-internal-9.1401.0:GHC.Internal.Data.NonEmpty
+         ghc-internal-9.1401.0:GHC.Internal.Float
+         ghc-internal-9.1401.0:GHC.Internal.Prim.Ext
+family instance modules: base-4.22.0.0:Control.Applicative
+                         ghc-internal-9.1401.0:GHC.Internal.Control.Arrow
+                         ghc-internal-9.1401.0:GHC.Internal.Data.Functor.Const
+                         ghc-internal-9.1401.0:GHC.Internal.Data.Functor.Identity
+                         ghc-internal-9.1401.0:GHC.Internal.Data.Monoid
+                         ghc-internal-9.1401.0:GHC.Internal.Data.Semigroup.Internal
+                         ghc-internal-9.1401.0:GHC.Internal.Data.Type.Ord
+                         ghc-internal-9.1401.0:GHC.Internal.Data.Version
+                         ghc-internal-9.1401.0:GHC.Internal.ForeignSrcLang
+                         ghc-internal-9.1401.0:GHC.Internal.Functor.ZipList
+                         ghc-internal-9.1401.0:GHC.Internal.Generics
+                         ghc-internal-9.1401.0:GHC.Internal.IO.Exception
+                         ghc-internal-9.1401.0:GHC.Internal.LanguageExtensions
+                         ghc-internal-9.1401.0:GHC.Internal.TH.Syntax
+b924bde9fc59b121ab99c96d9b4b4e58
+  $trModule :: GHC.Internal.Types.Module
+  []
+3f44f42ea3ed2228629de3882cc62565
+  m :: GHC.Internal.Types.Int
+  []
+fb728ef22705571436b6554f006d6079
+  mb :: () -> GHC.Internal.Types.Int
+  []
+Warnings:
+  Deprecated names:
+  Deprecated exports:
+trusted: trustworthy
+require own pkg trusted: False
+docs:
+  Nothing
+extensible fields:
+

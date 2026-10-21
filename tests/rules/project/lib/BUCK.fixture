@@ -1,0 +1,13 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+haskell_library(
+    name = "lib",
+    srcs = {
+        "A.Base": "A/Base.hs",
+        "A.Mid": "A/Mid.hs",
+        "A.Unused": "A/Unused.hs",
+    },
+    packages = ["base"],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)
