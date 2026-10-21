@@ -625,7 +625,7 @@ def _cabal_targets_of_sets(specs, defaults, overrides, transform, rules):
             base = c["name"]
             c = dict(c, name = base + "." + (set or "project"), _name = base, _unit_id_label = ":" + base)
             if set != None:
-                c["_common"] = {"target_compatible_with": _set_constraints(set)}
+                c["_common"] = {"target_compatible_with": [_set_constraint(set)]}
             if c["kind"] != "library":
                 c["exe_name"] = c.get("exe_name", base)
             components.append(c)
@@ -639,18 +639,14 @@ def _cabal_targets_of_sets(specs, defaults, overrides, transform, rules):
             if set != None:
                 _set_alias(base, set)
 
-def _set_constraints(set):
-    # The configuration of a package set's targets: its PACKAGE_SET_MODIFIERS
-    # (in the project's cabal-buck2.bzl), which are constraints.
-    if set not in PACKAGE_SET_MODIFIERS:
-        fail("package set {} has no PACKAGE_SET_MODIFIERS in cabal-buck2.bzl".format(set))
-    return PACKAGE_SET_MODIFIERS[set]
-
 def _set_constraint(set):
-    constraints = _set_constraints(set)
-    if len(constraints) != 1:
-        fail("the PACKAGE_SET_MODIFIERS of package set {} must be one constraint (that the targets of the set are built with), not {}".format(set, constraints))
-    return constraints[0]
+    # The constraint of a package set's configurations: the first of its
+    # PACKAGE_SET_MODIFIERS (in the project's cabal-buck2.bzl), the others
+    # being whatever else its configurations have (a build mode, say).
+    modifiers = PACKAGE_SET_MODIFIERS.get(set)
+    if not modifiers:
+        fail("package set {} has no PACKAGE_SET_MODIFIERS in cabal-buck2.bzl".format(set))
+    return modifiers[0]
 
 def _set_alias(name, set):
     # <component>-<set>: the component built for the set (with the project's
