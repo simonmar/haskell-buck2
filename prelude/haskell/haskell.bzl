@@ -977,12 +977,10 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
 
     link_styles = [legacy_output_style_to_link_style(o) for o in get_output_styles_for_linkage(preferred_linkage)]
 
-    # See build_shared_too on _build_haskell_lib: when set (opt mode - see
-    # buck2/haskell.bzl), and this Linkage wants both a static and a shared
-    # output style, build them together from one -dynamic-too compile
-    # instead of two independent ones. Only meaningful when both exist.
+    # See build_shared_too on _build_haskell_lib: when this Linkage wants
+    # both a static and a shared output style, build them together from one
+    # -dynamic-too compile instead of two independent ones.
     build_shared_too = (
-        haskell_toolchain.dynamic_ghc and
         LinkStyle("static") in link_styles and
         LinkStyle("shared") in link_styles
     )

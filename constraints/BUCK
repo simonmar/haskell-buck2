@@ -98,3 +98,17 @@ constraint_value(
     constraint_setting = ":linking",
     visibility = ["PUBLIC"],
 )
+
+# libraries: libraries are built in every way (static, shared, and
+# profiled), regardless of the linking setting for executables. This
+# can be used when building a library to be installed.
+constraint_setting(
+    name = "libraries",
+    visibility = ["PUBLIC"],
+)
+
+constraint_value(
+    name = "all_ways",
+    constraint_setting = ":libraries",
+    visibility = ["PUBLIC"],
+)
