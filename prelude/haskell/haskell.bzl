@@ -752,7 +752,7 @@ def _build_haskell_lib(
         # TODO: avoid making an archive for a single object, like cxx does
         # (but would that work with Template Haskell?)
         # TODO: Opt haskell actions into content based paths.
-        archive = make_archive(ctx, lib_short_path, objfiles + _internal_objects(ctx, link_style), force_disable_content_based_path = True)
+        archive = make_archive(ctx, lib_short_path, objfiles + _internal_objects(ctx, link_style, enable_profiling), force_disable_content_based_path = True)
         lib = archive.artifact
         libs = [lib] + (archive.external_objects if archive.archive_contents_type == ArchiveContentsType("thin") else [])
         link_infos = LinkInfos(
@@ -924,11 +924,13 @@ def _soname(ctx: AnalysisContext, libfile: str) -> str:
     # The soname of the library's shared library, whose file is `libfile`.
     return ctx.attrs.soname or libfile
 
-def _internal_objects(ctx: AnalysisContext, link_style: LinkStyle) -> list[Artifact]:
-    # The objects of the library's internal_deps, which its archive has in
-    # it as well as its own.
+def _internal_objects(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool = False) -> list[Artifact]:
+    # The objects of the library's internal_deps (its prof_internal_deps, if
+    # it has them, when profiled), which its archive has in it as well as its
+    # own.
     objects = []
-    for dep in ctx.attrs.internal_deps:
+    deps = ctx.attrs.prof_internal_deps if enable_profiling and ctx.attrs.prof_internal_deps else ctx.attrs.internal_deps
+    for dep in deps:
         infos = get_own_link_infos(dep[MergedLinkInfo], to_link_strategy(link_style))
         if infos == None:
             fail("{}: internal dependency {} has nothing to link for {} linking".format(ctx.label, dep.label, link_style.value))

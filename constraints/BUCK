@@ -1,3 +1,5 @@
+load("@prelude//transitions:utils.bzl", "transition_utils")
+
 # Build configuration. These options are normally set on the command
 # line via -m, e.g.
 #
@@ -76,6 +78,13 @@ constraint_setting(
 constraint_value(
     name = "prof",
     constraint_setting = ":profiling",
+    visibility = ["PUBLIC"],
+)
+
+# To profiling (for the C and Cmm of a profiled library, say).
+transition_utils.modify_constraints_transition(
+    name = "to-prof",
+    add = [":prof"],
     visibility = ["PUBLIC"],
 )
 

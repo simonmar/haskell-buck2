@@ -362,6 +362,11 @@ def _cxx_kwargs(c, pkgconfig_seen, srcs):
 
     return kwargs
 
+_PROFILING_DEFINES = select({
+    "root//buck2/constraints:prof": ["-DPROFILING"],
+    "DEFAULT": [],
+})
+
 def _cxx_library(c, packages, pkg_dir, pkgconfig_seen, overrides):
     # Returns the labels the Haskell rule must additionally depend on.
     srcs = list(c.get("c_sources", [])) + list(c.get("cxx_sources", [])) + list(c.get("asm_sources", []))
@@ -373,10 +378,10 @@ def _cxx_library(c, packages, pkg_dir, pkgconfig_seen, overrides):
     # The C of a Haskell component is compiled as GHC would compile it,
     # which includes the rts's version header (defining __GLASGOW_HASKELL__)
     # and makes available its headers (HsFFI.h) and those of the packages
-    # the component depends on (HsUnixConfig.h, say).
+    # the component depends on (HsUnixConfig.h, say), and defines PROFILING
+    # when it is profiled.
     deps, has_rts = _header_deps(c, packages)
-    if has_rts:
-        kwargs["compiler_flags"] = ["-include", "ghcversion.h"]
+    kwargs["compiler_flags"] = (["-include", "ghcversion.h"] if has_rts else []) + _PROFILING_DEFINES
     headers = name + "-headers"
     headers_of(name = headers, deps = deps, **c["_common"])
     kwargs["deps"] = [":" + headers] + kwargs["deps"]
@@ -469,6 +474,12 @@ def _cmm_library(c, spec, overrides):
     cmm_library(name = name, **_merge(_merge(kwargs, c["_common"]), overrides))
     return [":" + name]
 
+def _profiled(label):
+    # `label` (a target of this package) built for profiling.
+    name = label.removeprefix(":") + "-prof"
+    variant(name = name, actual = label, transition = "root//buck2/constraints:to-prof", visibility = ["PUBLIC"])
+    return ":" + name
+
 def _haskell_kwargs(c, spec, helpers):
     # `helpers` are the rules of the component's C/C++/Cmm code.
     pkg_dir = _this_dir(spec)
@@ -508,9 +519,12 @@ def _haskell_kwargs(c, spec, helpers):
             native.get_cell_name() + "//" + native.package_name(),
             c.get("_name", c["name"]),
         )
-        # The code of the helpers is part of the library, as in Cabal.
+        # The code of the helpers is part of the library, as in Cabal, which
+        # compiles it for each way: for the profiled library, as built for
+        # profiling.
         if helpers:
             kwargs["internal_deps"] = helpers
+            kwargs["prof_internal_deps"] = [_profiled(h) for h in helpers]
         include_dirs = _package_include_dirs(c, pkg_dir)
         if include_dirs:
             kwargs["include_dirs"] = include_dirs

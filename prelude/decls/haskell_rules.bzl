@@ -198,6 +198,10 @@ haskell_library = prelude_rule(
             # preferred linkage, and their link info be objects
             # (use_archive = False, for a cxx_library).
             "internal_deps": attrs.list(attrs.dep(), default = []),
+            # The internal_deps as built for profiling (as Cabal compiles a
+            # package's C for each way): the profiled library has their
+            # objects instead.
+            "prof_internal_deps": attrs.list(attrs.dep(), default = []),
             # Headers in them that GHC includes in the C it generates for what
             # depends on the package (its `includes`).
             "includes": attrs.list(attrs.string(), default = []),
