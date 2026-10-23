@@ -31,6 +31,7 @@
 #         "extra_lib_dirs": [str],            # where to find them: extra-lib-dirs as configured, so with pkgconfig-depends' directories
 #         "deps": [dep],                      # see below
 #         "reexports": [{"module": str, "original": str, "from": dep}],  # libraries only; no "from" for a module of the library itself
+#         "hidden_modules": [str],            # libraries only: the modules the package doesn't expose (other-modules)
 #         "build_tools": [{"exe": str, "package": str} | {"exe": str, "external": True}],  # package: built by this project
 #         "c_sources": [str], "cc_options": [str],
 #         "cxx_sources": [str], "cxx_options": [str],
@@ -516,6 +517,8 @@ def _haskell_kwargs(c, spec, helpers):
         if c.get("includes"):
             kwargs["includes"] = list(c["includes"])
         kwargs["exposed"] = c.get("exposed", True)
+        if c.get("hidden_modules"):
+            kwargs["hidden_modules"] = list(c["hidden_modules"])
         if c.get("reexports"):
             kwargs["reexported_modules"] = {r["module"]: (_dep_label(project_packages, r["from"]) if "from" in r else None, r["original"]) for r in c["reexports"]}
         lib_dirs = _lib_dir_flags(c, pkg_dir)

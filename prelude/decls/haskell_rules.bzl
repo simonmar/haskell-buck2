@@ -205,6 +205,9 @@ haskell_library = prelude_rule(
             # its package database as an installed one (as its global one,
             # say). The build itself hides all packages.
             "exposed": attrs.bool(default = False),
+            # Modules of the library that are only visible to modules
+            # in the library itself (a Cabal package's other-modules).
+            "hidden_modules": attrs.list(attrs.string(), default = []),
             # The soname of the library's shared library, when it isn't its
             # file's name.
             "soname": attrs.option(attrs.string(), default = None),

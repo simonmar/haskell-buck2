@@ -478,7 +478,8 @@ def _make_package(
         "id: " + pkgname,
         "key: " + pkgname,
         "exposed: " + ("True" if ctx.attrs.exposed else "False"),
-        "exposed-modules: " + ", ".join(modules + reexports),
+        "exposed-modules: " + ", ".join([m for m in modules if m not in ctx.attrs.hidden_modules] + reexports),
+        "hidden-modules: " + ", ".join(ctx.attrs.hidden_modules),
         "import-dirs:" + ", ".join(import_dirs),
         "depends: " + ", ".join([lib.id for lib in hlis]),
     ]
