@@ -474,10 +474,10 @@ def _cmm_library(c, spec, overrides):
     cmm_library(name = name, **_merge(_merge(kwargs, c["_common"]), overrides))
     return [":" + name]
 
-def _profiled(label):
-    # `label` (a target of this package) built for profiling.
+def _profiled(c, label):
+    # `label` (a target of the component `c`) built for profiling.
     name = label.removeprefix(":") + "-prof"
-    variant(name = name, actual = label, transition = "root//buck2/constraints:to-prof", visibility = ["PUBLIC"])
+    variant(name = name, actual = label, transition = "root//buck2/constraints:to-prof", visibility = ["PUBLIC"], **c["_common"])
     return ":" + name
 
 def _haskell_kwargs(c, spec, helpers):
@@ -524,7 +524,7 @@ def _haskell_kwargs(c, spec, helpers):
         # profiling.
         if helpers:
             kwargs["internal_deps"] = helpers
-            kwargs["prof_internal_deps"] = [_profiled(h) for h in helpers]
+            kwargs["prof_internal_deps"] = [_profiled(c, h) for h in helpers]
         include_dirs = _package_include_dirs(c, pkg_dir)
         if include_dirs:
             kwargs["include_dirs"] = include_dirs
