@@ -120,6 +120,8 @@ load(
     "get_output_styles_for_linkage",
     "get_own_link_infos",
     "legacy_output_style_to_link_style",
+    "process_link_strategy_for_pic_behavior",
+    "process_output_style_for_pic_behavior",
     "to_link_strategy",
     "unpack_link_args",
 )
@@ -668,6 +670,11 @@ def _build_haskell_lib(
     # (confirmed directly: "unknown symbol `enterFunCCS'", a profiled-
     # RTS-only symbol its own unprofiled RTS never links in).
     non_profiling_shared_lib: [Artifact, None] = None,
+    # The compile of that same "shared" sibling, whose dynamic objects
+    # and interfaces a profiled compile needs for a Template Haskell
+    # splice that uses a module of this same library (see
+    # `dynamic_from` on compile)
+    non_profiling_shared_compiled: [CompileResultInfo, None] = None,
     # When True (only meaningful when link_style != "shared", and never
     # combined with enable_profiling - shared doesn't support profiling),
     # additionally derive a "shared" sibling from this same compile's
@@ -822,6 +829,17 @@ def _build_haskell_lib(
             "haskell_link_shared_derived",
         )
         own_shared_lib = shared_lib
+        if libstem != libname:
+            # This package's registration names its library `libstem`
+            # ("root_th_pic" for "static_pic", say), and so that's the
+            # file GHC looks for in `dynamic-library-dirs:` to load it
+            # for a Template Haskell splice - as for the profiled
+            # alias above.
+            own_shared_lib = ctx.actions.declare_output(
+                paths.join("lib-shared", "lib" + libstem + dynamic_lib_suffix),
+                has_content_based_path = False,
+            )
+            ctx.actions.symlink_file(own_shared_lib.as_output(), shared_lib)
 
         # GHC's -dynamic-too guarantees the .dyn_hi it writes alongside
         # this compile's own .hi is fully consistent with it (same compile
@@ -955,13 +973,23 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
 
     link_styles = [legacy_output_style_to_link_style(o) for o in get_output_styles_for_linkage(preferred_linkage)]
 
+    # The static link style that a statically-linked consumer actually
+    # uses: "static", unless the toolchain's code is always
+    # position-independent (macOS), when it's "static_pic".
+    pic_behavior = ctx.attrs._cxx_toolchain[CxxToolchainInfo].pic_behavior
+    consumed_static_link_style = legacy_output_style_to_link_style(
+        process_output_style_for_pic_behavior(LibOutputStyle("archive"), pic_behavior),
+    )
+
     # See build_shared_too on _build_haskell_lib: when set (opt mode - see
     # buck2/haskell.bzl), and this Linkage wants both a static and a shared
     # output style, build them together from one -dynamic-too compile
     # instead of two independent ones. Only meaningful when both exist.
+    # It has to be the static style consumers use: its package registration
+    # is what lets their Template Haskell slices load this one the dynamic way.
     build_shared_too = (
         haskell_toolchain.dynamic_ghc and
-        LinkStyle("static") in link_styles and
+        consumed_static_link_style in link_styles and
         LinkStyle("shared") in link_styles
     )
 
@@ -1046,7 +1074,8 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 native_shared_libs_dir = native_shared_libs_dir,
                 non_profiling_hlib = non_profiling_hlib.get(link_style),
                 non_profiling_shared_lib = non_profiling_shared.libs[0] if (enable_profiling and non_profiling_shared) else None,
-                build_shared_too = (build_shared_too and link_style == LinkStyle("static") and not enable_profiling),
+                non_profiling_shared_compiled = non_profiling_shared.compiled if (enable_profiling and non_profiling_shared) else None,
+                build_shared_too = (build_shared_too and link_style == consumed_static_link_style and not enable_profiling),
             )
             if not enable_profiling:
                 non_profiling_hlib[link_style] = hlib_build_out
@@ -1057,7 +1086,6 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 non_profiling_hlib[LinkStyle("shared")] = derived_shared
                 record(LinkStyle("shared"), False, derived_shared)
 
-    pic_behavior = ctx.attrs._cxx_toolchain[CxxToolchainInfo].pic_behavior
     link_style = cxx_toolchain_link_style(ctx)
     output_style = get_lib_output_style(
         to_link_strategy(link_style),
@@ -1235,6 +1263,9 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     if enable_profiling and link_style == LinkStyle("shared"):
         link_style = LinkStyle("static")
 
+    link_style = LinkStyle(
+        process_link_strategy_for_pic_behavior(to_link_strategy(link_style), get_cxx_toolchain_info(ctx).pic_behavior).value
+    )
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
 
     compiled = compile(
