@@ -392,6 +392,16 @@ _PROFILING_DEFINES = select({
     "DEFAULT": [],
 })
 
+# To match GHC, we explicitly disable PIC for C compiles (except on
+# MacOS and Windows), in case gcc has it enabled by default. See GHC's
+# picCCOpts. When linking dynamically, the later -fPIC will override
+# this.
+_NO_PIC = select({
+    "config//os:macos": [],
+    "config//os:windows": [],
+    "DEFAULT": ["-fno-PIC"],
+})
+
 def _cxx_library(c, packages, pkg_dir, pkgconfig_seen, overrides):
     # Returns the labels the Haskell rule must additionally depend on.
     srcs = list(c.get("c_sources", [])) + list(c.get("cxx_sources", [])) + list(c.get("asm_sources", []))
@@ -406,7 +416,7 @@ def _cxx_library(c, packages, pkg_dir, pkgconfig_seen, overrides):
     # the component depends on (HsUnixConfig.h, say), and defines PROFILING
     # when it is profiled.
     deps, has_rts = _header_deps(c, packages)
-    kwargs["compiler_flags"] = (["-include", "ghcversion.h"] if has_rts else []) + _PROFILING_DEFINES
+    kwargs["compiler_flags"] = (["-include", "ghcversion.h"] if has_rts else []) + _PROFILING_DEFINES + _NO_PIC
     headers = name + "-headers"
     headers_of(name = headers, deps = deps, **c["_common"])
     kwargs["deps"] = [":" + headers] + kwargs["deps"]
