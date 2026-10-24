@@ -590,13 +590,15 @@ def _haskell_kwargs(c, spec, helpers):
         kwargs["visibility"] = ["PUBLIC"]
     return _merge(kwargs, c["_common"])
 
+_LIST_TYPES = (type([]), type(select({"DEFAULT": []})))
+
 def _merge(base, extra):
-    # Lists are appended to (by lists or selects of them), dicts are merged,
-    # anything else is replaced.
+    # Lists (or selects of them) are appended to, dicts are merged, anything
+    # else is replaced.
     out = dict(base)
     for k, v in extra.items():
         cur = out.get(k)
-        if type(v) in (type([]), type(select({"DEFAULT": []}))) and type(cur) == type([]):
+        if type(v) in _LIST_TYPES and type(cur) in _LIST_TYPES:
             out[k] = cur + v
         elif type(v) == type({}) and type(cur) == type({}):
             merged = dict(cur)
