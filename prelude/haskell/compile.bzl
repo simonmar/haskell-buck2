@@ -283,8 +283,30 @@ def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: 
         args_for_file = compile_args,
     )
 
+# Copies the .dyn_o objects of another compile of the same sources into this
+# compile's -odir, then runs the rest of the arguments.
+_COPY_DYN_OBJECTS = """\
+set -eu
+odir=$1
+src=$2
+shift 2
+(cd "$src" && find . -name '*.dyn_o') | while read -r f; do
+  mkdir -p "$odir/${f%/*}"
+  cp -f "$src/$f" "$odir/$f"
+done
+exec "$@"
+"""
+
 # Compile all the context's sources.
-def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, native_shared_libs_dir: [Artifact, None] = None, dynamic_too: bool = False) -> CompileResultInfo:
+#
+# `dynamic_from`, for a profiled compile, is the non-profiled compile of the
+# same sources whose .dyn_o objects GHC's (dynamic, unprofiled) internal
+# interpreter loads for a Template Haskell splice that uses a module of this
+# same library. GHC looks for those in this compile's own -odir (it swaps the
+# p_o extension of the module's object for dyn_o), which is where they'd be if
+# both compiles shared a build directory, as they do in Cabal; here the two
+# compiles have -odirs of their own, so the objects are copied in first.
+def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, native_shared_libs_dir: [Artifact, None] = None, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None) -> CompileResultInfo:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     compile_cmd = cmd_args(haskell_toolchain.compiler)
 
@@ -319,6 +341,12 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
             compile_cmd.add(args.srcs)
 
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
+
+    if dynamic_from != None:
+        compile_cmd = cmd_args(
+            ["sh", "-c", _COPY_DYN_OBJECTS, "sh", args.result.objects.as_output(), dynamic_from.objects],
+            compile_cmd,
+        )
 
     # compile_env's values are shell-evaluated (via `sh -c`) rather than
     # passed straight through as literal env values - this lets a value

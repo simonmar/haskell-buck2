@@ -670,6 +670,11 @@ def _build_haskell_lib(
     # (confirmed directly: "unknown symbol `enterFunCCS'", a profiled-
     # RTS-only symbol its own unprofiled RTS never links in).
     non_profiling_shared_lib: [Artifact, None] = None,
+    # The compile of that same "shared" sibling, whose dynamic objects
+    # a profiled compile needs for a Template Haskell
+    # splice that uses a module of this same library (see
+    # `dynamic_from` on compile)
+    non_profiling_shared_compiled: [CompileResultInfo, None] = None,
     # When True (only meaningful when link_style != "shared", and never
     # combined with enable_profiling - shared doesn't support profiling),
     # additionally derive a "shared" sibling from this same compile's
@@ -697,6 +702,7 @@ def _build_haskell_lib(
         pkgname = pkgname,
         native_shared_libs_dir = native_shared_libs_dir,
         dynamic_too = dynamic_too,
+        dynamic_from = non_profiling_shared_compiled if enable_profiling else None,
     )
     solibs = {}
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
@@ -1069,6 +1075,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 native_shared_libs_dir = native_shared_libs_dir,
                 non_profiling_hlib = non_profiling_hlib.get(link_style),
                 non_profiling_shared_lib = non_profiling_shared.libs[0] if (enable_profiling and non_profiling_shared) else None,
+                non_profiling_shared_compiled = non_profiling_shared.compiled if (enable_profiling and non_profiling_shared) else None,
                 build_shared_too = (build_shared_too and link_style == consumed_static_link_style and not enable_profiling),
             )
             if not enable_profiling:
