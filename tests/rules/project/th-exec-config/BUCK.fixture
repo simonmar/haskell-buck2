@@ -2,15 +2,17 @@ load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
 load(":defs.bzl", "run_tool")
 load("//compile:defs.bzl", "PER_MODULE")
 
-# l is built in two configurations in one build, with the same unit id and
-# soname in both. Its v is 4 in the execution platform's configuration, and
-# 3 in the target platform's. tool's splice runs l's code in the execution
-# platform's configuration (tool is a build tool, which gen runs), and
-# user's splice runs it in the target platform's.
+# The library l is built in two configurations in one build. tool is a
+# build tool, which gen runs, so it and its copy of l are built in the
+# execution platform's configuration. user and its copy of l are built in
+# the target platform's. The two copies of l have the same unit id and
+# soname, but l's value v is 4 in the execution platform's configuration
+# and 3 in the target platform's. tool's splice and user's splice both run
+# l's code, and each must run its own configuration's copy.
 #
-# l and tool are built with --make whatever the checks ask for: tool is built
-# in the execution platform's configuration, which the //compile:make
-# modifier doesn't reach, and per_module doesn't support its splice.
+# The //compile:make modifier doesn't reach the execution platform's
+# configuration, so tool and its copy of l are compiled per-module however
+# the checks build gen.
 haskell_library(
     name = "l",
     srcs = {"L.V": "L/V.hs"},
@@ -19,7 +21,7 @@ haskell_library(
         "DEFAULT": [],
         "prelude//cfg/exec_platform/marker:is_exec_platform[true]": ["-DEXEC"],
     }),
-    per_module = False,
+    per_module = PER_MODULE,
 )
 
 haskell_binary(
@@ -27,7 +29,8 @@ haskell_binary(
     srcs = {"Main": "Tool.hs"},
     packages = ["base", "template-haskell"],
     deps = [":l"],
-    per_module = False,
+    template_haskell_depends = [":l"],
+    per_module = PER_MODULE,
 )
 
 run_tool(
@@ -41,10 +44,12 @@ haskell_library(
     srcs = {"U.S": "U/S.hs"},
     packages = ["base", "template-haskell"],
     deps = [":l"],
+    template_haskell_depends = [":l"],
     per_module = PER_MODULE,
 )
 
-# Prints U.S's splice.
+# Prints the value of U.S's splice, which comes from the target platform's
+# copy of l.
 haskell_binary(
     name = "show",
     srcs = {"Main": "Show.hs"},

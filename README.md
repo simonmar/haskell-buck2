@@ -42,12 +42,17 @@ depend on are done, without having to wait for the full package.
 
 `per_module` is only tested on Linux.
 
-Template Haskell is supported with one restriction: a splice can only run
-code of prebuilt packages (from Hackage, say), not of the project's other
-libraries or of the target's own modules. So a module with Template Haskell
-doesn't wait for its dependencies' libraries to be linked, and keeps the
-cross-package parallelism. A target whose splices do run local code fails
-to compile, saying so: build it with `per_module = False`.
+The main thing that still leads to suboptimal dependency graphs is Template
+Haskell. Modules with TH need the full compiled libraries of the dependencies
+whose code they run. `template_haskell_depends` lists those dependencies,
+local or prebuilt, and a target's TH modules wait only for them. A splice
+that runs code of a library that isn't listed fails to compile, saying so.
+A target generated from a Cabal package lists all of its dependencies,
+unless the package says which ones its splices run. Its TH modules then wait
+for all of them, which loses much of the cross-package parallelism.
+
+A splice can't run code of its own target's modules. Such a target fails to
+compile, saying so, and has to be built with `per_module = False`.
 
 `per_module` is often much faster at rebuilds:
 

@@ -461,6 +461,11 @@ def _make_package(
     # See HaskellLibraryInfo.early_db
     early: bool = False,
     library_less: bool = False,
+    # A directory of the native shared libraries that the library depends
+    # on, and those libraries' names, for GHC's interpreter (see
+    # _native_ghci_libs).
+    native_libs_dir: [Artifact, None] = None,
+    native_libs: list[str] = [],
 ) -> Artifact:
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
     db_suffix = ("early-" if early else "nolib-" if library_less else "") + artifact_suffix
@@ -489,7 +494,14 @@ def _make_package(
         import_dirs = cmd_args('"${pkgroot}/' + per_module_out_dir(ctx, hi_link_style or link_style, enable_profiling) + '"')
     else:
         import_dirs = cmd_args([pkgroot_path(d) for d in hi.values()], delimiter = ", ")
-    library_dirs = cmd_args([pkgroot_path(l, parent = 1) for l in lib.values()], delimiter = ", ")
+    # A profiled package also has a non-profiled shared library
+    # (own_shared_lib), for GHC's internal interpreter, which finds it in
+    # dynamic-library-dirs. The shared library is left out of library-dirs.
+    # A compile with -fexternal-interpreter (see Note [Template Haskell
+    # modules] in compile_per_module.bzl) uses a profiled interpreter, which
+    # looks in library-dirs, and would load the shared library there instead
+    # of the profiled archive.
+    library_dirs = cmd_args([pkgroot_path(l, parent = 1) for l in lib.values() if not (enable_profiling and l.extension in [".so", ".dylib"])], delimiter = ", ")
 
     # Reexports are named by the unit they come from, which GHC finds in the
     # package databases whether or not the unit is exposed.
@@ -514,12 +526,24 @@ def _make_package(
         "depends: " + ", ".join([lib.id for lib in hlis]),
     ]
     if not early and not library_less:
+        native_dir = []
+        if native_libs_dir != None and native_libs:
+            # GHC's interpreter reads extra-ghci-libraries instead of
+            # extra-libraries, so the list names the package's own library
+            # too, after the native libraries. Anything else added to
+            # extra-libraries would have to be added here as well. A dynamic
+            # interpreter looks for the libraries in dynamic-library-dirs, and
+            # a static or profiled one (in the opt and prof modes) looks in
+            # library-dirs, so the directory goes in both.
+            conf.append("extra-ghci-libraries: " + ", ".join(native_libs + [libname]))
+            native_dir = [pkgroot_path(native_libs_dir)]
         conf += [
-            cmd_args("library-dirs: ", library_dirs, delimiter = ""),
+            cmd_args("library-dirs: ", cmd_args([library_dirs] + native_dir, delimiter = ", "), delimiter = ""),
             "extra-libraries: " + libname,
         ]
-        if own_shared_lib != None:
-            conf.append(cmd_args("dynamic-library-dirs: ", pkgroot_path(own_shared_lib, parent = 1), delimiter = ""))
+        if own_shared_lib != None or native_dir:
+            dynamic_dirs = [pkgroot_path(own_shared_lib, parent = 1)] if own_shared_lib != None else [library_dirs]
+            conf.append(cmd_args("dynamic-library-dirs: ", cmd_args(dynamic_dirs + native_dir, delimiter = ", "), delimiter = ""))
     pkg_conf = ctx.actions.write("pkg-" + db_suffix + ".conf", conf, has_content_based_path = False)
 
     # While the list of hlis is unique, there may be multiple packages in the same db.
@@ -559,7 +583,7 @@ def _make_package(
                 haskell_toolchain.packager,
             ],
             # needs hi, because ghc-pkg checks that the .hi files exist
-            hidden = [] if early else hi.values() if library_less else hi.values() + lib.values() + ([own_shared_lib] if own_shared_lib != None else []),
+            hidden = [] if early else hi.values() if library_less else hi.values() + lib.values() + ([own_shared_lib] if own_shared_lib != None else []) + ([native_libs_dir] if native_libs_dir != None and native_libs else []),
         ),
         category = "haskell_package_" + db_suffix.replace("-", "_"),
         env = {"GHC_PACKAGE_PATH": ghc_package_path} if db_deps else {},
@@ -608,6 +632,58 @@ def _native_shared_libs_dir(actions: AnalysisActions, name: str, shared_library_
         actions = actions,
         out = "__{}__th_shared_libs_symlink_tree".format(name),
         shared_libs = sos,
+    )
+
+# The shared libraries of a target's native dependencies, and of their
+# dependencies in turn, for GHC's interpreter (see Note [Template Haskell
+# modules] in compile_per_module.bzl). The result has two fields:
+#
+# - dir is a directory that holds each library under the name that GHC looks
+#   it up by: libfoo.so for the name foo, or libfoo.dylib on macOS.
+# - names lists the libraries' names, each after the names of the libraries
+#   that it depends on.
+#
+# A library whose soname isn't of that form (for example libfoo.so.1) is
+# named by its whole soname. On macOS, buck2's own libraries have sonames of
+# the form libfoo.so too. A library whose soname is only known once it
+# has been built is left out. The native libraries of a Haskell dependency
+# are named in that dependency's own package db, and GHC loads them before
+# this package's.
+#
+# On macOS a library refers to the libraries it depends on by their install
+# names (@rpath/libfoo.dylib), which don't say where they are. GHC loads the
+# libraries in the order of the list, so each one's dependencies are already
+# loaded when it is, and the dynamic loader uses those.
+def _native_ghci_libs(ctx: AnalysisContext, name: str):
+    linker_type = get_cxx_toolchain_info(ctx).linker_info.type
+    if linker_type == LinkerType("gnu"):
+        ghc_ending, soname_endings = ".so", [".so"]
+    elif linker_type == LinkerType("darwin"):
+        ghc_ending, soname_endings = ".dylib", [".so", ".dylib"]
+    else:
+        return struct(dir = None, names = [])
+    infos = [d[SharedLibraryInfo] for d in ctx.attrs.deps if SharedLibraryInfo in d and HaskellLinkInfo not in d]
+    info = merge_shared_libraries(ctx.actions, deps = infos)
+    names = []
+    files = {}
+    if info.set != None:
+        for libs in reversed(list(info.set.traverse(ordering = "topological"))):
+            for lib in libs.libraries:
+                soname = lib.soname.as_str()
+                if not soname:
+                    continue
+                n = soname
+                for ending in soname_endings:
+                    if soname.startswith("lib") and soname.endswith(ending):
+                        n = soname[len("lib"):-len(ending)]
+                if "lib" + n + ghc_ending not in files:
+                    names.append(n)
+                    files["lib" + n + ghc_ending] = lib.lib.output
+    if not names:
+        return struct(dir = None, names = [])
+    return struct(
+        dir = ctx.actions.symlinked_dir("__{}__ghci_native_libs".format(name), files, has_content_based_path = False),
+        names = names,
     )
 
 # Links a Haskell shared library from a set of already-compiled object
@@ -699,6 +775,9 @@ def _build_haskell_lib(
     # Precomputed once per target (not per link_style/profiling variant - see
     # call site) since it maps to a single declared symlink-tree output.
     native_shared_libs_dir: [Artifact, None],
+    # The library's native libraries, for GHC's interpreter (see
+    # _native_ghci_libs).
+    ghci_native = struct(dir = None, names = []),
     # The non-profiling artifacts are also needed to build the package for
     # profiling, so it should be passed when `enable_profiling` is True.
     non_profiling_hlib: [HaskellLibBuildOutput, None] = None,
@@ -903,6 +982,8 @@ def _build_haskell_lib(
             {False: shared_lib},
             enable_profiling = False,
             all_hlis = all_hlis,
+            native_libs_dir = ghci_native.dir,
+            native_libs = ghci_native.names,
         )
         shared_hlib = HaskellLibraryInfo(
             name = pkgname,
@@ -911,6 +992,7 @@ def _build_haskell_lib(
             import_dirs = {False: compiled.hi},
             stub_dirs = [compiled.stubs],
             libs = [shared_lib],
+            native_libs_dir = ghci_native.dir,
             version = ctx.attrs.package_version or "1.0.0",
             is_prebuilt = False,
             profiling_enabled = False,
@@ -935,6 +1017,8 @@ def _build_haskell_lib(
         enable_profiling = enable_profiling,
         own_shared_lib = own_shared_lib,
         all_hlis = all_hlis,
+        native_libs_dir = ghci_native.dir,
+        native_libs = ghci_native.names,
     )
 
     hlib = HaskellLibraryInfo(
@@ -944,6 +1028,7 @@ def _build_haskell_lib(
         import_dirs = import_artifacts,
         stub_dirs = stub_dirs,
         libs = all_libs,
+        native_libs_dir = ghci_native.dir,
         version = ctx.attrs.package_version or "1.0.0",
         is_prebuilt = False,
         profiling_enabled = enable_profiling,
@@ -1059,6 +1144,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
         _native_shared_libs_dir(ctx.actions, libname, shared_library_infos)
         if haskell_toolchain.dynamic_ghc else None
     )
+    ghci_native = _native_ghci_libs(ctx, libname)
 
     link_styles = [legacy_output_style_to_link_style(o) for o in get_output_styles_for_linkage(preferred_linkage)]
 
@@ -1182,6 +1268,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 link_style = link_style,
                 enable_profiling = enable_profiling,
                 native_shared_libs_dir = native_shared_libs_dir,
+                ghci_native = ghci_native,
                 non_profiling_hlib = non_profiling_hlib.get(non_profiling_style(link_style) if enable_profiling else link_style),
                 non_profiling_shared_lib = non_profiling_shared.libs[0] if (enable_profiling and non_profiling_shared) else None,
                 non_profiling_shared_compiled = non_profiling_shared.compiled if (enable_profiling and non_profiling_shared) else None,

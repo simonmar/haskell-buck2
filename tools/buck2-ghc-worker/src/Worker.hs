@@ -166,16 +166,20 @@ shutdown w = do
     hPutStrLn stderr ("buck2-ghc-worker: peak memory " ++ show (max_mem_in_use_bytes stats `div` 2 ^ (20 :: Int)) ++ " MB, max live " ++ show (max_live_bytes stats `div` 2 ^ (20 :: Int)) ++ " MB, GC " ++ show (gc_elapsed_ns stats `div` 10 ^ (6 :: Int)) ++ " ms")
     hPutStrLn stderr ("buck2-ghc-worker: CPU mutator " ++ show (mutator_cpu_ns stats `div` 10 ^ (6 :: Int)) ++ " ms, GC " ++ show (gc_cpu_ns stats `div` 10 ^ (6 :: Int)) ++ " ms")
 
--- | Run an action in the session for the request's session flags, making
--- the session first if there is none yet. If the session can't be made,
--- this request fails with the reason, and so do the requests that were
--- waiting for the session. The next request with the same flags tries to
--- make it again. If the request that is making the session is cancelled
--- instead, one of the waiting requests makes it again, and the others wait
--- for that one.
+-- | Run an action in the session for the request's session flags and data
+-- dirs, making the session first if there is none yet. If the session can't
+-- be made, this request fails with the reason, and so do the requests that
+-- were waiting for the session. The next request with the same flags and
+-- data dirs tries to make it again. If the request that is making the
+-- session is cancelled instead, one of the waiting requests makes it again,
+-- and the others wait for that one.
 withSession :: Worker -> Request -> (GhcSession -> IO a) -> IO a
 withSession w r k = mask $ \restore -> do
-  let flags = sessionFlags r
+  -- Requests with different data dirs need different sessions, because a
+  -- session's interpreter is started with the variables of its data dirs.
+  -- So the data dirs are part of the key that identifies a session, along
+  -- with the session flags.
+  let flags = sessionFlags r ++ ["--data-dir=" ++ v ++ "=" ++ d | (v, d) <- reqDataDirs r]
   -- Asynchronous exceptions are masked here, except while the session is
   -- being made and while it is used. If a request were cancelled anywhere
   -- else, it could leave its entry's session never filled in, so that the

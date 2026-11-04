@@ -2,6 +2,7 @@
 fixtures both per-module and with --make (see COMPILES), and says how the
 two differ where they should."""
 
+import re
 import sys
 
 from harness import (
@@ -16,9 +17,11 @@ from harness import (
     expect_set,
     index_files,
     known_failure,
+    module_of,
     replace,
     tail,
     what_ran,
+    what_ran_entries,
 )
 
 
@@ -28,34 +31,29 @@ def check_make_build(st):
     make-between's p and t per-module, make-lib and m with --make."""
     build(*[configured(t, "make") for t in st.targets])
     expect_set("compiles of the fixtures with --make", compiled(what_ran()),
-               {"lib", "lib-user", "th-gen", "th-prebuilt-splice", "th-make-dep", "ffi-import", "boot-cycle", "main",
-                "reexport", "reexport-user", "flat-sources", "make-lib", "m", "p:Chain.P", "t:Chain.T"})
+               {"lib", "lib-user", "th-gen", "th-local-splice", "show", "th-prebuilt-splice", "th-make-dep", "mkrun",
+                "ffi-import", "boot-cycle", "main", "reexport", "reexport-user", "flat-sources", "make-lib", "m", "p:Chain.P", "t:Chain.T"})
 
 
-# How the checks of splices that run local code compile their fixtures. Those
-# splices fail to compile per-module (see check_local_splices), so they are
-# checked with --make alone.
-LOCAL_SPLICE_COMPILES = ["make"]
+# How the checks of splices that run their own target's code compile their
+# fixtures. Those splices fail to compile per-module (see
+# check_local_splices), so they are checked with --make alone.
+OWN_SPLICE_COMPILES = ["make"]
 
 
 def check_local_splices(st):
     """A splice that runs code of another local library (C.Splice's runs
-    TH.Gen's, MK.Run's runs make-lib's Q.Lib) or of its own target (P.Use's
-    runs P.Gen's). Compiled per-module, which doesn't support that, each
-    module fails to compile, saying how to build the target instead. With
-    --make, each compiles, and //th-internal-splice:use prints the value
-    that P.Gen's splice made, in prof mode too."""
-    for target, module in [("//th-local-splice:th-local-splice", "C.Splice"), ("//th-make-dep:mkrun", "MK.Run")]:
-        p = build(target, keep_going=True)
-        expect("{} fails to build".format(target), p.returncode != 0)
-        expect("{}'s failure is {}'s, and names the fix (got:\n{})".format(target, module, tail(p.stderr, 15)),
-               module in p.stderr and "per_module = False" in p.stderr)
+    TH.Gen's, MK.Run's runs make-lib's Q.Lib) compiles either way. One that
+    runs code of its own target (P.Use's runs P.Gen's) fails to compile
+    per-module, which doesn't support that, saying how to build the target
+    instead. With --make, it compiles, and //th-internal-splice:use prints
+    the value that P.Gen's splice made, in prof mode too."""
+    build(*[configured(t, c) for t in ["//th-local-splice:th-local-splice", "//th-make-dep:mkrun"] for c in COMPILES])
     p = build("//th-internal-splice:th-internal-splice", keep_going=True)
     expect("//th-internal-splice:th-internal-splice fails to build", p.returncode != 0)
     expect("its failure is P.Use's, and names the fix (got:\n{})".format(tail(p.stderr, 15)),
            "P.Use" in p.stderr and "this target's own modules" in p.stderr and "per_module = False" in p.stderr)
 
-    build(*[configured(t, "make") for t in ["//th-local-splice:th-local-splice", "//th-make-dep:mkrun"]])
     for mode in [None, "prof"]:
         expect_output(configured("//th-internal-splice:use", "make", mode), "with --make, in {} mode".format(mode or "dev"), "42")
 
@@ -134,11 +132,12 @@ def check_toolchain_index(st):
 def check_th_body_change(st):
     """A change to the body of TH.Gen's gen, which leaves its type and so its
     ABI the same, runs C.Splice's splice of gen again: //th-local-splice:show
-    prints the new value."""
-    for c in LOCAL_SPLICE_COMPILES:
+    prints the new value. With --make alone: check_th_body_change_recompiles
+    checks it per-module."""
+    for c in ["make"]:
         expect_output(configured("//th-local-splice:show", c), "before the edit to TH.Gen, compiled {}".format(c), "43")
     replace("th-gen/TH/Gen.hs", "integerL 42", "integerL 43")
-    for c in LOCAL_SPLICE_COMPILES:
+    for c in ["make"]:
         expect_output(configured("//th-local-splice:show", c), "after the edit to TH.Gen, compiled {}".format(c), "44")
 
 
@@ -148,7 +147,7 @@ def check_native_soname_for_splices(st):
     libraries have no sonames.)"""
     if sys.platform == "darwin":
         raise Skipped("macOS's libraries have no sonames")
-    for c in LOCAL_SPLICE_COMPILES:
+    for c in COMPILES:
         expect_output(configured("//th-native-soname:show", c), "compiled {}".format(c), "5")
 
 
@@ -157,7 +156,7 @@ def check_own_native_libraries_for_splices(st):
     """Splices find the native libraries of their own targets: A.S's and
     B.S's splices run their targets' own modules, which call their targets'
     own C libraries."""
-    for c in LOCAL_SPLICE_COMPILES:
+    for c in OWN_SPLICE_COMPILES:
         expect_output(configured("//th-own-native:show", c), "compiled {}".format(c), "(9,11)")
 
 
@@ -165,19 +164,32 @@ def check_own_native_libraries_for_splices(st):
 def check_native_library_change(st):
     """U.V's and U.W's splices run //c-lib:c-lib's code, through
     //ffi-import:ffi-import and //ffi-import:ffi-wrap, and c-lib calls
-    //c-lib:c-base. After a change to c-lib, the splices run the new code."""
-    for c in LOCAL_SPLICE_COMPILES:
+    //c-lib:c-base. After a change to c-lib, the splices run the new code.
+    With --make alone: check_native_library_change_recompiles checks it
+    per-module."""
+    for c in ["make"]:
         expect_output(configured("//th-ffi-splice:show", c), "before the edit to //c-lib:c-lib, compiled {}".format(c), "(7,7)")
     replace("c-lib/cl.c", "return 7", "return 8")
-    for c in LOCAL_SPLICE_COMPILES:
+    for c in ["make"]:
         expect_output(configured("//th-ffi-splice:show", c), "after the edit to //c-lib:c-lib, compiled {}".format(c), "(8,8)")
 
 
 def check_data_dirs(st):
     """A splice runs code of a local library that reads a data file through
-    the variable data_dirs sets, as a package's Paths_<pkg> module does."""
-    for c in LOCAL_SPLICE_COMPILES:
-        expect_output(configured("//data-dirs:data-dirs", c), "from its data file, compiled {}".format(c), "hello")
+    the variable data_dirs sets, as a package's Paths_<pkg> module does.
+    When the project has a worker, the module with the splice compiles in the
+    worker per-module, which starts the session's interpreter with the
+    variable."""
+    for c in COMPILES:
+        target = configured("//data-dirs:data-dirs", c)
+        build(target)
+        if c == "per-module":
+            ran = {module_of(e): e["reproducer"].get("executor", "") for e in what_ran_entries() if "haskell_compile_module_" in e["identity"]}
+            # The first compile that buck2 sends to a worker has the executor
+            # WorkerInit rather than Worker, because it also starts the worker.
+            executor = {"WorkerInit": "Worker"}.get(ran.get("data-dirs:Main"), ran.get("data-dirs:Main"))
+            expect_set("how //data-dirs:data-dirs's Main compiled", {executor}, {"Worker" if st.worker else "Local"})
+        expect_output(target, "from its data file, compiled {}".format(c), "hello")
 
 
 def check_configurations(st):
@@ -185,19 +197,30 @@ def check_configurations(st):
     and soname in both. Its v is 4 in the execution platform's configuration,
     and 3 in the target platform's. tool's splice (tool is gen's build tool)
     runs the execution platform's l, and user's runs the target platform's.
-    Each gets its own configuration's l."""
-    for c in LOCAL_SPLICE_COMPILES:
+    Each gets its own configuration's l.
+
+    Per-module, buck2 starts a worker of the toolchain's for each
+    configuration."""
+    for c in COMPILES:
         gen, show = configured("//th-exec-config:gen", c), configured("//th-exec-config:show", c)
         out = buck2("build", "--show-full-output", gen, show).stdout
+        entries = what_ran_entries()
         path = [line.split()[1] for line in out.splitlines() if line.split() and line.split()[0].startswith("root//th-exec-config:gen")][0]
         with open(path) as f:
             value = f.read().strip()
         expect("compiled {}, tool's splice ran the execution platform's l (gen.txt: {!r})".format(c, value), value == "4")
         expect_output(show, "(the target platform's l), compiled {}".format(c), "3")
+        if c == "per-module" and st.worker:
+            inits = {}
+            for e in entries:
+                m = re.match(r"^(\S+) \(cfg:([^)]*)\) \((\S+)", e["identity"])
+                if m and m.group(3).startswith("haskell_compile_module_") and e["reproducer"].get("executor") == "WorkerInit":
+                    inits[m.group(2)] = inits.get(m.group(2), 0) + 1
+            expect("a worker for each configuration (started: {})".format(inits), sorted(inits.values()) == [1, 1])
 
 
 def check_th_boot_cycles(st):
     """Tie.I and Tie.K run Template Haskell, and each one's boot file is
     below the other: the target builds."""
-    for c in LOCAL_SPLICE_COMPILES:
+    for c in OWN_SPLICE_COMPILES:
         build(configured("//th-boot-cycles:th-boot-cycles", c))

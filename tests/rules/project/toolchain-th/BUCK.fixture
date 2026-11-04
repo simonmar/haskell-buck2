@@ -1,13 +1,15 @@
 load("//buck2:haskell.bzl", "haskell_library")
 load("//compile:defs.bzl", "PER_MODULE")
 
-# A splice in a module without a LANGUAGE pragma: it runs Template Haskell
-# only where the toolchain's flags enable it, as check_toolchain_th has
-# them.
+# TF.M has a splice that runs //lib:lib's code, but no LANGUAGE pragma. So
+# it only runs Template Haskell when the toolchain's flags enable the
+# extension, as check_toolchain_th sets them.
 haskell_library(
     name = "toolchain-th",
     srcs = {"TF.M": "TF/M.hs"},
     packages = ["base", "template-haskell"],
+    deps = ["//lib:lib"],
+    template_haskell_depends = ["//lib:lib"],
     per_module = PER_MODULE,
     visibility = ["PUBLIC"],
 )

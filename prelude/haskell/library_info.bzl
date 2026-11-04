@@ -73,6 +73,11 @@ HaskellLibraryInfo = record(
     # see Note [Compiling against dependencies module by module]
     # in compile_per_module.bzl.
     below = field(TransitiveSet | None, None),
+    # The tree of the native shared libraries the library depends on, which
+    # its package db names for GHC's interpreter (see _native_ghci_libs in
+    # haskell.bzl). A compile whose splices may load the library has it as an
+    # input.
+    native_libs_dir = field(Artifact | None, None),
     # The remaining fields are only set for a library compiled per-module.
     #
     # The files of each of the library's modules and boot files, keyed by

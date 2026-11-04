@@ -1,17 +1,25 @@
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
 load("//compile:defs.bzl", "PER_MODULE")
 
-# Template Haskell modules with a dependency built with --make
-# (//make-lib:make-lib). MK.Lit's splice runs only template-haskell's code, so
-# it compiles against make-lib's library-less db, without loading make-lib's
-# library. MK.Run's splice runs make-lib's code, which per_module doesn't
-# support, so compiled per-module, it fails to compile. With --make, it
-# compiles.
+# Template Haskell modules whose targets depend on //make-lib:make-lib,
+# which is built with --make.
+#
+# - MK.Lit's splice runs only template-haskell's code, and
+#   template_haskell_depends leaves make-lib out. So MK.Lit compiles against
+#   make-lib's library-less db, without loading make-lib's library.
+# - MK.Run's splice runs make-lib's code, and its target, mkrun, lists
+#   make-lib in template_haskell_depends.
+# - MK.Miss's splice runs make-lib's code too, but its target, mkmiss,
+#   leaves make-lib out of template_haskell_depends. So MK.Miss fails to
+#   compile.
+# - The template_haskell_depends of mkbad names //lib:lib, which isn't one of
+#   its dependencies, so the target's analysis fails.
 haskell_library(
     name = "th-make-dep",
     srcs = {"MK.Lit": "MK/Lit.hs"},
     packages = ["base", "template-haskell"],
     deps = ["//make-lib:make-lib"],
+    template_haskell_depends = [],
     per_module = PER_MODULE,
     visibility = ["PUBLIC"],
 )
@@ -30,6 +38,52 @@ haskell_library(
     srcs = {"MK.Run": "MK/Run.hs"},
     packages = ["base", "template-haskell"],
     deps = ["//make-lib:make-lib"],
+    template_haskell_depends = ["//make-lib:make-lib"],
     per_module = PER_MODULE,
+    visibility = ["PUBLIC"],
+)
+
+haskell_library(
+    name = "mkmiss",
+    srcs = {"MK.Miss": "MK/Miss.hs"},
+    packages = ["base", "template-haskell"],
+    deps = ["//make-lib:make-lib"],
+    template_haskell_depends = [],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)
+
+# mkmiss-after is like mkmiss, except that MK.MissAfter imports MK.Load, of
+# mkload. So MK.MissAfter compiles after MK.Load, whose splice loads
+# make-lib's library. MK.MissAfter must still fail to compile, even in the
+# worker, where both modules compile in the same process, because a splice
+# mustn't be able to use a library that another target's splice loaded.
+# Nothing else builds mkload, so MK.Load compiles in the same build as
+# MK.MissAfter.
+haskell_library(
+    name = "mkload",
+    srcs = {"MK.Load": "MK/Load.hs"},
+    packages = ["base", "template-haskell"],
+    deps = ["//make-lib:make-lib"],
+    template_haskell_depends = ["//make-lib:make-lib"],
+    per_module = True,
+)
+
+haskell_library(
+    name = "mkmiss-after",
+    srcs = {"MK.MissAfter": "MK/MissAfter.hs"},
+    packages = ["base", "template-haskell"],
+    deps = ["//make-lib:make-lib", ":mkload"],
+    template_haskell_depends = [],
+    per_module = True,
+)
+
+haskell_library(
+    name = "mkbad",
+    srcs = {"MK.Bad": "MK/Bad.hs"},
+    packages = ["base", "template-haskell"],
+    deps = ["//make-lib:make-lib"],
+    template_haskell_depends = ["//lib:lib"],
+    per_module = True,
     visibility = ["PUBLIC"],
 )

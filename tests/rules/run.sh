@@ -16,6 +16,7 @@ ghc_bin=$(cd "$1" && pwd)
 shift
 if [ $# -gt 0 ] && [ "$1" != "--" ]; then work=$1; shift; else work=$(mktemp -d); fi
 if [ $# -gt 0 ] && [ "$1" = "--" ]; then shift; fi
+version=$("$ghc_bin/ghc" --numeric-version)
 
 project=$work/project
 if [ -d "$project" ]; then (cd "$project" && buck2 kill > /dev/null 2>&1 || true); fi
@@ -34,6 +35,6 @@ python3 "$here/gen_prebuilt.py" "$ghc_bin/ghc" "$project/third-party/haskell"
 
 cd "$project"
 status=0
-python3 "$here/check.py" ${BAZEL_REMOTE:+--bazel-remote "$BAZEL_REMOTE"} ${BUCK2_GHC_WORKER:+--worker} "$@" || status=$?
+python3 "$here/check.py" --ghc-version "$version" ${BAZEL_REMOTE:+--bazel-remote "$BAZEL_REMOTE"} ${BUCK2_GHC_WORKER:+--worker} "$@" || status=$?
 buck2 kill > /dev/null 2>&1 || true
 exit $status

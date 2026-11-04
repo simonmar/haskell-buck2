@@ -16,6 +16,7 @@ haskell_binary(
     srcs = {"Main": "Main.hs"},
     packages = ["base", "template-haskell"],
     deps = [":paths"],
+    template_haskell_depends = [":paths"],
     data_dirs = {"data_dirs_datadir": ":data"},
     per_module = PER_MODULE,
 )

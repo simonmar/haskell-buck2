@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Writes the third-party-haskell cell of the test project: a
 haskell_prebuilt_library() for each of GHC's own packages that the fixtures
-use (and their dependencies), and the tools.bzl that the toolchains cell
-loads.
+use (and their dependencies), in a copy of GHC's package db, and the
+tools.bzl that the toolchains cell loads.
 
 usage: gen_prebuilt.py GHC CELL_DIR
 
@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import sys
 
-ROOTS = ["base", "template-haskell", "process", "rts"]
+ROOTS = ["base", "template-haskell", "process", "rts", "text"]
 FIELDS = "name,version,id,library-dirs,dynamic-library-dirs,hs-libraries,depends,include-dirs,extra-libraries"
 
 
@@ -57,6 +57,22 @@ def main():
         os.symlink(target, path)
 
     link("ghc-" + version, libdir)
+
+    # The packages' db: a copy of GHC's, in which text's id is on the line
+    # after "id:", as ghc-pkg writes a long id such as the Cabal store's.
+    db = "ghc-{}-db".format(version)
+    shutil.rmtree(os.path.join(cell, db), ignore_errors=True)
+    os.makedirs(os.path.join(cell, db))
+    for name in os.listdir(os.path.join(libdir, "package.conf.d")):
+        if not name.endswith(".conf"):
+            continue
+        with open(os.path.join(libdir, "package.conf.d", name)) as f:
+            conf = f.read().replace("${pkgroot}", libdir)
+        if re.match(r"text-[0-9]", name):
+            conf = re.sub(r"^id:\s*(\S+)$", r"id:\n    \1", conf, flags=re.M)
+        with open(os.path.join(cell, db, name), "w") as f:
+            f.write(conf)
+    run(ghc_pkg, "recache", "--package-db", os.path.join(cell, db))
 
     # Files outside the cell are reached through a symlink to their
     # directory, one per directory.
@@ -112,7 +128,7 @@ def main():
             "    name = {!r},".format(name),
             "    version = {!r},".format(info["version"][0]),
             "    id = {!r},".format(uid),
-            "    db = {!r},".format("ghc-{}/package.conf.d".format(version)),
+            "    db = {!r},".format(db),
             "    static_libs = {!r},".format(static),
             "    profiled_static_libs = {!r},".format(prof),
             "    pic_profiled_static_libs = {!r},".format(prof),
