@@ -1,5 +1,5 @@
--- | Writing the files that the compile tool produces besides GHC's own
--- outputs: a module's .abi file, and its buck2 dep file.
+-- | Writing the files that the compile tool and the worker produce besides
+-- GHC's own outputs: a module's .abi file, and its buck2 dep file.
 module DepFile (writeDepFiles) where
 
 import Control.Monad (filterM, forM, unless)
@@ -26,9 +26,9 @@ import Request
 writeDepFiles :: Request -> ModIface -> IO ()
 writeDepFiles r iface = do
   -- A splice can't run code of the target's own modules (see Note [Template
-  -- Haskell modules] in compile_per_module.bzl). But GHC still finds them,
-  -- as objects in the output directory, so we fail the compile if a splice
-  -- loaded one.
+  -- Haskell modules] in compile_per_module.bzl). But GHC can still find
+  -- those modules, either in the worker's session or as objects in the
+  -- output directory, so we fail the compile if a splice loaded one.
   outDir <- canonicalizePath (reqOutDir r)
   -- Without usages, the dep file would say the module read nothing, and it
   -- would never compile again.

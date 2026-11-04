@@ -79,19 +79,27 @@ def expect_output(target, when, value, mode=None):
 IDENTITY = re.compile(r"^(\S+) \(cfg:[^)]*\) \((\S+)(?: (.+))?\)$")
 
 
-def what_ran():
-    """The actions the last build ran, as (target, category, identifier,
-    command) tuples: target as "th-local-splice:th-local-splice", without the
-    cell. Not those that buck2 found up to date by their dep files (or in a
-    cache), which what-ran lists too."""
+def what_ran_entries():
+    """The entries of `buck2 log what-ran` for the last build, as JSON."""
     out = buck2("log", "what-ran", "--format", "json").stdout
+    return [json.loads(line) for line in out.splitlines() if line.startswith("{")]
+
+
+def what_ran(entries=None):
+    """The actions that the last build ran, or those in the given what-ran
+    entries, as (target, category, identifier, command) tuples. The target
+    has no cell, as in "th-local-splice:th-local-splice".
+
+    This leaves out the actions that buck2 didn't run, because their dep
+    files showed they were up to date or because it found their results in a
+    cache, though what-ran lists those too. It also leaves out the start of a
+    persistent worker, which what-ran lists as an entry for the first action
+    that buck2 sent to the worker."""
     actions = []
-    for line in out.splitlines():
-        if not line.startswith("{"):
-            continue
-        entry = json.loads(line)
+    for entry in (what_ran_entries() if entries is None else entries):
         m = IDENTITY.match(entry["identity"])
-        if not m or entry["reproducer"].get("executor", "").endswith("Cache"):
+        executor = entry["reproducer"].get("executor", "")
+        if not m or executor.endswith("Cache") or executor == "WorkerInit":
             continue
         target = m.group(1).split("//", 1)[1].lstrip(":")
         cmd = entry.get("reproducer", {}).get("details", {}).get("command", [])
@@ -187,9 +195,10 @@ def short(path):
 
 
 def parse_compile(cmd):
-    """The parts of a per-module compile's command line (the compile tool's
-    request) that the rules decide: package dbs, interface dirs."""
-    args = cmd[cmd.index("--depfile"):]
+    """The parts of a per-module compile's request that the rules decide,
+    such as the package dbs and the interface directories. The request is
+    the same whether it goes to the worker or to the compile tool."""
+    args = cmd[cmd.index("--request"):]
     sep = args.index("--")
     script, rest = args[:sep], args[sep + 1:]
     session = rest[:rest.index("--")]
@@ -246,9 +255,11 @@ def write(path, text):
 # --- What the checks share -------------------------------------------------------
 
 class State:
-    def __init__(self, bazel_remote=None):
+    def __init__(self, bazel_remote=None, worker=False):
         self.bazel_remote = bazel_remote
+        self.worker = worker
         self.targets = MAIN_TARGETS
+        self.entries = None
         self.actions = None
 
 

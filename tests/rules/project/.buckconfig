@@ -35,3 +35,6 @@
 # of each command instead, so a build always sees the edits made before it.
 [buck2]
   file_watcher = fs_hash_crawler
+
+[haskell]
+  per_module_worker_build_tools = root//build-tools:bt-shared

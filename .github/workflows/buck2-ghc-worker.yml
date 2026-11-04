@@ -1,0 +1,106 @@
+# The persistent worker (tools/buck2-ghc-worker) uses the GHC API, so it has to
+# be built with the same GHC that it compiles with. We build and test it with
+# each GHC version that it supports.
+name: buck2-ghc-worker
+
+# Some of the worker's modules are symbolic links to modules of the compile
+# tool, in prelude/haskell/tools/ghc-api, so a change there runs this
+# workflow too. As in rules.yml, pushes only run it on master and the
+# release branches. A branch with a pull request is already tested by the
+# pull_request event.
+on:
+  push:
+    branches:
+      - master
+      - "[0-9]+.[0-9]+.[0-9]+.[0-9]+"
+    paths: [tools/buck2-ghc-worker/**, prelude/haskell/tools/ghc-api/**, .github/workflows/buck2-ghc-worker.yml]
+  pull_request:
+    paths: [tools/buck2-ghc-worker/**, prelude/haskell/tools/ghc-api/**, .github/workflows/buck2-ghc-worker.yml]
+  workflow_dispatch:
+
+jobs:
+  buck2-ghc-worker:
+    name: buck2-ghc-worker (${{ matrix.os }}, GHC ${{ matrix.ghc }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        ghc: ["9.6.7", "9.8.4", "9.10.3", "9.12.4", "9.14.1"]
+        include:
+          - os: macos-latest
+            ghc: "9.12.4"
+    defaults:
+      run:
+        shell: bash
+        working-directory: tools/buck2-ghc-worker
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install GHC and cabal
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: ${{ matrix.ghc }}
+          cabal-version: latest
+
+      - name: Update Hackage index
+        run: cabal update
+
+      # The dependencies are cached under a key made from the build plan.
+      # rules.yml uses the same key, so the two workflows reuse each other's
+      # caches.
+      - name: Generate the build plan
+        run: cabal build all --dry-run
+
+      # On macOS, the key includes the SDK version as well as the OS. A
+      # package's configure script checks which functions the SDK's headers
+      # declare, and the package is then built to use them. So the cached
+      # package only links against an SDK whose libraries have those
+      # functions.
+      - name: Get the runner's OS for the cache key
+        id: osver
+        run: |
+          osver=$ImageOS
+          if [ "$RUNNER_OS" = macOS ]; then osver="$osver-sdk$(xcrun --show-sdk-version)"; fi
+          echo "osver=$osver" >> "$GITHUB_OUTPUT"
+
+      # Where cabal keeps its store depends on whether ~/.cabal exists, which
+      # the setup action may create, so we ask cabal for the path.
+      - name: Get the cabal store directory
+        id: store
+        run: echo "dir=$(cabal path --store-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cached dependencies
+        uses: actions/cache/restore@v6
+        id: cache
+        with:
+          path: ${{ steps.store.outputs.dir }}
+          key: ${{ steps.osver.outputs.osver }}-ghc-${{ matrix.ghc }}-store-${{ hashFiles('dist-newstyle/cache/plan.json') }}
+          restore-keys: ${{ steps.osver.outputs.osver }}-ghc-${{ matrix.ghc }}-store-
+
+      - name: Build dependencies
+        run: cabal build all --only-dependencies
+
+      - name: Cache dependencies
+        uses: actions/cache/save@v6
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: ${{ steps.store.outputs.dir }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: Build
+        run: |
+          # The worker is part of the repository's cabal project, so cabal
+          # reads cabal.project.local from the repository's root.
+          printf 'package buck2-ghc-worker\n  ghc-options: -Werror\n' > ../../cabal.project.local
+          cabal build all
+
+      # The worker isn't supported on macOS yet. The tests that talk to it
+      # over its socket fail there, so on macOS we only build it.
+      - name: Test
+        if: runner.os != 'macOS'
+        run: cabal test
+
+      # Check that the install command in the worker's README works.
+      - name: Install as buck2-ghc-worker-<version>
+        run: cabal install --installdir="$RUNNER_TEMP/bin" --program-suffix=-$(ghc --numeric-version) exe:buck2-ghc-worker
