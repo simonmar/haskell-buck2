@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 
-MAIN_TARGETS = ["//lib:lib", "//lib-user:lib-user", "//th-gen:th-gen", "//th-prebuilt-splice:th-prebuilt-splice", "//th-make-dep:th-make-dep", "//ffi-import:ffi-import", "//make-between:t", "//boot-cycle:boot-cycle", "//main:main", "//reexport:reexport", "//reexport-user:reexport-user", "//flat-sources:flat-sources"]
+MAIN_TARGETS = ["//lib:lib", "//lib-user:lib-user", "//th-gen:th-gen", "//th-local-splice:th-local-splice", "//th-local-splice:show", "//th-prebuilt-splice:th-prebuilt-splice", "//th-make-dep:th-make-dep", "//th-make-dep:mkrun", "//ffi-import:ffi-import", "//make-between:t", "//boot-cycle:boot-cycle", "//main:main", "//reexport:reexport", "//reexport-user:reexport-user", "//flat-sources:flat-sources"]
 
 LOG_DIR = "buck-logs"
 
@@ -26,6 +26,7 @@ class CheckFailed(Exception):
 
 class Skipped(Exception):
     """Raised by a check of what this platform doesn't have."""
+
 
 
 # --- Running buck2 ---------------------------------------------------------
@@ -107,6 +108,12 @@ def what_ran(entries=None):
     return actions
 
 
+def module_of(entry):
+    """The module of a what-ran entry, as "target-name:Module"."""
+    m = IDENTITY.match(entry["identity"])
+    return target_name(m.group(1)) + ":" + m.group(3)
+
+
 def compiled_modules(actions):
     """The per-module compiles that ran, as "target-name:Module"."""
     return {target_name(t) + ":" + i for t, c, i, _ in actions if c.startswith("haskell_compile_module_")}
@@ -126,6 +133,12 @@ def compiled(actions):
 
 def target_name(target):
     return target.split(":")[-1]
+
+
+def failed_compiles(output):
+    """The modules whose compiles failed in a build, as "target-name:Module",
+    from the "Action failed" lines of buck2's output."""
+    return {target_name(t) + ":" + m for t, m in re.findall(r"Action failed: (\S+) \(cfg:[^)]*\) \(haskell_compile_module_\S+ (\S+)\)", output)}
 
 
 def dep_file(target, category, identifier, mode=None):
@@ -255,22 +268,25 @@ def write(path, text):
 # --- What the checks share -------------------------------------------------------
 
 class State:
-    def __init__(self, bazel_remote=None, worker=False):
+    def __init__(self, bazel_remote=None, worker=False, external_interpreter=False):
         self.bazel_remote = bazel_remote
         self.worker = worker
+        self.external_interpreter = external_interpreter
         self.targets = MAIN_TARGETS
         self.entries = None
         self.actions = None
 
 
-def known_failure(issue):
+def known_failure(issue, when=None):
     """Marks a check that fails because of a known bug in the rules (`issue`
-    says which). check.py reports its failure as XFAIL, without failing the
-    run, and fails the run if the check passes, so that its mark is taken
-    off once the bug is fixed."""
+    says which). If `when` is given, the mark applies only to the runs for
+    whose State `when` returns true. check.py reports a marked check's
+    failure as XFAIL, without failing the run, and fails the run if the
+    check passes, so that its mark is taken off once the bug is fixed."""
 
     def mark(check):
         check.known_failure = issue
+        check.known_failure_when = when
         return check
 
     return mark

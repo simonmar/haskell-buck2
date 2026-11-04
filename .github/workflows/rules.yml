@@ -1,10 +1,11 @@
 # The tests of the rules (tests/rules), run with each GHC version that the
-# rules support, on Linux and macOS, both without the persistent worker and
-# with it. One job runs both, so that it installs GHC once. The GHC versions
-# are the same as the worker's (see buck2-ghc-worker.yml). The tests build
-# a small project that uses only GHC's own packages, so they need just GHC,
-# buck2 and a C compiler. The worker uses only GHC's packages too, and the
-# toolchain builds it.
+# rules support, on Linux and macOS. They run without the persistent worker
+# and with it, and each of those with GHC's internal interpreter and with
+# -fexternal-interpreter. One job runs all four, so that it installs GHC
+# once. The GHC versions are the same as the worker's (see
+# buck2-ghc-worker.yml). The tests build a small project that uses only
+# GHC's own packages, so they need just GHC, buck2 and a C compiler. The
+# worker uses only GHC's packages too, and the toolchain builds it.
 name: rules
 
 # Pushes are only tested on master and the release branches (0.6.0.0, say).
@@ -100,6 +101,23 @@ jobs:
           PER_MODULE_WORKER: builtin
         run: tests/rules/run.sh "$(dirname "${{ steps.setup.outputs.ghc-exe }}")" "$RUNNER_TEMP/rules-worker"
 
+      # With -fexternal-interpreter in the toolchain's compiler flags, splices
+      # run in external interpreters, without the worker and with it. These
+      # run even if the steps before them failed.
+      - name: Test with -fexternal-interpreter
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
+        env:
+          PER_MODULE_WORKER: none
+          EXTERNAL_INTERPRETER: "true"
+        run: tests/rules/run.sh "$(dirname "${{ steps.setup.outputs.ghc-exe }}")" "$RUNNER_TEMP/rules-ext"
+
+      - name: Test with the worker and -fexternal-interpreter
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
+        env:
+          PER_MODULE_WORKER: builtin
+          EXTERNAL_INTERPRETER: "true"
+        run: tests/rules/run.sh "$(dirname "${{ steps.setup.outputs.ghc-exe }}")" "$RUNNER_TEMP/rules-worker-ext"
+
       - name: Upload the buck2 logs
         if: failure()
         uses: actions/upload-artifact@v4
@@ -108,3 +126,5 @@ jobs:
           path: |
             ${{ runner.temp }}/rules/project/buck-logs
             ${{ runner.temp }}/rules-worker/project/buck-logs
+            ${{ runner.temp }}/rules-ext/project/buck-logs
+            ${{ runner.temp }}/rules-worker-ext/project/buck-logs

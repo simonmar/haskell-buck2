@@ -64,6 +64,7 @@ haskell_binary = prelude_rule(
             "per_module": attrs.bool(default = False),
             "_per_module_compile": attrs.default_only(attrs.exec_dep(providers = [RunInfo], default = "prelude//haskell/tools:per_module_compile")),
             "_per_module_deps": attrs.default_only(attrs.exec_dep(providers = [RunInfo], default = "prelude//haskell/tools:per_module_deps")),
+            "splice_depends": attrs.list(attrs.dep(), default = []),  # see haskell_library's splice_depends
             "linker_flags": attrs.list(attrs.arg(), default = []),
             "platform": attrs.option(attrs.string(), default = None),
         }
@@ -196,6 +197,15 @@ haskell_library = prelude_rule(
             # Tools for per-module compilation
             "_per_module_compile": attrs.default_only(attrs.exec_dep(providers = [RunInfo], default = "prelude//haskell/tools:per_module_compile")),
             "_per_module_deps": attrs.default_only(attrs.exec_dep(providers = [RunInfo], default = "prelude//haskell/tools:per_module_deps")),
+            # The local dependencies (compiled per-module or built with
+            # --make) whose code the target's Template Haskell splices and
+            # ANN pragmas run, for per_module. A Template Haskell module
+            # waits until these libraries, and the libraries they depend on,
+            # are linked. Its splices can't run code of any other local
+            # library. Splices can always run code of prebuilt packages, so
+            # listing those makes no difference. The default, an empty list,
+            # means that splices run no local library's code.
+            "splice_depends": attrs.list(attrs.dep(), default = []),
             # Libraries that are part of this one, as the C of a Cabal package
             # is part of its library: their objects are in its archive, and
             # linked into its shared library, and what depends on it isn't

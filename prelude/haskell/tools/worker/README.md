@@ -94,6 +94,19 @@ time of its mutator and of its collections when it ends.
 
 ## Known issues
 
+Splices run in the worker's own process, in GHC's internal interpreter. So
+the splices of every target in a configuration share the libraries they
+load, and the libraries' global state, and a splice that crashes the
+process fails every compile the worker is running. Note [Template Haskell
+modules] in `compile_per_module.bzl` says what follows from that. A target
+compiled with `-fexternal-interpreter` (in its `compiler_flags`, or the
+toolchain's) runs each session's splices in an external interpreter of its
+own instead.
+
+The worker keeps what it reads for as long as it runs. That is only safe
+because buck2 starts a new worker for each command. The rules' tests check
+that it does.
+
 A few of GHC's flags set state for the whole process, not just for one
 compile. Note [Flags of the whole process] in `src/Session.hs` lists them.
 The worker refuses a target whose flags include one of them, so such a
