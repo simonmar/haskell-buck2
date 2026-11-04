@@ -1,0 +1,27 @@
+load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
+
+# Splices that call //c-lib:c-lib's C function: U.V's through
+# //ffi-import:ffi-import, U.W's through //ffi-import:ffi-wrap.
+haskell_library(
+    name = "th-ffi-splice",
+    srcs = {
+        "U.V": "U/V.hs",
+        "U.W": "U/W.hs",
+    },
+    packages = ["base", "template-haskell"],
+    deps = ["//ffi-import:ffi-import", "//ffi-import:ffi-wrap"],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)
+
+# Prints U.V's and U.W's splices, to see that they follow //c-lib:c-lib.
+# It depends on //c-lib:c-base too: c-lib finds c-base only by the
+# binary's RPATH, which the loader doesn't use for a library with a RUNPATH
+# of its own, as the toolchain's C libraries have.
+haskell_binary(
+    name = "show",
+    srcs = {"Main": "Show.hs"},
+    packages = ["base"],
+    deps = [":th-ffi-splice", "//c-lib:c-base"],
+    per_module = True,
+)

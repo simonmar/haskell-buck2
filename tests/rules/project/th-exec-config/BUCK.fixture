@@ -1,0 +1,68 @@
+load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
+load(":defs.bzl", "run_tool")
+
+# l is built in two configurations in one build, with the same unit id and
+# soname in both. Its v is 4 in the execution platform's configuration, and
+# 3 in the target platform's. tool's splice runs l's code in the execution
+# platform's configuration (tool is a build tool, which gen runs), and
+# user's splice runs it in the target platform's.
+#
+# The -local targets name their worker themselves (as
+# `per_module_worker = local` has every target do), so that one worker
+# compiles both configurations' modules. The checks build them only with
+# GHC_WORKER.
+haskell_library(
+    name = "l",
+    srcs = {"L.V": "L/V.hs"},
+    packages = ["base"],
+    compiler_flags = select({
+        "DEFAULT": [],
+        "prelude//cfg/exec_platform/marker:is_exec_platform[true]": ["-DEXEC"],
+    }),
+    per_module = True,
+)
+
+[
+    haskell_binary(
+        name = "tool" + suffix,
+        srcs = {"Main": "Tool.hs"},
+        packages = ["base", "template-haskell"],
+        deps = [":l"],
+        per_module = True,
+        per_module_worker = worker,
+    )
+    for suffix, worker in [("", None), ("-local", "//worker-attr:w")]
+]
+
+[
+    run_tool(
+        name = "gen" + suffix,
+        out = "gen.txt",
+        tool = ":tool" + suffix,
+    )
+    for suffix in ["", "-local"]
+]
+
+[
+    haskell_library(
+        name = "user" + suffix,
+        srcs = {"U.S": "U/S.hs"},
+        packages = ["base", "template-haskell"],
+        deps = [":l"],
+        per_module = True,
+        per_module_worker = worker,
+    )
+    for suffix, worker in [("", None), ("-local", "//worker-attr:w")]
+]
+
+# Prints U.S's splice.
+[
+    haskell_binary(
+        name = "show" + suffix,
+        srcs = {"Main": "Show.hs"},
+        packages = ["base"],
+        deps = [":user" + suffix],
+        per_module = True,
+    )
+    for suffix in ["", "-local"]
+]

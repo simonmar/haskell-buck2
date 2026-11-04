@@ -105,8 +105,9 @@ withoutRts args = case break (== "+RTS") args of
   (ghc, []) -> ghc
 
 -- | Add the rules' advice to the output of a compile whose splice couldn't
--- load the code it runs. A splice can only run code of prebuilt packages
--- (see Note [Template Haskell modules] in compile_per_module.bzl).
+-- load the code it runs. A splice can only run code of a library of the
+-- project whose final package db the module compiles against (see Note
+-- [Template Haskell modules] in compile_per_module.bzl).
 withSpliceHint :: Request -> (Int, String) -> (Int, String)
 withSpliceHint r (code, out)
   | code /= 0 && unlinkedSplice `isInfixOf` out = (code, out ++ spliceHint r)
@@ -118,4 +119,4 @@ unlinkedSplice = "couldn't find the following symbol"
 
 -- | The advice for a module whose splice couldn't load the code it runs.
 spliceHint :: Request -> String
-spliceHint r = "\n" ++ map (\c -> if c == '/' then '.' else c) (reqModPath r) ++ ": per_module: a splice can run only the code of prebuilt packages, not of this project's other libraries: build the target with per_module = False\n"
+spliceHint r = "\n" ++ map (\c -> if c == '/' then '.' else c) (reqModPath r) ++ ": per_module: a splice ran code of a library of this project that the module doesn't compile against: list it in the target's th_build_depends, or, with explicit level imports, import the module whose code the splice runs with `import splice`\n"

@@ -37,12 +37,27 @@ depend on are done, without having to wait for the full package.
 
 `per_module` is only tested on Linux.
 
-Template Haskell is supported with one restriction: a splice can only run
-code of prebuilt packages (from Hackage, say), not of the project's other
-libraries or of the target's own modules. So a module with Template Haskell
-doesn't wait for its dependencies' libraries to be linked, and keeps the
-cross-package parallelism. A target whose splices do run local code fails
-to compile, saying so: build it with `per_module = False`.
+The main thing that still leads to suboptimal dependency graphs is Template
+Haskell. Modules with TH need the full compiled libraries of the dependencies
+whose code they run. By default, we have to assume that this is _all_ the
+package's local dependencies, which means we effectively lose the
+cross-package parallelism.
+
+This can be improved in two ways:
+- On GHC 9.14, if a module uses `ExplicitLevelImports`, we work out which
+  dependencies its splices need from its `import splice`s.
+- Otherwise, `th_build_depends` lists the _local_ dependencies that a
+  target's splices need (they always get the Hackage ones). A splice that
+  runs code of a local library that isn't listed fails to compile, saying
+  so.
+
+On macOS, a splice can't yet run code of a local library that depends on
+native (C) libraries that buck2 builds. GHC's interpreter has to load those
+libraries too, and the rules only give them to it with a GNU linker (see
+Note [Template Haskell modules] in `prelude/haskell/compile_per_module.bzl`).
+
+A splice can't run code of its own target's modules. Such a target fails to
+compile, saying so, and has to be built with `per_module = False`.
 
 `per_module` is often much faster at rebuilds:
 

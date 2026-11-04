@@ -63,6 +63,7 @@ haskell_binary = prelude_rule(
             "_per_module_compile": attrs.default_only(attrs.exec_dep(providers = [RunInfo], default = "prelude//haskell/tools:per_module_compile")),
             "_per_module_deps": attrs.default_only(attrs.exec_dep(providers = [RunInfo], default = "prelude//haskell/tools:per_module_deps")),
             "per_module_worker": attrs.option(attrs.exec_dep(providers = [WorkerInfo]), default = None),  # as haskell_library's
+            "th_build_depends": attrs.option(attrs.list(attrs.dep()), default = None),  # as haskell_library's
             "linker_flags": attrs.list(attrs.arg(), default = []),
             "platform": attrs.option(attrs.string(), default = None),
         }
@@ -203,6 +204,13 @@ haskell_library = prelude_rule(
             # so each target has to. It's used only when `[haskell]
             # per_module_worker` is set.
             "per_module_worker": attrs.option(attrs.exec_dep(providers = [WorkerInfo]), default = None),
+            # With per_module: the local dependencies (compiled per-module, or
+            # built with --make) whose code the target's Template Haskell
+            # splices and ANN pragmas run. If this isn't set, all of them. A
+            # module with explicit level imports (GHC 9.14) ignores this, and
+            # uses the dependencies of the modules it imports with
+            # `import splice`.
+            "th_build_depends": attrs.option(attrs.list(attrs.dep()), default = None),
             # Libraries that are part of this one, as the C of a Cabal package
             # is part of its library: their objects are in its archive, and
             # linked into its shared library, and what depends on it isn't

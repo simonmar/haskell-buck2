@@ -1,0 +1,13 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# GHC 9.14 and later: `import splice A.Base`, which //reexport:reexport
+# re-exports from //lib:lib, a dependency of reexport's that isn't this
+# target's.
+haskell_library(
+    name = "eli-reexport",
+    srcs = {"ER.M": "ER/M.hs"},
+    packages = ["base", "template-haskell"],
+    deps = ["//reexport:reexport"],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)

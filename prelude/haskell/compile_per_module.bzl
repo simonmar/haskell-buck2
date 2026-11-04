@@ -16,7 +16,12 @@ load(
 load(
     "@prelude//haskell:library_info.bzl",
     "HaskellLibraryInfoTSet",
+    "HaskellLibraryProvider",
     "HaskellModuleFiles",
+)
+load(
+    "@prelude//haskell:link_info.bzl",
+    "HaskellLinkInfo",
 )
 load(
     "@prelude//haskell:toolchain.bzl",
@@ -24,6 +29,7 @@ load(
 )
 load(
     "@prelude//haskell:util.bzl",
+    "attr_deps",
     "get_artifact_suffix",
     "haskell_library_unit_id",
     "is_haskell_src",
@@ -51,27 +57,32 @@ PerModuleClosures = provider(fields = {"by_module": provider_field(dict)})
 
 # The package db flags of a per-module compile against the given libraries
 # (all its dependencies, direct and transitive), and the inputs they need.
+# See Note [Libraries of the early package dbs].
 #
-# A compile never sees a local dependency's library, since libraries are
-# only needed for splices, and splices only run code of prebuilt packages
-# (see Note [Template Haskell modules]):
+# A prebuilt dependency, or a local one named in `final`, is on its final
+# db. Every other local dependency is on a db that names no library, so the
+# compile doesn't wait for its library:
 #
 # - A dependency compiled per-module is on its early db. That needs no
 #   inputs: the compile declares the interfaces it imports itself.
 # - A dependency built with --make is on its library-less db, and needs its
 #   interface directories.
 #
-# A prebuilt dependency is on its normal db. A module that runs Template
-# Haskell (`runs_th`) also needs its libraries, which the interpreter loads.
-# `below_make` names the dependencies compiled per-module that some
-# dependency built with --make depends on.
-def _package_dbs(libs: list, below_make: dict[str, bool], import_dirs_tag, runs_th: bool):
+# A module that runs Template Haskell (`runs_th`) also needs the libraries
+# of its final dbs, which the interpreter loads. `below_make` names the
+# dependencies compiled per-module that some dependency built with --make
+# depends on.
+#
+# This also runs in the dynamic output, for the modules that choose their
+# own final dbs, so it takes the libraries rather than an analysis context.
+def _package_dbs(libs: list, final: dict[str, bool], below_make: dict[str, bool], import_dirs_tag, runs_th: bool):
     packagedb_args = cmd_args()
     packagedb_set = {}
     local_import_dirs = []
     early_names = {}
     for lib in libs:
-        if lib.modules != None:
+        library_less = lib.early_db != None and lib.name not in final
+        if library_less and lib.modules != None:
             packagedb_set[lib.early_db] = None
             early_names[lib.name] = True
             if lib.name in below_make:
@@ -80,16 +91,19 @@ def _package_dbs(libs: list, below_make: dict[str, bool], import_dirs_tag, runs_
                 # dependencies module by module].
                 packagedb_args.add(import_dirs_tag.tag_artifacts(cmd_args(hidden = list(lib.import_dirs.values()))))
             continue
-        packagedb_set[lib.early_db if lib.early_db != None else lib.db] = None
+        packagedb_set[lib.early_db if library_less else lib.db] = None
         import_dirs = list(lib.import_dirs.values())
         local_import_dirs += [(lib.name, d) for d in import_dirs if not d.is_source]
         # The interfaces a compile reads go in its dep file, but the
         # libraries a Template Haskell module loads don't (see Note [Template
-        # Haskell modules]), so those are plain inputs.
+        # Haskell modules]), so those are plain inputs. A module that runs no
+        # Template Haskell loads none, so it doesn't wait for them to be
+        # linked.
         packagedb_args.add(cmd_args(hidden = [
             lib.stub_dirs,
             import_dirs_tag.tag_artifacts(cmd_args(hidden = import_dirs)),
-            lib.libs if runs_th and lib.is_prebuilt else [],
+            lib.libs if runs_th and not library_less else [],
+            lib.native_libs_dir if runs_th and not library_less and lib.native_libs_dir != None else [],
         ]))
 
     # These we need to add for all the packages/dependencies, i.e.
@@ -143,14 +157,24 @@ def per_module_out_dir(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 def _dir_of(artifact, node: str, ext: str) -> cmd_args:
     return cmd_args(artifact, parent = _node_file(node, ext).count("/") + 1)
 
-# From the deps tool's output (see tools/ghc-api/PerModuleDeps.hs): each
-# node's imports among the target's nodes, the (package id, module) pairs it
-# imports from dependencies compiled per-module, and the nodes that may run
-# Template Haskell.
-def _read_deps(label, deps: dict, nodes: list, module_libs: dict):
+# From the deps tool's output (see tools/ghc-api/PerModuleDeps.hs), for each
+# node:
+#
+# - imports: its imports among the target's nodes.
+# - upstream: the (package id, module) pairs it imports from dependencies
+#   compiled per-module.
+# - made: the pairs it imports from local dependencies built with --make, for
+#   explicit level imports (see eli_packages).
+#
+# And the nodes that may run Template Haskell, and for each node with
+# explicit level imports, the modules it imports at the splice level.
+# `make_names` are the names of the local dependencies built with --make.
+def _read_deps(label, deps: dict, nodes: list, module_libs: dict, make_names: dict[str, bool]):
     imports = {n: [] for n, _ in nodes}
     upstream = {n: [] for n, _ in nodes}
+    made = {n: [] for n, _ in nodes}
     th = {}
+    splice_imports = {}
     for n, d in deps.items():
         if n not in imports:
             fail("{}: GHC's dependency analysis found {}, but srcs has no such module (or boot file)".format(label, n))
@@ -159,9 +183,13 @@ def _read_deps(label, deps: dict, nodes: list, module_libs: dict):
             lib = module_libs.get(pkg)
             if lib != None and mod in lib.modules and (pkg, mod) not in upstream[n]:
                 upstream[n].append((pkg, mod))
+            elif pkg in make_names and (pkg, mod) not in made[n]:
+                made[n].append((pkg, mod))
         if d["th"]:
             th[n] = True
-    return imports, upstream, th
+        if "splice" in d:
+            splice_imports[n] = d["splice"]
+    return imports, upstream, made, th, splice_imports
 
 # Each node's transitive imports, direct ones first. `order` is
 # dependency order, so each import's closure is done before its
@@ -196,6 +224,75 @@ def _dependency_order(nodes: list, imports: dict) -> (list[str], list[str]):
                 order.append(m)
     done = {n: True for n in order}
     return order, [n for n, _ in nodes if n not in done]
+
+# The package ids whose final dbs a Template Haskell module may compile
+# against, depending on which direct dependencies its splices run code from
+# (see Note [Template Haskell modules]):
+#
+# - closures: maps the package id of each direct local dependency (compiled
+#   per-module, or built with --make) to the package ids of its closure. A
+#   module that uses the dependency's final db uses the final dbs of its
+#   whole closure, since its library was linked against theirs (see Note
+#   [Libraries of the early package dbs]).
+# - labels: maps the target of each of those dependencies to its package
+#   id.
+# - base: the package ids of the prebuilt dependencies and their closures,
+#   whose final dbs every Template Haskell module gets.
+def _splice_deps(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool):
+    closures = {}
+    labels = {}
+    base_infos = []
+
+    def link_info(d):
+        link = d.get(HaskellLinkInfo)
+        if link == None:
+            return None
+        return link.prof_info[link_style] if enable_profiling else link.info[link_style]
+
+    for d in attr_deps(ctx) + ctx.attrs.template_deps:
+        provider = d.get(HaskellLibraryProvider)
+        lib = (provider.prof_lib if enable_profiling else provider.lib)[link_style] if provider != None else None
+        info = link_info(d)
+        if lib == None or lib.early_db == None:
+            if info != None:
+                base_infos.append(info)
+            continue
+        labels[d.label.raw_target()] = lib.name
+        closures[lib.name] = [l.name for l in ctx.actions.tset(HaskellLibraryInfoTSet, children = [info] if info != None else []).traverse()]
+    base = [l.name for l in ctx.actions.tset(HaskellLibraryInfoTSet, children = base_infos).traverse()]
+    return struct(closures = closures, labels = labels, base = base)
+
+# The final dbs of a Template Haskell module whose splices run code from
+# the given local dependencies (by package id). Every prebuilt dependency
+# is included too.
+def _splice_set(splice_deps, names: list[str]):
+    final = {n: True for n in splice_deps.base}
+    for name in names:
+        # A package that isn't a direct dependency (one whose module a
+        # dependency re-exports) brings in every direct dependency whose
+        # closure includes it.
+        via = [name] if name in splice_deps.closures else [d for d in sorted(splice_deps.closures.keys()) if name in splice_deps.closures[d]]
+        for d in via:
+            for n in splice_deps.closures[d]:
+                final[n] = True
+    return final
+
+# The final dbs of the target's Template Haskell modules: those of all its
+# local dependencies, or only of the ones that th_build_depends lists, if
+# the target has it (see _splice_set).
+def _th_set(ctx: AnalysisContext, splice_deps):
+    th_deps = getattr(ctx.attrs, "th_build_depends", None)
+    if th_deps == None:
+        return _splice_set(splice_deps, sorted(splice_deps.closures.keys()))
+    names = []
+    deps = {d.label.raw_target(): True for d in attr_deps(ctx) + ctx.attrs.template_deps}
+    for d in th_deps:
+        t = d.label.raw_target()
+        if t not in deps:
+            fail("{}: th_build_depends names {}, which is not a dependency".format(ctx.label.raw_target(), t))
+        if t in splice_deps.labels:
+            names.append(splice_deps.labels[t])
+    return _splice_set(splice_deps, names)
 
 # The nodes of a target's module graph, each with its source: the
 # modules, and their boot files as "<module>-boot". In a srcs dict a boot
@@ -239,10 +336,10 @@ def _per_module_worker(ctx: AnalysisContext) -> WorkerInfo | None:
     return own_worker[WorkerInfo] if own_worker != None else haskell_toolchain.per_module_shared_worker
 
 # The version of the request that the worker takes (as does the per-module
-# compile script), and of what the worker writes back. The worker refuses a
+# compile tool), and of what the worker writes back. The worker refuses a
 # request of any other version. When either changes, bump this and the
 # worker's version in tools/ghc-worker/src/Contract.hs.
-_WORKER_CONTRACT = "1"
+_WORKER_CONTRACT = "3"
 
 # Once the target's module graph is known, this registers a compile action
 # for each node, and makes its modules' closure sets for its dependents
@@ -254,8 +351,10 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     modules = s.modules
     module_libs = s.module_libs
     module_lib_dirs = s.module_lib_dirs
+    splice_deps = s.splice_deps
+    packages = s.packages
     early_set = s.early_set
-    th_set = s.th_set
+    target_th = s.target_th
     dynamic_too = s.dynamic_too
     o_of = s.o_of
     hi_of = s.hi_of
@@ -277,7 +376,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     worker_info = s.worker_info
     compile_script = s.compile_script
 
-    imports, upstream, th_nodes = _read_deps(s.label, deps.read_json(), nodes, module_libs)
+    imports, upstream, made, th_nodes, splice_imports = _read_deps(s.label, deps.read_json(), nodes, module_libs, s.make_names)
     order, left = _dependency_order(nodes, imports)
     if left:
         fail("{}: import cycle among {}".format(s.label, ", ".join(left)))
@@ -297,6 +396,26 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
 
     runs_th = {n: n in th_nodes for n, _ in nodes}
 
+    # The package flags of a module with explicit level imports. It gets the
+    # final dbs of the packages whose modules it imports at the splice level
+    # (and of their closures), and dbs that name no library for the rest.
+    # Modules that import from the same packages share their flags.
+    eli_sets = {}
+
+    def eli_packages(n):
+        pkgs = {}
+        for m in splice_imports[n]:
+            if m in src_of:
+                fail("{}: {} imports {} at the splice level, but with per_module a splice can't run code of its own target (see Note [Template Haskell modules]): build the target with per_module = False".format(s.label, _module_of(n), m))
+            for pkg, mod in upstream[n] + made[n]:
+                if mod == m:
+                    pkgs[pkg] = True
+        names = sorted(pkgs.keys())
+        key = " ".join(names)
+        if key not in eli_sets:
+            eli_sets[key] = packages(_splice_set(splice_deps, names))
+        return eli_sets[key]
+
     # In dependency order, since an action's inputs, and the artifacts a
     # symlinked_dir links, must be outputs of actions already registered.
     hie_of = {}
@@ -310,7 +429,12 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             closure_files += [hi_of[d], abi_of[d]]
             if dynamic_too:
                 closure_files.append(dyn_hi_of[d])
-        mod_packages = th_set if runs_th[n] else early_set
+        if not runs_th[n]:
+            mod_packages = early_set
+        elif n in splice_imports:
+            mod_packages = eli_packages(n)
+        else:
+            mod_packages = target_th
         hidirs = mod_packages.local_import_dirs + [(name, d) for name, d in module_lib_dirs.items() if name in mod_packages.early_names]
 
         # The module's own flags, which come after the target's.
@@ -319,7 +443,9 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         mkdirs = [stubdir.as_output()]
         if closure[n]:
             module_flags.add(tag.tag_artifacts(cmd_args(_dir_of(hi_of[closure[n][0]], closure[n][0], hisuf), hidden = closure_files, format = "-i{}")))
-        # The interfaces it may read from dependencies compiled per-module.
+        # The interfaces it may read from dependencies compiled per-module. (A
+        # Template Haskell module also gets those of the dependencies whose
+        # final dbs it compiles against, through those dbs.)
         module_flags.add(tag.tag_artifacts(cmd_args(hidden = upstream_closure_sets[n].project_as_args("interfaces"))))
         if dynamic_too:
             module_flags.add("-dyno", out[dyn_o_of[n]], "-dynohi", out[dyn_hi_of[n]])
@@ -412,9 +538,11 @@ def compiles_per_module(ctx: AnalysisContext) -> bool:
     return getattr(ctx.attrs, "per_module", False) and has_modules(ctx)
 
 # Compile the context's sources with one action per module: see Note
-# [Per-module compilation]. Takes compile()'s arguments. native_shared_libs_dir
-# and dynamic_from go unused, since splices run only prebuilt code (see Note
-# [Template Haskell modules]).
+# [Per-module compilation]. Takes compile()'s arguments.
+# native_shared_libs_dir goes unused, since a splice finds the native
+# libraries it loads through the package dbs (see _native_ghci_libs in
+# haskell.bzl). dynamic_from goes unused, since a splice can't run code of
+# its own target (see Note [Template Haskell modules]).
 def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, native_shared_libs_dir: [Artifact, None] = None, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None) -> CompileResultInfo:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     suffix = get_artifact_suffix(link_style, enable_profiling)
@@ -425,9 +553,10 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     # cut-off by dep files].
     tag = ctx.actions.artifact_tag()
 
-    # A module's package flags (see _package_dbs): one set for a module that
-    # runs no Template Haskell, and one for a module that does, which loads
-    # the prebuilt libraries.
+    # A module's package flags (see _package_dbs): the final dbs of the
+    # local dependencies in `final` and of the prebuilt ones, and dbs that
+    # name no library for the other local ones. A module that runs no
+    # Template Haskell compiles against no local library.
     dep_libs = list(dependency_libs(ctx, link_style, enable_profiling).traverse())
     exposed_package_args = get_exposed_package_args(ctx, link_style, False, enable_profiling)
 
@@ -436,17 +565,24 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     below = ctx.actions.tset(HaskellLibraryInfoTSet, children = [lib.below for lib in dep_libs if lib.below != None])
     below_make = {lib.name: True for lib in below.traverse() if lib.modules != None}
 
-    def packages(runs_th):
-        dbs = _package_dbs(dep_libs, below_make, tag, runs_th)
+    def packages(final, runs_th = True):
+        dbs = _package_dbs(dep_libs, final, below_make, tag, runs_th)
         return struct(
-            args = cmd_args(exposed_package_args, dbs.packagedb_args),
+            # A splice runs in an interpreter process of its own: see Note
+            # [Template Haskell modules].
+            args = cmd_args(exposed_package_args, dbs.packagedb_args, ["-fexternal-interpreter"] if runs_th else []),
             local_import_dirs = dbs.local_import_dirs,
             early_names = dbs.early_names,
         )
 
-    early_set = packages(runs_th = False)
-    th_set = packages(runs_th = True)
+    early_set = packages({}, runs_th = False)
 
+    # Only the Template Haskell modules' actions depend on the libraries:
+    # they load them, so they have to wait for them to be linked. A module
+    # with explicit level imports chooses its own libraries (see Note
+    # [Explicit level imports]), and the others take the target's.
+    splice_deps = _splice_deps(ctx, link_style, enable_profiling)
+    target_th = packages(_th_set(ctx, splice_deps))
     module_libs = {lib.name: lib for lib in dep_libs if lib.modules != None}
     this_pkg = pkgname or haskell_library_unit_id(ctx.label)
 
@@ -494,10 +630,10 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 
     # The module graph, from GHC's own dependency analysis (see
     # tools/ghc-api/PerModuleDeps.hs): each node's imports, from the target
-    # and from dependencies, and whether it may run Template Haskell. It runs
-    # against the early dbs, so it needs nothing built. The tool gets each
-    # node with its source, and the GHC flags without the compiler, since the
-    # analysis is its own.
+    # and from dependencies, whether it may run Template Haskell, and what it
+    # imports at the splice level. It runs against the early dbs, so it needs
+    # nothing built. The tool gets each node with its source, and the GHC
+    # flags without the compiler, since the analysis is its own.
     deps = ctx.actions.declare_output(prefix + "deps.json")
     ctx.actions.run(
         in_env(env, cmd_args(
@@ -521,6 +657,10 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 
     module_lib_dirs = {name: out_dir_of(lib) for name, lib in module_libs.items()}
 
+    # The local dependencies built with --make, whose modules a module may
+    # import at the splice level.
+    make_names = {lib.name: True for lib in dep_libs if lib.modules == None and lib.early_db != None}
+
     modules = {
         n: HaskellModuleFiles(hi = hi_of[n], abi = abi_of[n], dyn_hi = dyn_hi_of[n] if dynamic_too else None)
         for n, _ in nodes
@@ -538,8 +678,11 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             modules = modules,
             module_libs = module_libs,
             module_lib_dirs = module_lib_dirs,
+            make_names = make_names,
+            splice_deps = splice_deps,
+            packages = packages,
             early_set = early_set,
-            th_set = th_set,
+            target_th = target_th,
             dynamic_too = dynamic_too,
             o_of = o_of,
             hi_of = hi_of,
@@ -579,9 +722,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # - after an edit, run again only the modules affected.
 #
 # The price is CPU. Each `ghc -c` reads the interfaces of everything its
-# module imports (and, for Template Haskell, loads the prebuilt libraries),
-# which `ghc --make` does only once per target. A persistent worker takes
-# most of that cost away (see Note [The persistent worker]).
+# module imports (and, for Template Haskell, loads the dependencies' shared
+# libraries), which `ghc --make` does only once per target. A persistent
+# worker takes most of that cost away (see Note [The persistent worker]).
 #
 # Terms
 #
@@ -615,12 +758,12 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #   appear one by one as its modules compile. Its "final" db is the normal
 #   one, registered once its library is linked. See Note [Compiling against
 #   dependencies module by module]. A dependency built with --make also has
-#   a "library-less" db, the final db without the library, which is the one
-#   a per-module compile uses (see Note [Template Haskell modules]).
+#   a "library-less" db, the final db without the library (see Note
+#   [Libraries of the early package dbs]).
 # - Template Haskell module: one that runs a splice, or evaluates an ANN
-#   pragma (GHC uses its interpreter for those too). With per_module, its
-#   splices can only run code of prebuilt packages. See Note [Template
-#   Haskell modules].
+#   pragma (GHC uses its interpreter for those too). It runs its
+#   dependencies' code at compile time, so it needs their libraries, not
+#   just their interfaces. See Note [Template Haskell modules].
 # - Dep file: the list of the inputs an action actually read, which buck2
 #   uses to decide whether to run the action again. See Note [Early cut-off
 #   by dep files].
@@ -631,8 +774,10 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #   can compile before its dependencies are finished.
 # - Note [Early cut-off by dep files]: which modules compile again after an
 #   edit.
-# - Note [Template Haskell modules]: what code the modules that run code at
-#   compile time can run.
+# - Note [Template Haskell modules]: what the modules that run code at
+#   compile time wait for. Note [Libraries of the early package dbs] has
+#   the package dbs each compile gets, and Note [Explicit level imports]
+#   how a module can say what its splices run.
 # - Note [The persistent worker]: compiling the modules in long-running
 #   GHC sessions rather than one `ghc -c` per module.
 
@@ -713,10 +858,11 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #
 # buck2 removes an action's previous outputs before running it, so GHC's
 # recompilation check never has anything to compare against, and the module
-# compiles whenever the action runs. (GHC's check would also notice a change
-# to the code a splice ran, from the hash it records of each Haskell library
-# the splice loaded. Here those are prebuilt libraries, which are plain
-# inputs of the compile.)
+# compiles whenever the action runs. GHC's check would also notice a change
+# to the code a splice ran, since it records the hash of each object and
+# Haskell library the splice loaded. But it doesn't record extra-libraries,
+# which is how the package dbs here name a library, so the libraries are
+# inputs of the compile instead (see Note [Template Haskell modules]).
 #
 # 4. Coarser than GHC's check
 #
@@ -735,45 +881,209 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #
 # 1. The problem
 #
-# A Template Haskell module runs code at compile time, in its splices and
-# ANN pragmas. GHC runs it in its interpreter, which first loads the library
-# of every package on the command line (GHC's "preload" units), and then the
-# objects of any of the target's own modules that a splice runs. But a
-# dependency's library only exists once all of its modules are compiled and
-# linked, so a module that needed it would wait for the whole dependency,
-# losing much of what compiling per-module gains. And to load a library
-# that this build makes, the interpreter would need the libraries it
-# depends on in a directory on its LD_LIBRARY_PATH.
+# A Template Haskell module runs its dependencies' code at compile time, so
+# it needs their libraries, not just their interfaces. That means waiting
+# for its dependencies to be linked, which loses much of the parallelism
+# that compiling per-module gains.
 #
-# 2. The solution: splices run only prebuilt code
+# 2. What it waits for
 #
-# With per_module, a splice can only run code of prebuilt packages, whose
-# libraries exist before the build starts and can find their own
-# dependencies. Every local dependency of a per-module compile is on a db
-# that names no library: its early db if it's compiled per-module, or its
-# library-less db if it's built with --make (see _package_dbs). So a
-# Template Haskell module waits for nothing that a plain module doesn't, and
-# needs nothing on its LD_LIBRARY_PATH. The prebuilt libraries are plain
-# inputs of its compile, so a change to one compiles it again.
+# By default, a Template Haskell module compiles against the final package
+# dbs of all its dependencies, with their libraries and the native
+# libraries they depend on as inputs. So it waits for all of them to be
+# linked, as a --make compile does. Two things narrow that:
 #
-# A target whose splices run code of another local library has to be built
-# with per_module = False. With per_module, such a splice can't load that
-# code, so its compile fails, naming the missing symbol, and the compile
-# tool says how to fix it.
+# - th_build_depends: the target lists the local dependencies, compiled
+#   per-module or built with --make, whose code its splices need (see
+#   _th_set). Its Template Haskell modules then wait only for the libraries
+#   of those (and of their own dependencies), and compile against dbs that
+#   name no library for the rest, like any other module. Prebuilt
+#   dependencies are always included: their libraries are there from the
+#   start.
+# - Explicit level imports: a module that uses them chooses its own
+#   libraries, whatever th_build_depends says. See Note [Explicit level
+#   imports].
 #
-# Nor can a splice run code of the target's own modules: their objects, and
-# those of the modules behind any boot files among them, would have to be
-# inputs of the compile. GHC can still find an object that another module's
-# compile left in the output directory, though. So the compile tool fails
-# the compile if a splice loaded one, which GHC records as a dependent file.
+# Note [Libraries of the early package dbs] has a table of which package db
+# a compile gets for each dependency. If a splice runs code from a
+# dependency that was left out, the compile fails and names the symbol it
+# couldn't load, and the compile suggests th_build_depends.
 #
-# 3. Finding the Template Haskell modules
+# 3. Why the libraries aren't in the dep file
+#
+# The libraries are plain inputs of the compile, not tagged inputs that its
+# dep file lists, so the module compiles again whenever one of them is
+# relinked. The dep file can't list them. GHC records in the interface the
+# Haskell libraries (hs-libraries) that a splice loaded, but a package db
+# here names its library as one of its extra-libraries. So a splice that
+# ran a _dependency's_ code leaves no trace of that library in the
+# interface, but we do want a change to that code to compile the module
+# again.
+#
+# 4. Native libraries
+#
+# A library that buck2 links refers to the native libraries it was linked
+# against by soname, but it has no RUNPATH to find them, and a compile has
+# nothing on LD_LIBRARY_PATH. So when a splice loads such a library, the
+# dynamic loader can't find the libraries it needs, and the splice fails.
+#
+# Instead, a package db lists the native libraries that its library depends
+# on in extra-ghci-libraries, which only GHC's interpreter reads (see
+# _native_ghci_libs in haskell.bzl). They come in dependency order, before
+# the package's own library, and the db gives the directory they are in.
+# GHC loads them by path in that order, so each library finds the ones it
+# needs already loaded. The directory is in both library-dirs and
+# dynamic-library-dirs, since the interpreter is of the compile's way, and
+# only a dynamic one reads dynamic-library-dirs.
+#
+# So a compile needs nothing in its environment. That is what lets the
+# persistent worker compile Template Haskell modules, since its environment
+# can't change between requests.
+#
+# Loading the native libraries this way relies on three things:
+#
+# - GHC loads a package's dependencies first, and a package's libraries in
+#   the order its db lists them. (GHC 9.6 loads hs-libraries before extra
+#   ones, so the rules list a package's own library as an extra one.)
+# - The dynamic loader reuses a library already loaded under the soname it
+#   is looking for.
+# - buck2's graph of native libraries matches what each was linked against.
+#
+# GHC looks up a library named foo as libfoo.so, so the directory has each
+# library under that name, or under its whole soname if the soname isn't of
+# that form (libfoo.so.1, say). A library whose soname is only known once
+# it's built can't be named, and a library that depends on it fails to
+# load, saying so.
+#
+# This only works for ELF libraries and a GNU linker. Elsewhere the package
+# dbs name no native libraries. On macOS, the libraries would need to be
+# named as GHC looks them up there (libfoo.dylib), and a library would need
+# to find a dependency that is already loaded by its install name
+# (@rpath/libfoo.dylib). We haven't tried that.
+#
+# The road not taken: a tree of the dependencies' shared libraries on each
+# Template Haskell compile's LD_LIBRARY_PATH. That needs nothing in the
+# package dbs and copes with any soname. But the persistent worker can't
+# change its environment for each compile, so each of those modules would
+# need a `ghc -c` of its own. That is the slowest kind of compile, and it
+# would fall on the targets that run the most splices. It remains an option
+# for a library the dbs can't name, or for a platform whose loader doesn't
+# reuse a loaded library by its soname (macOS matches install names
+# instead, and hasn't been tried).
+#
+# 5. The external interpreter
+#
+# Splices run in an external interpreter (-fexternal-interpreter) of the
+# compile's way (ghc-iserv, ghc-iserv-prof or ghc-iserv-dyn). There is one
+# for each `ghc -c`, or one for each session of the persistent worker (see
+# Note [The persistent worker]). The libraries a splice loads stay in that
+# process. If splices ran in the worker's own process, which every target's
+# sessions share:
+#
+# - A splice could run a library that another target's splice had loaded,
+#   without having it as an input: a dependency left out of th_build_depends
+#   would go unnoticed, and the module would go stale when the library
+#   changed.
+# - A library built in two configurations (a build tool's and a target's)
+#   has the same unit id and soname in both, so a splice of one
+#   configuration could run the other's.
+# - One splice's crash, or a library's global state, would reach the
+#   others.
+#
+# The cost is a process for each session that runs Template Haskell, and the
+# time to send code and values to it. Before GHC 9.12, GHC doesn't lock the
+# interpreter, so the worker lets only one compile of a session use it at a
+# time (see interpreterLock in the worker). So with those GHCs, a target's
+# Template Haskell modules, which share a session, compile one at a time in
+# the worker.
+#
+# 6. Code of the target's own modules
+#
+# A splice can't run code of the target's own modules. GHC would load their
+# objects from the output directory, so they would have to be inputs of the
+# compile, along with the modules behind any boot files among them. A
+# target whose splices need that is built with per_module = False instead.
+# The compile fails if a splice loaded one of the target's objects (see
+# DepFile in tools/ghc-api), and the analysis fails if a module imports one
+# of the target's modules at the splice level (see Note [Explicit level
+# imports]).
+#
+# 7. Finding the Template Haskell modules
 #
 # Which modules run Template Haskell has to be decided before anything is
 # compiled. The deps tool asks GHC which extensions each module has, from its
 # pragmas and the target's flags, and looks for ANN pragmas in its
 # (preprocessed) source. That can find too much (an ANN pragma in a comment,
 # say), but it's better to be conservative. It doesn't catch GHC plugins.
+
+# Note [Libraries of the early package dbs]
+#
+# 1. The problem
+#
+# A Template Haskell module runs code in GHC's interpreter, which first
+# loads the library of every package on the command line, and of their
+# dependencies (GHC's "preload" units), whether or not the splice uses it.
+# A dynamically linked GHC tolerates a missing library file: it warns, or
+# says nothing, and carries on. But a library that is there, and was linked
+# against one that _isn't_, fails to load in the system's dynamic linker,
+# and then the compile fails. buck2 doesn't sandbox local actions, so a
+# library that a compile doesn't declare as an input may or may not be on
+# disk. It may not be linked yet, or not materialised, even if one next to
+# it is.
+#
+# 2. The solution
+#
+# Every package db that a compile gets either names no library, or names
+# one that the compile depends on. For each local dependency, a compile
+# gets either a db that names no library (the early db of one compiled
+# per-module, or the library-less db of one built with --make), or its
+# final db, which names the library and brings it as an input of the
+# compile. A prebuilt dependency's library exists before the build starts,
+# so a compile always gets its final db:
+#
+#                                 local dependency         prebuilt
+#                                 (per-module, --make)     dependency
+#   module that runs no TH        no library               final
+#   TH module                     final                    final
+#   TH module, th_build_depends   final if listed,         final
+#                                 else no library
+#   TH module, explicit level     final if its splice      final
+#   imports                       imports need it,
+#                                 else no library
+#
+# A final db comes with the final dbs of the dependency's closure. A module
+# that runs no Template Haskell never starts the interpreter, so it doesn't
+# depend on the libraries of the final dbs it gets.
+
+# Note [Explicit level imports]
+#
+# 1. The idea
+#
+# With ExplicitLevelImports (GHC 9.14 and later), or
+# NoImplicitStagePersistence, a splice or ANN pragma can only use what the
+# module imports with `import splice`. Using a name imported otherwise, even
+# from the Prelude, is a level error. So those imports tell us exactly what
+# code the module's splices may run, and so which libraries its compile
+# needs:
+#
+# - A module of a dependency needs that dependency's library, and the
+#   libraries of its own dependencies (see Note [Libraries of the early
+#   package dbs]).
+# - A module of the target itself is an error, since splices can't run code
+#   of their own target (see Note [Template Haskell modules]).
+#
+# A module with explicit level imports compiles against the final dbs of
+# those dependencies and of the prebuilt ones, whatever th_build_depends
+# says. It gets dbs that name no library for the other local dependencies.
+# So each module can have different libraries. This works for dependencies
+# built with --make too, since GHC's dependency analysis says which
+# dependency any imported module comes from.
+#
+# 2. Finding the splice imports
+#
+# The deps tool takes the levels from GHC's summary of each module, whose
+# imports carry them from GHC 9.14, and whether the module has explicit
+# level imports from its extensions (its pragmas and the target's flags).
 
 # Note [The persistent worker]
 #
@@ -799,7 +1109,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # which come in two parts:
 #
 # - The session flags, shared by all the target's modules. The worker keeps
-#   a session for each set of session flags.
+#   a session for each set of session flags. A target's Template Haskell
+#   modules have session flags of their own, since their package dbs differ
+#   (see Note [Libraries of the early package dbs]).
 # - The module's own flags, of which the worker takes only the outputs: -o,
 #   -ohi, -dyno, -dynohi, -hiedir and -stubdir.
 #
@@ -818,9 +1130,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # the shared worker can only take modules that need nothing from their
 # target's environment. Those are the modules of targets whose build tools
 # are all on the worker's PATH (see per_module_worker_build_tools in
-# toolchains/per_module_worker.bzl). Splices need nothing from it either,
-# since they load only prebuilt libraries, which find their own dependencies
-# (see Note [Template Haskell modules]).
+# toolchains/per_module_worker.bzl). Template Haskell modules need nothing
+# from it either (see Note [Template Haskell modules]).
 #
 # The other modules are compiled without a worker, each by its own
 # `ghc -c`. A worker for each such target, in its environment, would compile

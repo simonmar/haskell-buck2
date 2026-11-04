@@ -1,0 +1,35 @@
+load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
+
+# A splice that runs code calling a C library whose soname isn't of the
+# form libfoo.so, which GHC can't look up by name.
+cxx_library(
+    name = "c-ver",
+    srcs = ["ver.c"],
+    soname = "libver.so.1",
+    preferred_linkage = "shared",
+)
+
+haskell_library(
+    name = "ffi-ver",
+    srcs = {"V.C": "V/C.hs"},
+    packages = ["base"],
+    deps = [":c-ver"],
+    per_module = True,
+)
+
+haskell_library(
+    name = "th-native-soname",
+    srcs = {"V.S": "V/S.hs"},
+    packages = ["base", "template-haskell"],
+    deps = [":ffi-ver"],
+    per_module = True,
+)
+
+# Prints V.S's splice.
+haskell_binary(
+    name = "show",
+    srcs = {"Main": "Show.hs"},
+    packages = ["base"],
+    deps = [":th-native-soname"],
+    per_module = True,
+)

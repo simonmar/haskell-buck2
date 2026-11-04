@@ -13,10 +13,13 @@ module Compat
   , withOneShotModuleGraph
   , insertHome
   , addHomes
+  , interpreterLock
   ) where
 
 #if MIN_VERSION_ghc(9,12,0)
 import Control.Concurrent.MVar (newMVar, withMVar)
+#else
+import Control.Concurrent.MVar (MVar, newMVar)
 #endif
 
 import GHC
@@ -131,4 +134,17 @@ addHomes hsc mods = do
     let env = hscUpdateHPT (\hpt -> addListToHpt hpt [(moduleName (mi_module iface), HomeModInfo iface (details !! k) linkable) | (k, (iface, linkable)) <- zip [0 ..] mods]) hsc
     (,) env <$> mapM (initModDetails env . fst) mods
   pure (env, [HomeModInfo iface d linkable | ((iface, linkable), d) <- zip mods details])
+#endif
+
+-- | A lock for the concurrent compiles of a session whose splices run in an
+-- external interpreter, which they share. Before GHC 9.12, GHC sends the
+-- interpreter a message and reads its reply without a lock, so two compiles
+-- could read each other's replies (a panic in mallocStrings, say). GHC 9.12
+-- locks the interpreter itself.
+#if MIN_VERSION_ghc(9,12,0)
+interpreterLock :: DynFlags -> IO (Maybe a)
+interpreterLock _ = pure Nothing
+#else
+interpreterLock :: DynFlags -> IO (Maybe (MVar ()))
+interpreterLock dflags = if gopt Opt_ExternalInterpreter dflags then Just <$> newMVar () else pure Nothing
 #endif

@@ -10,8 +10,8 @@
 --
 -- - The package has modules M0..Mn, each importing some of those before
 --   it. Some have a boot file that modules before them import
---   {-# SOURCE #-}. Some have a Template Haskell splice, which can run only
---   template-haskell's code (see Note [Template Haskell modules] in
+--   {-# SOURCE #-}. Some have a Template Haskell splice, which can't run
+--   the package's own code (see Note [Template Haskell modules] in
 --   compile_per_module.bzl).
 -- - p has modules P0..Pk, which the package's modules import through p's
 --   early package db, as the rules have it: it has no library, and its
@@ -19,6 +19,10 @@
 --   p's modules are sometimes named M0..Mk instead, like the main
 --   package's. A module of each package may then have the same name, which
 --   only its unit tells apart (as in the usages of the dep files).
+-- - On Linux, a splice may run p's code. Its compile loads that from p's
+--   library, linked as the rules link one, through p's final package db.
+--   The library calls a native library, which depends on another, and no
+--   library has a RUNPATH.
 --
 -- Each build has a fresh worker, as each buck2 build does, and the test
 -- sends it the modules and boot files that buck2 would compile: those never
@@ -50,8 +54,8 @@ import Data.Version (showVersion, versionBranch)
 import System.Directory
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..), exitFailure)
-import System.FilePath ((<.>), (</>))
-import System.Info (fullCompilerVersion)
+import System.FilePath (takeDirectory, (<.>), (</>))
+import System.Info (fullCompilerVersion, os)
 import System.IO (IOMode (..), hPutStrLn, openFile, stderr)
 import System.Timeout (timeout)
 import System.Posix.Process (getProcessID)
@@ -156,10 +160,11 @@ genHistory bootsAllowed = do
     own' <- if i == 0 then pure [] else Gen.subsequence [0 .. i - 1]
     fromP <- Gen.subsequence pkeys
     let imports = own' ++ fromP
-    sourceImports <- Gen.subsequence [j | j <- [i + 1 .. n - 1], boots !! j]
     k <- Gen.int (Range.constant 1 3)
     values <- forM [0 .. k - 1] $ \v -> (,,) v <$> Gen.element [TInt, TInteger] <*> Gen.int (Range.linear 0 9)
-    splice <- Gen.frequency [(3, pure Nothing), (1, Just <$> Gen.int (Range.constant 0 9))]
+    -- A literal, or a value of p, which it evaluates.
+    splice <- Gen.frequency ([(3, pure Nothing), (1, Just <$> Gen.int (Range.constant 0 9))] ++ [(2, Just <$> Gen.element fromP) | pSplices, not (null fromP)])
+    sourceImports <- Gen.subsequence [j | j <- [i + 1 .. n - 1], boots !! j]
     own <- Gen.frequency [(2, pure False), (1, pure True)]
     reexports <- Gen.subsequence imports
     pure (Mod imports sourceImports values (boots !! i) splice 0 0 False own reexports)
@@ -179,10 +184,13 @@ inP i = i >= pkgP
 -- | An edit to the modules with the given keys.
 genEdit :: [Int] -> Gen Edit
 genEdit keys =
-  Gen.choice
+  Gen.frequency $
+    map ((,) 1)
     [ Comment <$> m
     , BootComment <$> m
-    , Body <$> m <*> Gen.int (Range.linear 0 3) <*> Gen.int (Range.linear 0 9)
+    -- Value 0 most often, since the other modules' values and the splices
+    -- use it.
+    , Body <$> m <*> Gen.frequency [(3, pure 0), (1, Gen.int (Range.linear 1 3))] <*> Gen.int (Range.linear 0 9)
     , AddValue <$> m
     , RemoveValue <$> m
     , Retype <$> m
@@ -194,6 +202,10 @@ genEdit keys =
     , AddReexport <$> m <*> m
     , RemoveReexport <$> m <*> m
     ]
+      -- And value 0 of a module of p, which changes p's library under the
+      -- splices that run it. Often, since that only tests anything with a
+      -- splice of p's code too, and a build of its module afterwards.
+      ++ [(4, Body <$> Gen.element ps <*> pure 0 <*> Gen.int (Range.linear 0 9)) | let ps = filter inP keys, not (null ps)]
   where
     m = Gen.element keys
 
@@ -241,8 +253,21 @@ nodeDeps _ (_, True) = []
 nodeDeps mods (i, False) =
   [(j, False) | j <- mImports m] ++ [(j, True) | j <- mSourceImports m] ++ [(i, True) | mBoot m]
     ++ (if inP i then [] else [(j, False) | j <- belowInP mods [x | x <- mImports m, inP x]])
+    -- And for all of p, whose library its splice loads (see linkP).
+    ++ (if splicesP m then [(j, False) | j <- M.keys mods, inP j] else [])
   where
     m = mods M.! i
+
+-- | Whether splices may run p's code. Only on Linux, where p's native
+-- libraries and its library are ELF libraries (see buildC and linkP), since
+-- the rules only support that there (see _native_ghci_libs in haskell.bzl).
+pSplices :: Bool
+pSplices = os == "linux"
+
+-- | Whether a module's splice runs p's code. Its compile then loads p's
+-- library (see linkP) through p's final package db.
+splicesP :: Mod -> Bool
+splicesP m = maybe False inP (mSplice m)
 
 -- | The modules of p below the given ones of p.
 belowInP :: M.Map Int Mod -> [Int] -> [Int]
@@ -303,17 +328,20 @@ render mods (i, False) =
       ++ ["import qualified " ++ (if fromP && inP j then "\"p\" " else "") ++ modName j ++ " as " ++ alias j | j <- mImports m]
       ++ ["import {-# SOURCE #-} qualified " ++ modName j ++ " as " ++ alias j | j <- mSourceImports m]
       ++ ["import Language.Haskell.TH.Syntax (lift)" | isJust (mSplice m)]
+      ++ ["foreign import ccall unsafe \"pc_value\" pcValue :: Int" | callsC]
       ++ ["-- edit " ++ show (mComments m)]
       ++ concat
         [ [ value i k ++ " :: " ++ tyName t
-          , value i k ++ " = " ++ show c ++ concat [" + fromIntegral " ++ alias j ++ "." ++ v | k == 0, j <- mImports m, v <- value j 0 : ["t" ++ show j | hasT j] ++ [value r 0 | r <- reexported j]]
+          , value i k ++ " = " ++ show c ++ concat [" + fromIntegral " ++ alias j ++ "." ++ v | k == 0, j <- mImports m, v <- value j 0 : ["t" ++ show j | hasT j] ++ [value r 0 | r <- reexported j]] ++ concat [" + fromIntegral pcValue" | k == 0, callsC]
           ]
         | (k, t, c) <- mValues m
         ]
       ++ concat [["t" ++ show i ++ " :: Integer", "t" ++ show i ++ " = 0" ++ concat [" + fromIntegral " ++ alias j ++ "." ++ value j 0 | j <- mSourceImports m], "{-# INLINE t" ++ show i ++ " #-}"] | hasT i]
       ++ concat [[shows' j ++ " :: " ++ alias j ++ "." ++ ty j ++ " -> String", shows' j ++ " = show"] | j <- mSourceImports m]
       ++ concat [["data " ++ ty i ++ " = " ++ ty i, "instance Show " ++ ty i ++ " where show _ = " ++ show (ty i)] | mBoot m]
-      ++ concat [["s" ++ show i ++ " :: Integer", "s" ++ show i ++ " = $(lift (" ++ show j ++ " :: Integer))"] | Just j <- [mSplice m]]
+      -- A splice of p's code evaluates it, so a splice that ran a stale
+      -- library would make a different object from the clean build's.
+      ++ concat [["s" ++ show i ++ " :: Integer", "s" ++ show i ++ " = $(lift (" ++ (if inP j then "fromIntegral " ++ alias j ++ "." ++ value j 0 else show j) ++ " :: Integer))"] | Just j <- [mSplice m]]
       ++ (if mBroken m then ["broken :: Int", "broken = \"not an Int\""] else [])
   where
     m = mods M.! i
@@ -322,6 +350,8 @@ render mods (i, False) =
     -- A re-export of an import that an edit removed is dropped.
     reexported j = let mj = mods M.! j in [r | r <- mReexports mj, r `elem` mImports mj]
     fromP = not (inP i) && any inP (mImports m)
+    -- p's first module calls a function of p's native library.
+    callsC = inP i && i == minimum [k | k <- M.keys mods, inP k]
     shows' j = "show" ++ show i ++ "_" ++ show j
 
 -- | The type a module with a boot file declares in both.
@@ -341,8 +371,10 @@ nodeFlags mods (i, _)
   | inP i = ["-this-unit-id", "p", "-i" ++ outDir pkgP]
   | otherwise =
       ["-DOWN_SESSION" | mOwnFlags m]
-        ++ (if isJust (mSplice m) then ["-package", "template-haskell"] else [])
-        ++ (if any (inP . fst) (M.toList mods) then ["-package-db", "pdb", "-package", "p"] else [])
+        -- An external interpreter, as the rules have it (see Note [Template
+        -- Haskell modules] in compile_per_module.bzl).
+        ++ (if isJust (mSplice m) then ["-package", "template-haskell", "-fexternal-interpreter"] else [])
+        ++ (if any (inP . fst) (M.toList mods) then ["-package-db", if splicesP m then "pfinal" else "pdb", "-package", "p"] else [])
         ++ ["-iout"]
   where
     m = mods M.! i
@@ -370,7 +402,7 @@ data Config = Config {cWorker :: FilePath, cGhc :: String, cDir :: FilePath, cOb
 
 -- | What a history's builds did, to see that the histories reach what they
 -- are for.
-data Stats = Stats {sSkipped :: Int, sRecompiled :: Int, sFailed :: Int, sBlocked :: Int}
+data Stats = Stats {sSkipped :: Int, sRecompiled :: Int, sFailed :: Int, sBlocked :: Int, sLibChanged :: Int}
 
 -- | For each node, the source it was last compiled from by the worker and
 -- the contents then of the files its dep file lists.
@@ -380,20 +412,24 @@ type LastOk = M.Map Node (String, [(FilePath, Maybe B.ByteString)])
 -- first disagreement, if there is one.
 runHistory :: Config -> History -> IO (Either String (), Stats)
 runHistory cfg h = do
-  stats <- newIORef (Stats 0 0 0 0)
+  stats <- newIORef (Stats 0 0 0 0 0)
   let dir = cDir cfg
   removePathForcibly dir
   mapM_ (createDirectoryIfMissing True . (dir </>)) ["w/src", "w" </> outDir 0, "w/psrc", "w" </> outDir pkgP, "w/dep", "w/tmp", "ref"]
-  -- p's early package db (see the module's description), for the worker's
-  -- builds; the clean builds register their own.
-  registerP cfg (dir </> "w") [i | (i, _) <- hModules h, inP i]
+  -- p's native libraries, which all the builds share (see buildC), and p's
+  -- package dbs for the worker's builds. The clean builds register their
+  -- own.
+  let ps = [i | (i, _) <- hModules h, inP i]
+  unless (null ps || not pSplices) (buildC cfg (dir </> "clib"))
+  registerP cfg (dir </> "w") ps
   lastOk <- newIORef M.empty
+  libSeen <- newIORef M.empty
   let go _ _ [] = pure (Right ())
       go mods n (b : rest) = do
         let mods' = foldl applyEdit mods (bEdits b)
             built = mods'
         forM_ (nodes built) $ \node -> writeFileIfChanged (dir </> "w" </> source node) (render built node)
-        (worker, skipped) <- workerBuild cfg h b built lastOk stats
+        (worker, skipped) <- workerBuild cfg h b built lastOk libSeen stats
         ref <- refBuild cfg h built
         case [(node, w, r) | (node, w) <- M.toList worker, let r = ref M.! node, not (agree w r)] of
           [] -> go mods' (n + 1) rest
@@ -410,19 +446,54 @@ runHistory cfg h = do
     agree Blocked Blocked = True
     agree _ _ = False
 
--- | Register p's early package db in the given directory, if p has modules:
--- no library, and its import directory the one its interfaces are written
--- to.
+-- | Register p's package dbs in the given directory, if p has modules, as
+-- the rules make them (see haskell.bzl):
+--
+-- - Its early db has no library, and its import directory is the one its
+--   interfaces are written to.
+-- - Its final db names its library (see linkP) as one of its
+--   extra-libraries. For GHC's interpreter, it also names the native
+--   libraries p depends on, before p's own and each after those it depends
+--   on, and the directories they are in.
 registerP :: Config -> FilePath -> [Int] -> IO ()
 registerP _ _ [] = pure ()
 registerP cfg dir ps = do
-  let conf = dir </> "p.conf"
-  removePathForcibly (dir </> "pdb")
-  writeFile conf ("name: p\nversion: 0\nid: p\nkey: p\nexposed: True\nexposed-modules: " ++ unwords (map modName ps) ++ "\nimport-dirs: " ++ dir </> outDir pkgP ++ "\n")
-  _ <- readProcess (ghcPkgOf (cGhc cfg)) ["init", dir </> "pdb"] ""
-  -- It warns that the interfaces are missing.
-  _ <- readProcessWithExitCode (ghcPkgOf (cGhc cfg)) ["register", "--force", "--package-db", dir </> "pdb", conf] ""
-  pure ()
+  let common = "name: p\nversion: 0\nid: p\nkey: p\nexposed: True\nexposed-modules: " ++ unwords (map modName ps) ++ "\nimport-dirs: " ++ dir </> outDir pkgP ++ "\n"
+      clib = takeDirectory dir </> "clib"
+  forM_ [("pdb", common), ("pfinal", common ++ "library-dirs: " ++ dir </> "plib" ++ "\nextra-libraries: p\nextra-ghci-libraries: pcb, pc, p\ndynamic-library-dirs: " ++ dir </> "plib" ++ ", " ++ clib ++ "\n")] $ \(db, conf) -> do
+    removePathForcibly (dir </> db)
+    writeFile (dir </> db <.> "conf") conf
+    _ <- readProcess (ghcPkgOf (cGhc cfg)) ["init", dir </> db] ""
+    -- It warns that the interfaces and library are missing.
+    _ <- readProcessWithExitCode (ghcPkgOf (cGhc cfg)) ["register", "--force", "--package-db", dir </> db, dir </> db <.> "conf"] ""
+    pure ()
+
+-- | p's native libraries, in the given directory: libpc.so, whose pc_value
+-- p's first module calls, and libpcb.so, which libpc.so depends on. Each
+-- has a soname and no RUNPATH, like the libraries buck2 links. So a
+-- process finds libpcb.so for libpc.so only if it has loaded it already.
+buildC :: Config -> FilePath -> IO ()
+buildC cfg dir = do
+  createDirectoryIfMissing True dir
+  info <- readProcess (cGhc cfg) ["--info"] ""
+  let cc = fromMaybe "cc" (lookup "C compiler command" (read info :: [(String, String)]))
+      shared name src deps = do
+        writeFile (dir </> name <.> "c") src
+        callProcess cc (["-shared", "-fPIC", "-o", dir </> "lib" ++ name <.> "so", dir </> name <.> "c", "-Wl,-soname,lib" ++ name ++ ".so", "-L" ++ dir] ++ map ("-l" ++) deps)
+  shared "pcb" "int pcb_value(void) { return 1; }\n" []
+  shared "pc" "int pcb_value(void);\nint pc_value(void) { return 2 + pcb_value(); }\n" ["pcb"]
+
+-- | Link p's library, libp.so, from its objects in the given directory, as
+-- the rules link a library: with a soname, and against p's native library
+-- (see buildC) without a RUNPATH to it. Returns the library's contents: a
+-- module whose splice loads the library has it as a plain input, as with
+-- the rules.
+linkP :: Config -> FilePath -> [Int] -> IO B.ByteString
+linkP cfg dir ps = do
+  createDirectoryIfMissing True (dir </> "plib")
+  let lib = dir </> "plib" </> "libp.so"
+  callProcess (cGhc cfg) (["-shared", "-dynamic", "-hide-all-packages", "-package", "base", "-o", lib, "-optl-Wl,-soname,libp.so", "-L" ++ takeDirectory dir </> "clib", "-lpc"] ++ [dir </> outDir pkgP </> modName i <.> "o" | i <- ps])
+  B.readFile lib
 
 writeFileIfChanged :: FilePath -> String -> IO ()
 writeFileIfChanged path s = do
@@ -443,32 +514,46 @@ layers deps = go M.empty
 
 -- | One build through a fresh worker, each node sent as soon as those it
 -- waits for are done, as buck2 sends them. Returns the outcomes, and the
--- nodes it skipped as up to date.
-workerBuild :: Config -> History -> Build -> M.Map Int Mod -> IORef LastOk -> IORef Stats -> IO (M.Map Node Outcome, [Node])
-workerBuild cfg h b mods lastOk stats = do
+-- nodes it skipped as up to date. The library that p's splices load counts
+-- as a change for a module when it has changed since that module's splice
+-- last loaded it.
+workerBuild :: Config -> History -> Build -> M.Map Int Mod -> IORef LastOk -> IORef (M.Map Node B.ByteString) -> IORef Stats -> IO (M.Map Node Outcome, [Node])
+workerBuild cfg h b mods lastOk libSeen stats = do
   let wdir = cDir cfg </> "w"
   -- Its log, of the last build, is left for a failure's inspection.
   logH <- openFile (wdir </> "worker.log") WriteMode
   let mode = if cOneShot cfg then "one-shot" else "make"
   withWorkerProcess (cWorker cfg) [] wdir ([("TMPDIR", wdir </> "tmp"), ("GHC_WORKER_VERBOSE", "1"), ("GHC_WORKER_SESSION_MODE", mode)] ++ [("GHC_WORKER_SESSIONS", "0") | bEagerDrop b]) (UseHandle logH) $ \sock -> do
       skippedRef <- newIORef []
+      -- p's library, linked once all of p is compiled, by the first module
+      -- whose splice loads it.
+      libVar <- newMVar Nothing
+      let pLib = modifyMVar libVar $ \l -> case l of
+            Just c -> pure (l, c)
+            Nothing -> (\c -> (Just c, c)) <$> linkP cfg wdir [k | k <- M.keys mods, inP k]
       vars <- M.fromList <$> forM (nodes mods) (\node -> (,) node <$> newEmptyMVar)
       let result node = readMVar (vars M.! node) >>= either (\(e :: SomeException) -> throwIO e) pure
       forM_ (nodes mods) $ \node -> forkIO $ do
         r <- try $ do
           deps <- mapM result (nodeDeps mods node)
-          decide wdir sock skippedRef (all isCompiled deps) node
+          decide wdir sock skippedRef pLib (all isCompiled deps) node
         putMVar (vars M.! node) r
       (,) . M.fromList <$> forM (nodes mods) (\node -> (,) node <$> result node) <*> readIORef skippedRef
   where
     count f = atomicModifyIORef' stats (\st -> (f st, ()))
-    decide wdir sock skippedRef depsOk node
+    decide wdir sock skippedRef pLib depsOk node@(i, boot)
       | not depsOk = do
           modifyIORef' lastOk (M.delete node)
           count (\st -> st{sBlocked = sBlocked st + 1})
           pure Blocked
       | otherwise = do
           let src = render mods node
+          -- p's library, for a module whose splice loads it: a plain input of
+          -- its compile, whose dep file doesn't list it.
+          lib <- if not boot && splicesP (mods M.! i) then (\c -> [("plib/libp.so", Just c)]) <$> pLib else pure []
+          forM_ [c | (_, Just c) <- lib] $ \c -> do
+            seen <- atomicModifyIORef' libSeen (\s -> (M.insert node c s, M.lookup node s))
+            when (maybe False (/= c) seen) $ count (\st -> st{sLibChanged = sLibChanged st + 1})
           previous <- M.lookup node <$> readIORef lastOk
           upToDate <- case previous of
             Just (s, deps) | s == src -> and <$> mapM (\(f, c) -> (== c) <$> contents (wdir </> f)) deps
@@ -489,7 +574,7 @@ workerBuild cfg h b mods lastOk stats = do
                 else do
                   deps <- lines <$> readFile (wdir </> depFile node)
                   cs <- mapM (contents . (wdir </>)) deps
-                  modifyIORef' lastOk (M.insert node (src, zip deps cs))
+                  modifyIORef' lastOk (M.insert node (src, zip deps cs ++ lib))
                   current wdir node
     contents f = (Just <$> B.readFile f) `catchAny` pure Nothing
     current wdir node@(i, _) = do
@@ -516,12 +601,17 @@ refBuild cfg h mods = do
   registerP cfg rdir [i | i <- M.keys mods, inP i]
   forM_ (nodes mods) $ \node -> writeFile (rdir </> source node) (render mods node)
   outcomes <- newIORef M.empty
-  forM_ (concat (fst (layers (nodeDeps mods) (nodes mods)))) $ \node@(i, _) -> do
+  linked <- newIORef False
+  forM_ (concat (fst (layers (nodeDeps mods) (nodes mods)))) $ \node@(i, boot) -> do
     done <- readIORef outcomes
     outcome <-
       if any (\d -> not (maybe False isCompiled (M.lookup d done))) (nodeDeps mods node)
         then pure Blocked
         else do
+          already <- readIORef linked
+          when (not boot && splicesP (mods M.! i) && not already) $ do
+            _ <- linkP cfg rdir [k | k <- M.keys mods, inP k]
+            writeIORef linked True
           let flags = commonFlags h ++ nodeFlags mods node ++ ["-fobject-determinism" | cObjects cfg]
           (code, _, err) <- readCreateProcessWithExitCode (proc (cGhc cfg) (["-c", source node, "-odir", outDir i, "-hidir", outDir i] ++ flags)){cwd = Just rdir} ""
           case code of
@@ -658,6 +748,10 @@ historyProp cfg tests =
     cover' 10 "a splice" (any (isJust . mSplice . snd) (hModules h))
     unless (cOneShot cfg) $ classify "a splice in a module with a boot file" (any (\m -> mBoot m && isJust (mSplice m)) ms)
     cover' 10 "an import from p" (any (any inP . mImports) ms)
+    (if pSplices then cover' 10 else classify) "a splice that runs p's code, from p's library" (any splicesP ms)
+    -- Too rare (about one history in eight) for a minimum that 30
+    -- histories reliably meet.
+    classify "p's library changed under a module whose splice loads it" (sLibChanged st > 0)
     cover' 10 "a module of p with the name of one of the main package" (any (\i -> i >= pkgClash && i - pkgClash < M.size (M.filterWithKey (\k _ -> not (inP k)) mods)) (M.keys mods))
     cover' 10 "a value used through a re-export" (any (any (\j -> any (`elem` mImports (mods M.! j)) (mReexports (mods M.! j))) . mImports) ms)
     cover' 45 "sessions dropped as soon as idle" (any bEagerDrop (hBuilds h))
