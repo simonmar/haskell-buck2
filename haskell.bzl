@@ -60,6 +60,9 @@ _BUILD_MODE_LINK_STYLE = select({
     }),
 })
 
+# Compiler flags are passed in this order: mode flags, target-specific flags
+# The principle is that more specific flags should be able to override less
+# specific, so the build-wide flags come first.
 _BUILD_MODE_HASKELL_FLAGS = select({
     "root//buck2/constraints:opt": ["-O"],
     "DEFAULT": [],
@@ -174,7 +177,7 @@ def haskell_library(
     native.haskell_library(
         name = name,
         srcs = _resolve_srcs(name, srcs, boot_srcs, all_deps + internal_deps, hsc_flags + _cabal_macros_hsc_flags(cabal_component), hsc_cxx),
-        compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS + _cabal_macros_include_flags(cabal_component),
+        compiler_flags = _BUILD_MODE_HASKELL_FLAGS + compiler_flags + _cabal_macros_include_flags(cabal_component),
         deps = all_deps,
         internal_deps = internal_deps,
         **kwargs
@@ -198,7 +201,7 @@ def haskell_binary(
     native.haskell_binary(
         name = name,
         srcs = _resolve_srcs(name, srcs, boot_srcs, all_deps, hsc_flags + _cabal_macros_hsc_flags(cabal_component), hsc_cxx),
-        compiler_flags = compiler_flags + _BUILD_MODE_HASKELL_FLAGS + _ASAN_LINKER_FLAGS + _cabal_macros_include_flags(cabal_component),
+        compiler_flags = _BUILD_MODE_HASKELL_FLAGS + compiler_flags + _ASAN_LINKER_FLAGS + _cabal_macros_include_flags(cabal_component),
         deps = all_deps,
         linker_flags = _ASAN_LINKER_FLAGS + linker_flags,
         **kwargs
