@@ -57,6 +57,16 @@ CompileResultInfo = record(
     # These are only set when the target is compiled per-module:
     modules = field(dict[str, HaskellModuleFiles] | None, None),
     closures = field(typing.Any, None),
+    # For each module and node name, the dynamic object that GHC's internal
+    # interpreter loads when a splice runs that module's code. This is the
+    # module's object in a shared compile, or its .dyn_o with -dynamic-too.
+    # These objects are also in `objects`, but separating them out lets a
+    # compile action that only needs some of them depend on just those.
+    #
+    # Only per_module produces this field. A --make compile is one action that
+    # may need any of the objects, so it depends on the whole `objects`
+    # directory instead.
+    dynamic_objects = field(dict[str, Artifact] | None, None),
     # The results of the advice checks, by the names of their validations
     # (see Note [Advice] in compile_per_module.bzl).
     advice = field(dict[str, Artifact] | None, None),
@@ -458,6 +468,25 @@ def in_env(env, cmd: cmd_args) -> cmd_args:
 def has_modules(ctx: AnalysisContext) -> bool:
     return any([is_haskell_src(src) for _, src in srcs_to_pairs(ctx.attrs.srcs)])
 
+# Which objects GHC loads when a splice runs code from the target's own
+# modules. GHC decides this, and the compile has to put those objects where
+# GHC will look for them:
+#
+# - "own": the objects the compile makes itself. An external interpreter
+#   loads these, because it runs in the same way as the compile, and so
+#   does a GHC that isn't dynamically linked.
+# - "dynamic": a dynamically linked GHC's internal interpreter loads
+#   dynamic objects. A shared compile makes these anyway, and a static one
+#   makes them with -dynamic-too.
+# - "from_non_profiled": like "dynamic", but a profiled compile doesn't
+#   make dynamic objects, so it uses the ones from the non-profiled compile.
+def splice_objects_kind(ctx: AnalysisContext, enable_profiling: bool) -> str:
+    haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
+    flags = (haskell_toolchain.compiler_flags or []) + ctx.attrs.compiler_flags
+    if "-fexternal-interpreter" in flags or not haskell_toolchain.dynamic_ghc:
+        return "own"
+    return "from_non_profiled" if enable_profiling else "dynamic"
+
 # A tree of the shared libraries in `sets`, named by soname, or None if there
 # are none. Each library appears once, however many of the sets have it. A
 # splice finds them from `LD_LIBRARY_PATH`.
@@ -469,13 +498,13 @@ def native_libs_tree(ctx: AnalysisContext, name: str, sets: list[SharedLibraryIn
 
 # Compile all the context's sources with `ghc --make`.
 #
-# `dynamic_from`, for a profiled compile, is the non-profiled compile of the
-# same sources whose .dyn_o objects GHC's (dynamic, unprofiled) internal
-# interpreter loads for a Template Haskell splice that uses a module of this
-# same library. GHC looks for those in this compile's own -odir (it swaps the
-# p_o extension of the module's object for dyn_o), which is where they'd be if
-# both compiles shared a build directory, as they do in Cabal; here the two
-# compiles have -odirs of their own, so the objects are copied in first.
+# For a profiled compile, `dynamic_from` is the non-profiled compile of the
+# same sources. When a splice runs code from this library's own modules,
+# GHC's internal interpreter may want a module's .dyn_o (see
+# splice_objects_kind), and it looks for it next to the profiled object, in
+# this compile's -odir. With Cabal both compiles share a build directory, so
+# it's there. Here each compile has its own -odir, so we copy the .dyn_o
+# files in first.
 def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, native_libs: SharedLibraryInfo = EMPTY_SHARED_LIBRARY_INFO, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None) -> CompileResultInfo:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     compile_cmd = cmd_args(haskell_toolchain.compiler)
@@ -521,7 +550,7 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
     env = ghc_env(ctx, artifact_suffix + "-build-tool-depends")
     steps = "set -eu; " + _MAKE_STUBDIR
     step_args = [args.result.stubs.as_output()]
-    if dynamic_from != None:
+    if dynamic_from != None and splice_objects_kind(ctx, enable_profiling) == "from_non_profiled":
         steps += _COPY_DYN_OBJECTS
         step_args += [args.result.objects.as_output(), dynamic_from.objects]
 

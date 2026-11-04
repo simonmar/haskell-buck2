@@ -35,6 +35,8 @@ linking it, which is enough to see its type errors.
 A Template Haskell splice, quasiquote or `ANN` pragma needs the linked libraries
 of dependencies that it uses. A target must list the local dependencies that it uses 
 in this way in `splice_depends`. The default, an empty list, means that they use none. 
+A splice that runs code of the target's own modules also uses the libraries that
+those modules use, so they must be listed too.
 
 # Per-module compilation (experimental)
 
@@ -58,9 +60,6 @@ persistent worker doesn't always catch it. See "Known issues" in
 
 On GHC 9.14, a module that uses `ExplicitLevelImports` narrows its target's
 list further, to the dependencies that its `import splice`s come through.
-
-A splice can't run code of its own target's modules. Such a target fails to
-compile, saying so, and has to be built with `per_module = False`.
 
 `per_module` is often much faster at rebuilds:
 

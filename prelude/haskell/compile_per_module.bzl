@@ -15,8 +15,10 @@ load(
     "has_modules",
     "in_env",
     "native_libs_tree",
+    "paths_data_dirs",
     "splice_dep_infos",
     "splice_libraries",
+    "splice_objects_kind",
     "tools_env",
 )
 load("@prelude//linking:shared_libraries.bzl", "EMPTY_SHARED_LIBRARY_INFO", "SharedLibraryInfo")
@@ -292,13 +294,37 @@ def _declare_module_outputs(ctx: AnalysisContext, out_dir: str, nodes: list, osu
         dyn_hi = {n: declare(n, "dyn_hi") for n, _ in nodes} if dynamic_too else {},
     )
 
+# For each node, the object that a splice loads to run that module's code
+# (see Note [Template Haskell modules], section 6).
+#
+# GHC looks for a dynamic object as <module>.dyn_o in the output directory,
+# so a profiled compile links the non-profiled compile's (`dynamic_from`)
+# there, as compile() copies them for --make.
+def _splice_objects(ctx: AnalysisContext, out_dir: str, nodes: list, o_of: dict, dynamic_objects: dict, enable_profiling: bool, dynamic_from: [CompileResultInfo, None]) -> dict:
+    kind = splice_objects_kind(ctx, enable_profiling)
+    if kind == "own":
+        return o_of
+    if kind == "dynamic":
+        return dynamic_objects
+    if dynamic_from == None or dynamic_from.dynamic_objects == None:
+        # A binary, or a library that isn't also linked shared, has no
+        # non-profiled dynamic objects to use.
+        return {}
+    links = {}
+    for n, _ in nodes:
+        if n in dynamic_from.dynamic_objects:
+            link = ctx.actions.declare_output(out_dir + "/" + _node_file(n, "dyn_o"), has_content_based_path = False)
+            ctx.actions.symlink_file(link, dynamic_from.dynamic_objects[n])
+            links[n] = link
+    return links
+
 # The version of the request that each compile action sends, and of the
 # files that the worker writes back. The worker and the compile tool refuse a
 # request of any other version, so that a worker built from another version
 # of the rules reports the mismatch rather than misreading the request. When
 # either the request or the worker's outputs change, bump this and the
 # version in tools/ghc-api/Contract.hs.
-_WORKER_CONTRACT = "3"
+_WORKER_CONTRACT = "4"
 
 # The dynamic output of a per-module compile. It runs once the deps tool has
 # written the module graph. It registers a compile action for each node,
@@ -323,6 +349,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     hi_of = s.hi_of
     abi_of = s.abi_of
     dyn_o_of = s.dyn_o_of
+    splice_objects = s.splice_objects
     dyn_hi_of = s.dyn_hi_of
     objects = s.objects
     hi = s.hi
@@ -394,11 +421,8 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     def splice_packages(n):
         if n not in splice_imports:
             return target_splice_packages
-        libs = {}
-        for lib, m in splice_imports[n]:
-            if lib == s.this_pkg:
-                fail("{}: {} imports {} at the splice level, but with per_module a splice can't run code of its own target (see Note [Template Haskell modules]): build the target with per_module = False".format(s.label, _module_of(n), m))
-            libs[lib] = m
+        libs = {lib: m for lib, m in splice_imports[n] if lib != s.this_pkg}
+        imports_own = len([lib for lib, _ in splice_imports[n] if lib == s.this_pkg]) > 0
         # An import of a module that several dependencies re-export, or that
         # its own package exposes as well, comes through each of them, and
         # any one would do. But each of them has to be covered here. That is
@@ -408,8 +432,9 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
                 fail("{}: {}'s splice import of {} runs code from {}, but splice_depends doesn't list it".format(s.label, _module_of(n), m, lib))
         # A dependency that isn't listed, but that a listed one's closure
         # brings in, has no closure of its own here. A module that imports
-        # from one gets the target's whole set.
-        if [l for l in libs if l not in splice_infos.listed and l not in prebuilt]:
+        # from one gets the target's whole set, as does a module that imports
+        # one of the target's own modules.
+        if [l for l in libs if l not in splice_infos.listed and l not in prebuilt] or imports_own:
             return target_splice_packages
         names = sorted([l for l in libs if l in splice_infos.listed])
         key = " ".join(names)
@@ -439,6 +464,9 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             closure_files += [hi_of[d], abi_of[d]]
             if dynamic_too:
                 closure_files.append(dyn_hi_of[d])
+            if runs_th[n] and d in splice_objects:
+                # The objects a splice may load (see _splice_objects).
+                closure_files.append(splice_objects[d])
         mod_packages = splice_packages(n) if runs_th[n] else early_packages
         # The build tools that the module may run, which are the only ones
         # its compile has on PATH, and so the only ones it depends on. GHC
@@ -449,7 +477,8 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         # tools on PATH (see Note [The persistent worker]).
         module_tools = list(tools) if runs_th[n] else [p for p in program_nodes[n] if p in tools]
         # See Note [Data files of splices].
-        module_data_dirs = (data_dirs if module_tools else mod_packages.data_dirs) if runs_th[n] else {}
+        own_modules = [_module_of(d) for d in closure[n] if not _is_boot(d)]
+        module_data_dirs = (data_dirs if module_tools else mod_packages.data_dirs | paths_data_dirs(own_modules, data_dirs)) if runs_th[n] else {}
         hidirs = mod_packages.local_import_dirs + [(name, d) for name, d in module_lib_dirs.items() if name in mod_packages.early_names]
 
         # The flags specific to this module: its source and output files.
@@ -495,6 +524,9 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             "--hisuf",
             hisuf,
             "--boot" if _is_boot(n) else [],
+            # The modules in the closure (not just boot files), whose objects
+            # a splice may load (see Note [Template Haskell modules]).
+            ["--loadable=" + d for d in closure[n] if not _is_boot(d)] if runs_th[n] else [],
             # Where each dependency's interfaces are, so that the tool can
             # turn the usages GHC records into dep file entries. These are
             # paths only, not inputs. The interfaces themselves are inputs
@@ -672,12 +704,12 @@ def compiles_per_module(ctx: AnalysisContext) -> bool:
 
 # Compile the target's sources with one action per module (see Note
 # [Per-module compilation]). It takes the same arguments as compile(), so
-# that the two are interchangeable, but ignores native_libs and
-# dynamic_from. Both are only needed for splices that run code of their own
-# target, which per-module compilation doesn't support (see Note [Template
-# Haskell modules]). A module whose splices run a dependency's code gets a
-# tree of the native libraries of just the libraries it may load, as
-# section 4 of that Note describes.
+# that the two are interchangeable, but ignores native_libs. A splice finds
+# the native libraries of the libraries it can run through a tree of their
+# own (see Note [Template Haskell modules], section 4). A splice can't call
+# the target's own native libraries, as with --make. A profiled compile gets
+# the dynamic objects its splices load from dynamic_from (see
+# _splice_objects).
 def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, native_libs: SharedLibraryInfo = EMPTY_SHARED_LIBRARY_INFO, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None) -> CompileResultInfo:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     suffix = get_artifact_suffix(link_style, enable_profiling)
@@ -780,6 +812,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     abi_of = module_outputs.abi
     dyn_o_of = module_outputs.dyn_o
     dyn_hi_of = module_outputs.dyn_hi
+    dynamic_objects = o_of if link_style == LinkStyle("shared") else dyn_o_of
+    splice_objects = _splice_objects(ctx, out_dir, nodes, o_of, dynamic_objects, enable_profiling, dynamic_from)
     objects = ctx.actions.declare_output("objects-" + suffix, dir = True, has_content_based_path = False)
     hi = ctx.actions.declare_output("hi-" + suffix, dir = True, has_content_based_path = False)
     stubs = ctx.actions.declare_output("stubs-" + suffix, dir = True, has_content_based_path = False)
@@ -867,6 +901,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             hi_of = hi_of,
             abi_of = abi_of,
             dyn_o_of = dyn_o_of,
+            splice_objects = splice_objects,
             dyn_hi_of = dyn_hi_of,
             objects = objects,
             hi = hi,
@@ -892,7 +927,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
         artifacts = all_outputs,
         outputs = [a.as_output() for a in all_outputs],
     ))
-    return CompileResultInfo(objects = objects, hi = hi, stubs = stubs, producing_indices = producing_indices, modules = modules, closures = closures, advice = advice)
+    return CompileResultInfo(objects = objects, hi = hi, stubs = stubs, producing_indices = producing_indices, modules = modules, closures = closures, advice = advice, dynamic_objects = dynamic_objects)
 
 # Note [Advice]
 #
@@ -946,7 +981,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #   registers the nodes' actions.
 # - Closure: everything a module imports, directly or indirectly, from the
 #   targets compiled per-module. A compile needs the interfaces of its whole
-#   closure, since GHC reads them for instances and type families.
+#   closure, since GHC reads them for instances and type families. A
+#   Template Haskell module also needs the objects of its closure.
 #   Dependencies that are prebuilt or built with `ghc --make` aren't part of
 #   closures: a compile gets their modules whole, through their normal
 #   package dbs.
@@ -1049,7 +1085,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # 2. The solution
 #
 # buck2 decides this for each action, from a dep file. Every file a module's
-# compile might read from other compiles, the interfaces, is a tagged input.
+# compile might read from other compiles is a tagged input: the interfaces,
+# and for a Template Haskell module the objects of the target's own modules.
 # (Its own source is an ordinary input, so editing it always compiles it
 # again.) After the compile, the action lists the tagged inputs it actually
 # read. On the next build, buck2 runs the action again only if one of those
@@ -1062,9 +1099,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #   interface's ABI hash. Each action writes one next to its interface, from
 #   the interface itself (DepFile in tools/ghc-api, which the compile tool
 #   and the persistent worker share).
-# - Each file a Template Haskell splice read, which GHC records as a
-#   dependent file (addDependentFile). (The libraries the splices loaded are
-#   plain inputs instead: see Note [Template Haskell modules].)
+# - The objects of the target's own modules that a splice loaded, which GHC
+#   records as dependent files. (The dependencies' libraries are plain
+#   inputs instead, as Note [Template Haskell modules] explains.)
 #
 # 3. buck2 decides, not GHC
 #
@@ -1222,18 +1259,56 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # as well. The package dbs would have to name those libraries for the
 # interpreter.
 #
-# 6. Code of the target's own modules
+# 6. Splices that run the target's own modules
 #
-# A splice can't run code of the target's own modules. GHC would load their
-# objects from the output directory, so they would have to be inputs of the
-# compile, along with the modules behind any boot files among them. A
-# target whose splices need that can't be built with per_module.
-# The compile fails if a splice loaded one of the target's objects (see
-# DepFile in tools/ghc-api), and the analysis fails if a module imports one
-# of the target's modules at the splice level (see Note [Explicit level
-# imports]).
+# A splice can run code of the target's own modules, as with --make. GHC
+# loads their objects from the output directory, so a Template Haskell
+# module's compile action has to have the objects of its module closure as tagged
+# inputs. Its dep file lists the ones that were actually loaded by a splice
+# (see Note [Early cut-off by dep files]).
 #
-# 7. Finding the Template Haskell modules
+# GHC also loads the libraries that those modules use, even when the splice
+# only reads a value from one of them, because it links whole modules and
+# their imports. So splice_depends has to list those libraries too, as it
+# does with --make.
+#
+# Which objects are actually needed depends on the interpreter, as with --make (see
+# _splice_objects). GHC's internal interpreter, in a dynamically linked GHC,
+# loads dynamic objects: a shared compile's own objects, or the .dyn_o files
+# of a static compile with -dynamic-too. A profiled compile has none of these, so
+# the interpreter instead takes the objects from the non-profiled compile,
+# as compile() does for --make. With -fexternal-interpreter, the interpreter is
+# built the same way as the compile, so it loads the compile's own objects.
+#
+# A static compilation makes dynamic objects only with -dynamic-too. The rules
+# set this for a library that is also linked shared. So with GHC's internal
+# interpreter, such a splice fails in a static compile of a library that is
+# _only_ linked statically, or of a binary (in the opt mode, say). Such a
+# splice similarly fails in a profiled compilation, since the non-profiled
+# compile it would take dynamic objects from doesn't produce any. --make gets
+# around this by having GHC add -dynamic-too for the modules that are needed by
+# splices. We could do this for per-module compilations, but we don't yet.
+#
+# A splice can't call the target's own native libraries. That isn't supported
+# with --make either.
+#
+# 7. Modules behind boot files
+#
+# Say the Template Haskell module T imports A, and A imports B with
+# {-# SOURCE #-}. T's closure has A and B's boot file, but not B itself,
+# which may not be compiled yet. If a splice in T runs A's code, it may
+# reach B's code, and then GHC has to link B. B's object isn't an input of
+# T's compile, so a splice can't run code of a module that T reaches only
+# through boot files. GHC _may_ still find B's object in the output
+# directory, left by an earlier build, but we don't even want that to happen.
+#
+# At the moment we don't support this kind of thing with per_module.
+#
+# In the persistent worker, such a splice can fail even when T also imports
+# B normally. T's session sees B the way T's imports record it, and if one
+# of them records only B's boot interface, GHC's linker won't load B.
+#
+# 8. Finding the Template Haskell modules
 #
 # Which modules run Template Haskell has to be decided before anything is
 # compiled. The deps tool asks GHC which extensions each module has, from its
@@ -1294,8 +1369,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # - A module of a dependency needs that dependency's library, and the
 #   libraries of its own dependencies (see Note [Libraries of the early
 #   package dbs]).
-# - A module of the target itself is an error, since splices can't run code
-#   of their own target (see Note [Template Haskell modules]).
+# - A module of the target itself might use any of the target's splice
+#   dependencies, so the module gets the target's whole set (see Note
+#   [Template Haskell modules], section 6).
 #
 # The splice imports refine the target's splice_depends, as a module's
 # imports refine its target's dependencies. The module compiles against the
@@ -1425,13 +1501,14 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # A module that needs any of them can't compile in the worker (see below),
 # and in a large project nearly every target has some. So rather than set
 # them all, we only give a Template Haskell module the ones it could need.
-# A splice can only run code from the libraries in its splice set, and code
-# can only read its own package's data files, through that package's
-# Paths_<pkg> module. So the module only needs <pkg>_datadir if one of
-# those libraries has a Paths_<pkg> module (see own_data_dirs in
-# compile.bzl). Most Template Haskell modules need none. A --make compile
-# works its variables out the same way, for the whole target (see
-# splice_data_dirs).
+# A splice can only run code from the libraries in its splice set and the
+# target's own modules in its closure, and code can only read its own
+# package's data files, through that package's Paths_<pkg> module. So the
+# module only needs <pkg>_datadir if one of those libraries has a
+# Paths_<pkg> module, or its closure has the target's own (see
+# own_data_dirs in compile.bzl). Most Template Haskell modules need none. A
+# --make compile works its variables out the same way, for the whole target
+# (see splice_data_dirs).
 #
 # Build tools are the exception. A tool might read data files of its own,
 # so a module that might run one of the target's build tools, or a --make
