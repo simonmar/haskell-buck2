@@ -56,8 +56,9 @@ a local library that isn't listed fails to compile, saying so. (The
 persistent worker doesn't always catch it. See "Known issues" in
 `prelude/haskell/tools/worker/README.md`.)
 
-A splice can't run code of its own target's modules. Such a target fails to
-compile, saying so, and has to be built with `per_module = False`.
+A splice can't run code of a module of its own target that its module
+reaches only through an hs-boot file. Such a target fails to compile,
+saying so, and has to be built with `per_module = False`.
 
 `per_module` is often much faster at rebuilds:
 

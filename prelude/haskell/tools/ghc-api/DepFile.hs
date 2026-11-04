@@ -6,7 +6,7 @@ import Control.Monad (filterM, forM, unless)
 import Data.List (isPrefixOf)
 import qualified Data.Set as Set
 import System.Directory (canonicalizePath, doesFileExist, getCurrentDirectory)
-import System.FilePath (makeRelative, takeFileName, (<.>), (</>))
+import System.FilePath (dropExtension, makeRelative, takeDirectory, takeFileName, (<.>), (</>))
 
 import GHC (moduleName, moduleNameString, moduleUnit)
 import GHC.Unit.Module.Deps (Usage (..), dep_direct_mods)
@@ -25,29 +25,34 @@ import Request
 -- files] in compile_per_module.bzl.
 writeDepFiles :: Request -> ModIface -> IO ()
 writeDepFiles r iface = do
-  -- A splice can't run code of the target's own modules (see Note [Template
-  -- Haskell modules] in compile_per_module.bzl). But GHC can still find
-  -- those modules, either in the worker's session or as objects in the
-  -- output directory, so we fail the compile if a splice loaded one.
-  outDir <- canonicalizePath (reqOutDir r)
-  -- Without usages, the dep file would say the module read nothing, and it
-  -- would never compile again.
-  us <- maybe (throwGhcExceptionIO (ProgramError (modName ++ ": its interface records no usages, so its dep file can't say what it read: don't compile it with -fno-write-if-self-recomp"))) pure (usages iface)
-  own <- fmap concat . forM us $ \u -> case u of
-    _ | Just m <- usageLoadedModule u -> pure [moduleNameString m]
-    _ | Just path <- usageFile u -> do
-      ok <- doesFileExist path
-      c <- if ok then canonicalizePath path else pure path
-      pure [takeFileName path | (outDir ++ "/") `isPrefixOf` c]
-    _ -> pure []
-  unless (null own) $
-    throwGhcExceptionIO (ProgramError (modName ++ ": a splice ran code of this target's own modules (" ++ unwords own ++ "), which per_module doesn't support: build the target with per_module = False"))
   writeFile (reqAbi r) (show (abiHash iface :: Fingerprint) ++ "\n")
   cwd <- getCurrentDirectory
   -- A module that is only imported {-# SOURCE #-} is listed as its boot
   -- file's .abi-boot.
   let direct = [(gwib_mod d, gwib_isBoot d) | (_, d) <- map directDep (Set.toList (dep_direct_mods (mi_deps iface)))]
       ext m = if (m, IsBoot) `elem` direct && (m, NotBoot) `notElem` direct then "abi-boot" else "abi"
+  -- Without usages, the dep file would say the module read nothing, and it
+  -- would never compile again.
+  us <- maybe (throwGhcExceptionIO (ProgramError (modName ++ ": its interface records no usages, so its dep file can't say what it read: don't compile it with -fno-write-if-self-recomp"))) pure (usages iface)
+  -- A splice can't run code of a module that this module reaches only
+  -- through boot files, since only the objects of the modules in the
+  -- module's closure are inputs of the compile (see Note [Template Haskell
+  -- modules] in compile_per_module.bzl). GHC may still have found another
+  -- module's object in the output directory, so we fail the compile if a
+  -- splice loaded one.
+  outDir <- canonicalizePath (reqOutDir r)
+  loaded <- fmap concat . forM us $ \u -> case usageFile u of
+    Just path -> do
+      ok <- doesFileExist path
+      -- Only the directory is canonicalized. A profiled compile's .dyn_o
+      -- files are links to the non-profiled compile's objects, so following
+      -- the link would take the path out of the output directory.
+      c <- if ok then (</> takeFileName path) <$> canonicalizePath (takeDirectory path) else pure path
+      pure [map (\ch -> if ch == '/' then '.' else ch) (dropExtension (makeRelative outDir c)) | (outDir ++ "/") `isPrefixOf` c]
+    Nothing -> pure []
+  let reached = [m | m <- loaded, m `notElem` reqClosure r]
+  unless (null reached) $
+    throwGhcExceptionIO (ProgramError (modName ++ ": a splice ran code of " ++ unwords reached ++ ", which " ++ modName ++ " reaches only through hs-boot files, and per_module doesn't support that: build the target with per_module = False"))
   entries <- fmap concat . forM us $ \u -> case u of
     UsageHomeModule{usg_mod_name = m} -> existing [reqOutDir r </> modFile m <.> ext m]
     _ | Just m <- usageLoadedModule u -> existing [reqOutDir r </> modFile m <.> "abi"]

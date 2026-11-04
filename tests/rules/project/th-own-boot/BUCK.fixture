@@ -1,0 +1,31 @@
+load("//buck2:haskell.bzl", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
+
+# OB.A imports OB.B {-# SOURCE #-}, and the splices of OB.T and OB.U run
+# OB.A's code, which runs OB.B's. In boot-only, OB.T reaches OB.B only through
+# its boot file, which per_module doesn't support. In both, OB.U also
+# imports OB.C, which imports OB.B whole, so OB.B is in OB.U's closure.
+haskell_library(
+    name = "boot-only",
+    srcs = {
+        "OB.A": "OB/A.hs",
+        "OB.B": "OB/B.hs",
+        "OB.T": "OB/T.hs",
+    },
+    boot_srcs = {"OB.B": "OB/B.hs-boot"},
+    packages = ["base", "template-haskell"],
+    per_module = PER_MODULE,
+)
+
+haskell_library(
+    name = "both",
+    srcs = {
+        "OB.A": "OB/A.hs",
+        "OB.B": "OB/B.hs",
+        "OB.C": "OB/C.hs",
+        "OB.U": "OB/U.hs",
+    },
+    boot_srcs = {"OB.B": "OB/B.hs-boot"},
+    packages = ["base", "template-haskell"],
+    per_module = PER_MODULE,
+)

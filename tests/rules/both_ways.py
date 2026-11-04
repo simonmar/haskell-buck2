@@ -24,6 +24,7 @@ from harness import (
     module_of,
     replace,
     short,
+    tail,
     what_ran,
     what_ran_entries,
 )
@@ -39,25 +40,34 @@ def check_make_build(st):
                 "ffi-import", "boot-cycle", "main", "reexport", "reexport-user", "flat-sources", "make-lib", "m", "p:Chain.P", "t:Chain.T"})
 
 
-# How the checks of splices that run their own target's code compile their
-# fixtures. Those splices fail to compile per-module (see
-# check_local_splices), so they are checked with --make alone.
-OWN_SPLICE_COMPILES = ["make"]
-
-
 def check_local_splices(st):
     """A splice that runs code of another local library (C.Splice's runs
-    TH.Gen's, MK.Run's runs make-lib's Q.Lib) compiles either way. One that
-    runs code of its own target (P.Use's runs P.Gen's) fails to compile
-    per-module, which doesn't support that. With --make, it compiles, and //th-internal-splice:use prints
-    the value that P.Gen's splice made, in prof mode too."""
-    build(*[configured(t, c) for t in ["//th-local-splice:th-local-splice", "//th-make-dep:mkrun"] for c in COMPILES])
-    p = build("//th-internal-splice:th-internal-splice", keep_going=True)
-    expect("//th-internal-splice:th-internal-splice fails to build", p.returncode != 0)
-    expect_set("the modules whose compiles failed", failed_compiles(p.stderr), {"th-internal-splice:P.Use"})
+    TH.Gen's, MK.Run's runs make-lib's Q.Lib) or of its own target (P.Use's
+    runs P.Gen's) compiles either way, and //th-internal-splice:use prints
+    the value that P.Gen's splice made. With --make, it does so in prof mode
+    too. check_local_splices_in_modes checks the other modes per-module."""
+    build(*[configured(t, c) for t in ["//th-local-splice:th-local-splice", "//th-make-dep:mkrun", "//th-internal-splice:th-internal-splice"] for c in COMPILES])
+    for c, mode in [("per-module", None), ("make", None), ("make", "prof")]:
+        expect_output(configured("//th-internal-splice:use", c, mode), "compiled {}, in {} mode".format(c, mode or "dev"), "42")
 
-    for mode in [None, "prof"]:
-        expect_output(configured("//th-internal-splice:use", "make", mode), "with --make, in {} mode".format(mode or "dev"), "42")
+
+def check_own_boot_splices(st):
+    """Splices that run code of a module of their own target behind an
+    hs-boot file. OB.A imports OB.B {-# SOURCE #-}, and the splices run
+    OB.A's code, which runs OB.B's. Compiled per-module, OB.T, which reaches
+    OB.B only through the boot file, fails to compile. Outside the worker,
+    the dep file check fails it (see DepFile in tools/ghc-api). In the
+    worker, GHC's linker refuses OB.B, or with GHC 9.14 panics. With --make,
+    OB.T compiles. OB.U, which also imports OB.B whole through OB.C,
+    compiles either way, except in the persistent worker, whose session has
+    OB.B only as its boot interface, so that it may fail too."""
+    p = build(configured("//th-own-boot:boot-only", "per-module"), keep_going=True)
+    expect_set("the modules whose compiles failed", failed_compiles(p.stderr), {"boot-only:OB.T"})
+    build(configured("//th-own-boot:boot-only", "make"))
+    build(configured("//th-own-boot:both", "make"))
+    p = build(configured("//th-own-boot:both", "per-module"), keep_going=True)
+    if not st.worker:
+        expect("//th-own-boot:both builds per-module (got:\n{})".format(tail(p.stderr, 15)), p.returncode == 0)
 
 
 def check_rts_flags(st):
@@ -206,8 +216,9 @@ def check_native_soname_for_splices(st):
 def check_own_native_libraries_for_splices(st):
     """Splices find the native libraries of their own targets: A.S's and
     B.S's splices run their targets' own modules, which call their targets'
-    own C libraries."""
-    for c in OWN_SPLICE_COMPILES:
+    own C libraries. This check runs with --make alone, and
+    check_own_native_libraries_per_module checks it per-module."""
+    for c in ["make"]:
         expect_output(configured("//th-own-native:show", c), "compiled {}".format(c), "(9,11)")
 
 
@@ -297,5 +308,5 @@ def check_configurations(st):
 def check_th_boot_cycles(st):
     """Tie.I and Tie.K run Template Haskell, and each one's boot file is
     below the other: the target builds."""
-    for c in OWN_SPLICE_COMPILES:
+    for c in COMPILES:
         build(configured("//th-boot-cycles:th-boot-cycles", c))

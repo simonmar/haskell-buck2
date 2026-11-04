@@ -481,26 +481,6 @@ def bump_literal(path, by):
     replace(path, "integerL {}".format(n), "integerL {}".format(n + by))
 
 
-def check_th_body_change_recompiles(st):
-    """A change to the body of TH.Gen's gen, which leaves gen's type and so
-    TH.Gen's ABI the same, recompiles the modules of th-local-splice whose
-    compiles load th-gen's library. Those are C.Splice, whose splice runs
-    gen, and C.Ann, whose ANN pragma also runs GHC's interpreter, but not
-    C.Plain. GHC records no use of the library in their interfaces, so their
-    dep files can't pick up the change. The library is a plain input of
-    their compiles instead. After the change, //th-local-splice:show prints
-    the new value."""
-    def check():
-        shown = int(buck2("run", "//th-local-splice:show").stdout.strip())
-        bump_literal("th-gen/TH/Gen.hs", 1)
-        ran = rebuild(st)
-        expect("TH.Gen recompiled after its edit (ran: {})".format(sorted(ran)), "th-gen:TH.Gen" in ran)
-        expect_output("//th-local-splice:show", "after the edit to TH.Gen", str(shown + 1))
-        expect_set("modules of th-local-splice compiled after a body-only edit to TH.Gen",
-                   {m for m in ran if m.startswith("th-local-splice:")}, {"th-local-splice:C.Splice", "th-local-splice:C.Ann"})
-    restoring("th-gen/TH/Gen.hs", check)
-
-
 @known_failure("on macOS, a splice can't load a local library's native dependencies, with --make as well", when=lambda st: sys.platform == "darwin")
 def check_native_library_change_recompiles(st):
     """A change to a native library that splices call compiles the splicing
@@ -522,31 +502,97 @@ def check_native_library_change_recompiles(st):
 
 def check_local_splices_in_modes(st):
     """Splices that run local code run in the other build modes too: opt
-    (static, with -dynamic-too) and prof. Their compiles run splices in GHC's
-    static and profiled interpreters, which find libraries in different
-    places from the dynamic interpreter.
+    (static, with -dynamic-too) and prof.
+
+    In each mode, these binaries print the same values as in dev mode:
 
     - //th-local-splice:show prints the value of C.Splice's splice, which
-      runs th-gen's TH.Gen, as in dev mode.
-    - After a change to the body of TH.Gen, C.Splice and C.Ann compile again
-      in each mode, and //th-local-splice:show prints the new value.
+      runs th-gen's TH.Gen.
+    - //th-internal-splice:use prints the value of P.Use's, which runs P.Gen
+      of the same library. GHC's internal interpreter loads P.Gen's dynamic
+      object (P.Gen.dyn_o), which in prof mode is the non-profiled
+      compile's; an external interpreter loads P.Gen's object for the
+      compile's way.
+    - //th-internal-splice:own prints the value of its own Main's splice,
+      which runs P.Gen of the same binary.
+
+    After a change to the bodies of TH.Gen and P.Gen, which leaves their ABIs
+    the same, the modules whose splices run them compile again in every mode,
+    including dev mode, and the binaries print the new values. In
+    th-local-splice, those modules are C.Splice, whose splice runs TH.Gen,
+    and C.Ann, whose ANN pragma also runs GHC's interpreter, but not C.Plain.
+    GHC records no use of the library that a splice ran in the module's
+    interface, so the dep files can't pick up the change. The libraries are
+    plain inputs of those compiles instead.
 
     check_native_splices_in_modes checks the splices that call native
-    libraries."""
+    libraries, and check_own_splices_static the static compiles that
+    make no dynamic objects."""
+    modes = ["opt", "prof"]
+    # check_own_splices_static checks own in the other modes.
+    internal = ["//th-internal-splice:use", "//th-internal-splice:own"]
+    def targets(mode):
+        return internal if mode == None else internal[:1]
     def check():
         shown = buck2("run", "//th-local-splice:show").stdout.strip()
-        for mode in ["opt", "prof"]:
-            build("//th-local-splice:show", mode=mode)
+        used = {t: buck2("run", t).stdout.strip() for t in internal}
+        for mode in modes:
+            build("//th-local-splice:show", *targets(mode), mode=mode)
             ran = compiled_modules(what_ran())
-            expect("C.Splice compiled per-module in {} mode (ran: {})".format(mode, sorted(ran)), "th-local-splice:C.Splice" in ran)
+            expect("the splicing modules compiled per-module in {} mode (ran: {})".format(mode, sorted(ran)),
+                   {"th-local-splice:C.Splice", "th-internal-splice:P.Use"} <= ran)
+            category = "haskell_compile_module_" + OPT_STATIC_STYLE + ("_prof" if mode == "prof" else "")
+            obj = ("P.Gen.o" if mode == "opt" else "P.Gen.p_o") if st.external_interpreter else "P.Gen.dyn_o"
+            tagged, _ = dep_file("//th-internal-splice:th-internal-splice", category, "P.Use", mode=mode)
+            expect_set("the objects that P.Use's splice loaded in {} mode".format(mode),
+                       {e.split(":", 1)[1] for e in tagged if not e.endswith(".abi")}, {obj})
             expect_output("//th-local-splice:show", "in {} mode".format(mode), shown, mode)
+            for t in targets(mode):
+                expect_output(t, "in {} mode".format(mode), used[t], mode)
         bump_literal("th-gen/TH/Gen.hs", 10)
-        for mode in ["opt", "prof"]:
-            build("//th-local-splice:show", mode=mode)
-            expect_set("modules of th-local-splice compiled in {} mode after a body-only edit to TH.Gen".format(mode),
-                       {m for m in compiled_modules(what_ran()) if m.startswith("th-local-splice:")}, {"th-local-splice:C.Splice", "th-local-splice:C.Ann"})
-            expect_output("//th-local-splice:show", "in {} mode after the edit to TH.Gen".format(mode), str(int(shown) + 10), mode)
-    restoring("th-gen/TH/Gen.hs", check)
+        bump_literal("th-internal-splice/P/Gen.hs", 10)
+        for mode in [None] + modes:
+            when = "in {} mode after the edits".format(mode or "dev")
+            build("//th-local-splice:show", *targets(mode), mode=mode)
+            ran = compiled_modules(what_ran())
+            expect_set("modules of th-local-splice compiled " + when,
+                       {m for m in ran if m.startswith("th-local-splice:")}, {"th-local-splice:C.Splice", "th-local-splice:C.Ann"})
+            expect("the modules that run P.Gen compiled {} (ran: {})".format(when, sorted(ran)),
+                   {"th-internal-splice:P.Use", "own:Main"} <= ran if mode == None else "th-internal-splice:P.Use" in ran)
+            expect_output("//th-local-splice:show", when, str(int(shown) + 10), mode)
+            for t in targets(mode):
+                expect_output(t, when, str(int(used[t]) + 10), mode)
+    restoring("th-internal-splice/P/Gen.hs", lambda: restoring("th-gen/TH/Gen.hs", check))
+
+
+@known_failure("as with --make, a splice can't call its own target's C libraries")
+def check_own_native_libraries_per_module(st):
+    """Splices find the native libraries of their own targets, compiled
+    per-module: A.S's and B.S's splices run their targets' own modules, which
+    call their targets' own C libraries. When the worker builds both targets
+    at once, they compile in one process."""
+    build("//th-own-native:a", "//th-own-native:b")
+    expect_output("//th-own-native:show", "", "(9,11)")
+
+
+@known_failure("GHC's internal interpreter needs dynamic objects, which a static or profiled compile only has for a library that is also linked shared", when=lambda st: not st.external_interpreter)
+def check_own_splices_static(st):
+    """A splice runs code of its own target in a compile that has no
+    dynamic objects. //th-internal-splice:static-main prints the value of
+    P.Use's splice, which runs P.Gen of //th-internal-splice:static, a
+    library that is only linked statically. //th-internal-splice:own, a
+    binary, prints its Main's splice in opt and prof modes as in dev mode.
+    GHC's internal interpreter loads P.Gen's dynamic object. A static
+    compile only makes one (with -dynamic-too) for a library that is also
+    linked shared, and a profiled compile takes the non-profiled compile's,
+    which a binary doesn't make. --make has GHC add -dynamic-too for the
+    modules that splices need, and per-module compiles don't yet. With
+    -fexternal-interpreter, the interpreter loads P.Gen's object for the
+    compile's own way instead."""
+    expect_output("//th-internal-splice:static-main", "", buck2("run", "//th-internal-splice:use").stdout.strip())
+    shown = buck2("run", "//th-internal-splice:own").stdout.strip()
+    for mode in ["opt", "prof"]:
+        expect_output("//th-internal-splice:own", "in {} mode".format(mode), shown, mode)
 
 
 @known_failure("on macOS, a splice can't load a local library's native dependencies, with --make as well; and with -fexternal-interpreter, the static and profiled interpreters don't load them", when=lambda st: sys.platform == "darwin" or st.external_interpreter)

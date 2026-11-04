@@ -56,9 +56,9 @@ the rules (marked with `known_failure` in harness.py, for all runs or only
 for some, such as those with the worker) prints `XFAIL` when it fails, and
 `XPASS` when it passes, which means the bug is fixed and the mark should go.
 The script fails on any `FAIL` or `XPASS`. Some checks are of what
-per_module doesn't support, such as a splice that runs its own target's
-code, or of a mistake in `splice_depends`. They check that the
-compile fails.
+per_module doesn't support, such as a splice that runs code behind an
+hs-boot file of its own target, or of a mistake in `splice_depends`. They
+check that the compile fails.
 
 ## How it works
 
@@ -115,7 +115,11 @@ compile fails.
 | `//toolchain-th:toolchain-th` | a splice without a LANGUAGE pragma, for Template Haskell enabled by the toolchain's flags |
 | `//c-lib:c-lib`, `//ffi-import:ffi-import`, `//th-ffi-splice:th-ffi-splice` | a C library, a library that imports its function, and a splice that calls it; `//th-ffi-splice:show` prints the splice |
 | `//th-native-soname:show` | prints a splice that runs code calling a C library whose soname is `libver.so.1` |
-| `//th-internal-splice:th-internal-splice`, `//th-internal-splice:use` | a splice that runs a module of its own library, which isn't supported: its compile fails. With `--make` it compiles, and `use` prints the value it made |
+| `//th-own-native:a`, `//th-own-native:b`, `//th-own-native:show` | splices that run their own targets' modules, which call their own C libraries; `show` prints them |
+| `//th-internal-splice:th-internal-splice`, `//th-internal-splice:use` | a splice that runs a module of its own library; `use` prints the splice |
+| `//th-internal-splice:static`, `//th-internal-splice:static-main` | the same library linked statically only, and a binary that prints its splice |
+| `//th-internal-splice:own` | a binary whose splice runs a module of its own |
+| `//th-own-boot:boot-only`, `//th-own-boot:both` | splices that run code behind an hs-boot file of their own target: in `boot-only`, the splicing module reaches it only through the boot file, which per_module doesn't support; in `both`, it also imports it whole |
 | `//test-suite:uses-tool`, `//test-suite:reads-data`, `//test-suite:manual` | `haskell_test`s: one that runs its build tool (`//test-suite:tool`), one that reads a data file through `data_dirs`, and one that fails, labelled `manual` |
 | `//test-suite:uses-run-tool`, `//test-suite:runs-tool`, `//test-suite:build-tool-only` | `uses-run-tool` (a test) and `runs-tool` (an executable) have `//test-suite:tool` as a run tool only, and `build-tool-only` has it as a build tool only |
 | `//instances:low`, `//instances:mid`, `//instances:high` | `high`'s module sees orphan instances (a class instance, a type family instance) of `low` only through `mid`, so an edit to one of them must compile it again |
