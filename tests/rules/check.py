@@ -59,19 +59,26 @@ def build(*targets, mode=None, keep_going=False):
 IDENTITY = re.compile(r"^(\S+) \(cfg:[^)]*\) \((\S+)(?: (.+))?\)$")
 
 
-def what_ran():
-    """The actions the last build ran, as (target, category, identifier,
-    command) tuples: target as "th-local-splice:th-local-splice", without the
-    cell. Not those that buck2 found up to date by their dep files (or in a
-    cache), which what-ran lists too."""
+def what_ran_entries():
+    """The entries of `buck2 log what-ran` for the last build, as JSON."""
     out = buck2("log", "what-ran", "--format", "json").stdout
+    return [json.loads(line) for line in out.splitlines() if line.startswith("{")]
+
+
+def what_ran(entries=None):
+    """The actions the last build ran (or those of the given what-ran entries),
+    as (target, category, identifier, command) tuples: target as
+    "th-local-splice:th-local-splice", without the cell.
+
+    Leaves out the actions that buck2 found up to date by their dep files (or
+    in a cache), which what-ran lists too. Also leaves out the start of a
+    persistent worker, which what-ran lists under the first action sent to the
+    worker."""
     actions = []
-    for line in out.splitlines():
-        if not line.startswith("{"):
-            continue
-        entry = json.loads(line)
+    for entry in (what_ran_entries() if entries is None else entries):
         m = IDENTITY.match(entry["identity"])
-        if not m or entry["reproducer"].get("executor", "").endswith("Cache"):
+        executor = entry["reproducer"].get("executor", "")
+        if not m or executor.endswith("Cache") or executor == "WorkerInit":
             continue
         target = m.group(1).split("//", 1)[1].lstrip(":")
         cmd = entry.get("reproducer", {}).get("details", {}).get("command", [])
@@ -139,9 +146,9 @@ def short(path):
 # --- Reading a per-module compile's command line -----------------------------
 
 def parse_compile(cmd):
-    """The parts of a per-module compile's command line (the compile tool's
-    request) that the rules decide: package dbs, interface dirs."""
-    args = cmd[cmd.index("--depfile"):]
+    """The parts of a per-module compile's request (to the worker or the
+    compile tool) that the rules decide: package dbs, interface dirs."""
+    args = cmd[cmd.index("--request"):]
     sep = args.index("--")
     script, rest = args[:sep], args[sep + 1:]
     session = rest[:rest.index("--")]
@@ -189,8 +196,10 @@ def replace(path, old, new):
 # --- The checks -------------------------------------------------------------------
 
 class State:
-    def __init__(self):
+    def __init__(self, worker):
+        self.worker = worker
         self.targets = MAIN_TARGETS
+        self.entries = None
         self.actions = None
 
 
@@ -201,11 +210,62 @@ def check_clean_build(st):
     of boot-cycle; B.Lit, a literate source."""
     buck2("clean")
     build(*st.targets)
-    st.actions = what_ran()
+    st.entries = what_ran_entries()
+    st.actions = what_ran(st.entries)
     expect_set("modules compiled from clean", compiled_modules(st.actions),
                {"lib:A.Base", "lib:A.Mid", "lib:A.Unused", "lib-user:B.M", "th-gen:TH.Gen", "th-make-dep:MK.Lit", "ffi-import:FFI.C", "p:Chain.P", "t:Chain.T",
                 "th-prebuilt-splice:D.Splice", "boot-cycle:Cyc.A", "boot-cycle:Cyc.B", "boot-cycle:Cyc.B-boot", "reexport:R.R", "reexport-user:U.M", "main:Main", "main:Main.Util",
                 "flat-sources:Lib", "flat-sources:User", "lib-user:B.Lit", "lib-user:B.UsesLit", "lib-user:B.Safe"})
+
+
+def check_workers(st):
+    """All the module compiles of the clean build ran in the shared persistent
+    worker when the project has one (run.sh with GHC_WORKER), and as their
+    own processes otherwise. That includes the Template Haskell modules,
+    since splices load only prebuilt libraries (see Note [The persistent
+    worker]).
+
+    A target with build tools compiles in the worker too, if its build tools
+    are all on the worker's PATH (per_module_worker_build_tools, which the
+    project's buckconfig sets to //build-tools:bt-shared). So
+    //build-tools:shared's module compiles in the worker, and
+    //build-tools:own's without it.
+
+    That build is a separate buck2 command, so it starts a new worker. The
+    worker keeps what it reads for its whole life, which is only safe if it
+    lives for one command (see Note [Hashing the libraries] in the worker's
+    Session.hs)."""
+    def executors(entries):
+        compiles = [e for e in entries if "haskell_compile_module_" in e["identity"]]
+        return [(module_of(e), e["reproducer"].get("executor", "")) for e in compiles], [e for e in compiles if e["reproducer"].get("executor") == "WorkerInit"]
+
+    ran, inits = executors(st.entries)
+    build("//build-tools:shared", "//build-tools:own")
+    bt, bt_inits = executors(what_ran_entries())
+    bt = set(bt) - {(m, "WorkerInit") for m, _ in bt}
+    if not st.worker:
+        expect_set("how the module compiles ran", {x for _, x in ran} - {"WorkerInit"}, {"Local"})
+        expect_set("how //build-tools's module compiles ran", bt, {("shared:BT.Shared", "Local"), ("own:BT.Own", "Local")})
+        return
+    expect_set("the modules compiled without the worker", {m for m, x in ran if x == "Local"}, set())
+    expect_set("how the other module compiles ran", {x for _, x in ran} - {"Local", "WorkerInit"}, {"Worker"})
+    expect("one worker (started: {})".format(len(inits)), len(inits) == 1)
+    expect_set("how //build-tools's module compiles ran", bt, {("shared:BT.Shared", "Worker"), ("own:BT.Own", "Local")})
+    expect("a new worker for a new buck2 command (started: {})".format(len(bt_inits)), len(bt_inits) == 1)
+    # A target naming its worker (//worker-attr:w, which runs
+    # //worker-attr:ghc-worker).
+    build("//worker-attr:worker-attr")
+    entries = what_ran_entries()
+    ran, _ = executors(entries)
+    expect_set("how //worker-attr:worker-attr's module compiles ran", {x for _, x in ran} - {"WorkerInit"}, {"Worker"})
+    named = [e for e in entries if e["reproducer"].get("executor") == "WorkerInit" and any(a == "worker-attr/ghc-worker" or a.endswith("/worker-attr/ghc-worker") for a in e["reproducer"]["details"].get("command", []))]
+    expect("//worker-attr:worker-attr's compiles started the worker it names (//worker-attr:w)", len(named) == 1)
+
+
+def module_of(entry):
+    """A what-ran entry's module, as "target-name:Module"."""
+    m = IDENTITY.match(entry["identity"])
+    return target_name(m.group(1)) + ":" + m.group(3)
 
 
 def check_early_db_conf(st):
@@ -363,6 +423,15 @@ def check_boot(st):
     expect_set("Cyc.A's dep file, compiled again", raw_dep_file("boot-cycle", "boot-cycle", "Cyc.A"), {"boot-cycle:Cyc.B.abi-boot"})
 
 
+def check_boot_cycle_inline(st):
+    """With -O, Loop.User needs the interface of Loop.B, a module in an
+    import cycle that it reaches only through Loop.Via's unfoldings. Loop.User
+    compiles before Loop.B, which is slow to compile (see the fixture). It
+    sees Loop.B's boot interface, as `ghc -c` does, with the worker too."""
+    p = build("//boot-cycle-inline:boot-cycle-inline", keep_going=True)
+    expect("//boot-cycle-inline:boot-cycle-inline builds (got:\n{})".format(tail(p.stderr, 15)), p.returncode == 0)
+
+
 def index_files(target, *config):
     """The names of the .hie files in the target's index (HaskellIndexInfo)."""
     path = buck2("bxl", *config, "//index.bxl:index", "--", "--target", target).stdout.strip().splitlines()[-1]
@@ -496,6 +565,7 @@ def check_opt_shared_consumer(st):
 
 CHECKS = [
     check_clean_build,
+    check_workers,
     check_early_db_conf,
     check_cross_package_dep_file,
     check_module_name_clash,
@@ -508,6 +578,7 @@ CHECKS = [
     check_main_file,
     check_rts_flags,
     check_boot,
+    check_boot_cycle_inline,
     check_index,
     check_cutoff_comment,
     check_cutoff_abi_base,
@@ -526,11 +597,12 @@ CHECKS = [
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", action="append", help="run only this check (by name, without check_); repeatable")
+    ap.add_argument("--worker", action="store_true", help="the project compiles in a persistent worker")
     args = ap.parse_args()
     unknown = set(args.only or []) - {check.__name__[len("check_"):] for check in CHECKS}
     if unknown:
         ap.error("no such check: " + " ".join(sorted(unknown)))
-    st = State()
+    st = State(worker=args.worker)
     failed = []
     for check in CHECKS:
         name = check.__name__[len("check_"):]

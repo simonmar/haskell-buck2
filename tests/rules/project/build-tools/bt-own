@@ -1,0 +1,2 @@
+#!/bin/sh
+printf "module BT.Own (own) where\nown :: Int\nown = 2\n" > "$3"

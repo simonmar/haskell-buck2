@@ -1,0 +1,52 @@
+# The persistent worker (tools/ghc-worker) uses the GHC API, so it is built
+# with the GHC it compiles for. We build and test it with each GHC version it
+# supports.
+name: ghc-worker
+
+on:
+  push:
+    paths: [tools/ghc-worker/**, .github/workflows/ghc-worker.yml]
+  pull_request:
+    paths: [tools/ghc-worker/**, .github/workflows/ghc-worker.yml]
+  workflow_dispatch:
+
+jobs:
+  ghc-worker:
+    name: ghc-worker (${{ matrix.os }}, GHC ${{ matrix.ghc }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        ghc: ["9.6.7", "9.8.4", "9.10.3", "9.12.4", "9.14.1"]
+        include:
+          - os: macos-latest
+            ghc: "9.12.4"
+    defaults:
+      run:
+        shell: bash
+        working-directory: tools/ghc-worker
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install GHC and cabal
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: ${{ matrix.ghc }}
+          cabal-version: latest
+
+      - name: Update Hackage index
+        run: cabal update
+
+      - name: Build
+        run: |
+          # cabal reads this next to the repository's cabal.project.
+          printf 'package ghc-worker\n  ghc-options: -Werror\n' > ../../cabal.project.local
+          cabal build all
+
+      - name: Test
+        run: cabal test
+
+      # The install command from the worker's README.
+      - name: Install as ghc-worker-<version>
+        run: cabal install --installdir="$RUNNER_TEMP/bin" --program-suffix=-$(ghc --numeric-version) exe:ghc-worker

@@ -1,0 +1,25 @@
+load("//buck2:haskell.bzl", "haskell_library")
+load("//buck2:worker.bzl", "haskell_per_module_worker")
+load(":defs.bzl", "exe")
+
+# A target that names its own worker. cabal.bzl does this for every
+# per-module target when the project builds the worker
+# (`per_module_worker = local`). Built only with GHC_WORKER, which run.sh
+# links here as ghc-worker.
+exe(
+    name = "ghc-worker",
+    exe = "ghc-worker",
+)
+
+haskell_per_module_worker(
+    name = "w",
+    worker = ":ghc-worker",
+)
+
+haskell_library(
+    name = "worker-attr",
+    srcs = {"WK.M": "WK/M.hs"},
+    packages = ["base"],
+    per_module = True,
+    per_module_worker = ":w",
+)

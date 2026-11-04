@@ -434,6 +434,10 @@ def generate_tools_file(tool_paths):
         # _ghc_dynamic()'s own comment above, and buck2/toolchains/
         # haskell.bzl's `dynamic_ghc` toolchain attr, which this feeds.
         f'GHC_DYNAMIC = {GHC_DYNAMIC!r}',
+        # The project's own target for the per-module worker, if it builds
+        # one (see buck2/toolchains/per_module_worker.bzl). None here, since
+        # only `cabal buck2` knows the project's packages.
+        'GHC_WORKER_TARGET = None',
         '',
     ]
     for tool in BUILD_TOOLS:

@@ -7,16 +7,23 @@
 # stays correct even if that vendored rule's own executor_config logic
 # ever changes.
 load("@prelude//cfg/exec_platform:marker.bzl", "get_exec_platform_marker")
+load("@toolchains//:per_module_worker.bzl", "has_per_module_worker")
 
-# Actions run locally, and their results are looked up in, and uploaded to, a
-# remote action cache (the one `[buck2_re_client]` in .buckconfig points to).
-# Nothing runs remotely.
-def _cache_executor_config():
+# Without a cache or persistent workers, the base platform's executor
+# config. With either, actions run locally (nothing runs remotely), and:
+#
+# - with `cache`, their results are looked up in, and uploaded to, a remote
+#   action cache (the one `[buck2_re_client]` in .buckconfig points to);
+# - with `persistent_workers`, an action may run in a persistent worker.
+def _executor_config(base: ExecutionPlatformInfo, cache: bool, persistent_workers: bool):
+    if not cache and not persistent_workers:
+        return base.executor_config
     return CommandExecutorConfig(
         local_enabled = True,
         remote_enabled = False,
-        remote_cache_enabled = True,
-        allow_cache_uploads = True,
+        remote_cache_enabled = cache,
+        allow_cache_uploads = cache,
+        use_persistent_workers = persistent_workers,
     )
 
 def _execution_platform_with_constraints_impl(ctx: AnalysisContext) -> list[Provider]:
@@ -31,7 +38,7 @@ def _execution_platform_with_constraints_impl(ctx: AnalysisContext) -> list[Prov
     platform = ExecutionPlatformInfo(
         label = name,
         configuration = cfg,
-        executor_config = _cache_executor_config() if ctx.attrs.cache else base.executor_config,
+        executor_config = _executor_config(base, ctx.attrs.cache, ctx.attrs.persistent_workers),
     )
 
     return [
@@ -52,6 +59,9 @@ execution_platform_with_constraints = rule(
         # `[cabal_buck2] cache = true` in .buckconfig, which `cabal buck2
         # --cache=ADDRESS` writes together with the remote cache's address.
         "cache": attrs.bool(default = read_root_config("cabal_buck2", "cache", "false") == "true"),
+        # Actions may run in persistent workers: the per-module compiles do
+        # when there is one (see toolchains/per_module_worker.bzl).
+        "persistent_workers": attrs.bool(default = has_per_module_worker()),
     },
 )
 

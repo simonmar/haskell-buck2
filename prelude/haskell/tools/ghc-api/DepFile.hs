@@ -1,4 +1,5 @@
--- | What the compile tool writes for the rules besides GHC's outputs.
+-- | What the compile tool and the worker write for the rules besides GHC's
+-- outputs.
 module DepFile (writeDepFiles) where
 
 import Control.Monad (filterM, forM, unless)
@@ -26,8 +27,8 @@ writeDepFiles :: Request -> ModIface -> IO ()
 writeDepFiles r iface = do
   -- A splice can't run code of the target's own modules (see Note [Template
   -- Haskell modules] in compile_per_module.bzl). But GHC still finds them,
-  -- as objects in the output directory, so we fail the compile if a splice
-  -- loaded one.
+  -- in the session or as objects in the output directory, so we fail the
+  -- compile if a splice loaded one.
   outDir <- canonicalizePath (reqOutDir r)
   -- Without usages, the dep file would say the module read nothing, and it
   -- would never compile again.
