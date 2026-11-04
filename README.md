@@ -51,9 +51,6 @@ A target generated from a Cabal package lists all of its dependencies,
 unless the package says which ones its splices run. Its TH modules then wait
 for all of them, which loses much of the cross-package parallelism.
 
-A splice can't run code of its own target's modules. Such a target fails to
-compile, saying so, and has to be built with `per_module = False`.
-
 `per_module` is often much faster at rebuilds:
 
 - With `--make`, an edit to any module rebuilds its whole target from

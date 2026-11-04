@@ -2,7 +2,8 @@ load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
 load("//compile:defs.bzl", "PER_MODULE")
 
 # Splices that run modules of their own targets, which call C libraries of
-# those targets: a's c-a, b's c-b.
+# those targets: a's c-a, b's c-b. Built at once, a and b's modules compile
+# in one worker, which must load each target's own libraries.
 cxx_library(
     name = "c-a",
     srcs = ["a.c"],
