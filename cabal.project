@@ -1,0 +1,6 @@
+-- The repository's only Haskell package is the persistent worker. Its test
+-- suites and benchmark are enabled, so that `cabal build all` builds them
+-- too.
+packages: tools/buck2-ghc-worker
+tests: True
+benchmarks: True

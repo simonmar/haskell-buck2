@@ -1,0 +1,2 @@
+#!/bin/sh
+printf "module BT.Shared (shared) where\nshared :: Int\nshared = 1\n" > "$3"
