@@ -359,8 +359,10 @@ compiled n below hmi h =
 -- | The session's environment, with the home package table that the
 -- compile should see (see Note [Each compile's home modules]): the home
 -- modules below its imports, and its own boot interface. Each module is in
--- the form `ghc -c` would see: whole, or as its boot interface. Also
--- returns what is below its imports (see 'compiled').
+-- the form `ghc -c` would see: whole, or as its boot interface. The
+-- exceptions are the modules the request names to link, which are whole,
+-- as GHC's --make sees them. Also returns what is below its imports (see
+-- 'compiled').
 homeView :: GhcSession -> Request -> ModSummary -> IO (HscEnv, Below)
 homeView s r ms = modifyMVar (gsHomes s) $ \homes0 -> do
   let hsc = gsEnv s
@@ -377,12 +379,15 @@ homeView s r ms = modifyMVar (gsHomes s) $ \homes0 -> do
   homes1 <- foldM (\h mn -> ifaceOf hsc h (mn, NotBoot)) homes0 imports
   -- Which modules are seen as boot interfaces, reckoned as GHC does in its
   -- rnImports: from the boot files recorded below each import, where a
-  -- module imported whole anywhere is seen whole.
+  -- module imported whole anywhere is seen whole. The modules to link are
+  -- whole too. A module found only below them, which no import's record
+  -- covers, takes the form it is imported in.
   let recordedBelow mn = M.fromList [(gwib_mod b, gwib_isBoot b) | (u, b) <- Set.toList (dep_boot_mods (mi_deps (fst (hIfaces homes1 M.! (mn, NotBoot))))), u == unit]
       recorded = M.unionsWith min (map recordedBelow imports ++ [M.fromList [(mn, IsBoot) | mn <- sources]])
-      bootness = M.fromList [(mn, NotBoot) | mn <- imports] `M.union` M.insert own IsBoot recorded
+      links = map mkModuleName (reqLinks r)
+      bootness = M.fromList [(mn, NotBoot) | mn <- imports ++ links] `M.union` M.insert own IsBoot recorded
       node mn b = (mn, M.findWithDefault b mn bootness)
-      roots = [node mn NotBoot | mn <- imports] ++ [node mn IsBoot | mn <- sources]
+      roots = [node mn NotBoot | mn <- imports ++ links] ++ [node mn IsBoot | mn <- sources]
   -- The modules below, each with the modules it imports and those whose
   -- boot files are recorded below it. We need the latter because an
   -- unfolding in its interface may mention one of them even though it
@@ -518,7 +523,9 @@ has, doesn't do instead. We tried it, and a module with a boot file then
 failed in ways `ghc -c` doesn't: its own boot interface's instances were
 duplicates, or GHC read its own interface before it was written. We
 didn't find out why; the session's name cache, which the compiles still
-share, is the likely cause.
+share, is the likely cause. Nor can one-shot mode run a splice that links
+code behind a boot file whose boot interface the compile has read, which
+--make mode can (see Note [Each compile's home modules]).
 -}
 
 {- Note [One-shot sessions]
@@ -620,8 +627,8 @@ a concurrent compile added part-way through.)
 2. The solution
 
 Each compile gets its own HPT. It holds exactly the home modules X depends
-on, each in the form `ghc -c` would use, plus X's own boot interface if it
-has one (GHC checks X against it).
+on, each in the form `ghc -c` would use (except as in section 3), plus X's
+own boot interface if it has one (GHC checks X against it).
 
 Making an HPT entry from an interface is cheap, because GHC typechecks the
 entry's contents lazily. So the session caches the entries, and reuses one
@@ -630,6 +637,26 @@ session compiles a module, it discards that module's entries and those of
 everything that depends on it. Modules in an import cycle (through boot
 files) are added together, as GHC's --make does (see addHomes).
 
+3. Template Haskell and boot files
+
+A splice must link all the code it runs, including modules that the
+compile only has as boot interfaces. GHC's linker refuses those ("cannot be
+linked; it is only available as a boot module"). GHC's own --make avoids
+this by compiling the splicing module after the modules behind those boot
+files. The rules do the same: the module waits for them, and the request
+names them with `--link` (see _linked_closure in compile_per_module.bzl).
+The worker then puts them in the compile's HPT as whole modules.
+
+So the compile doesn't see what `ghc -c` would. If it reaches a module only
+through {-# SOURCE #-} imports, `ghc -c` has only that module's boot
+interface. The compile's interface and object can then differ from
+`ghc -c`'s, even without -O. With -O, the compile also sees that module's
+unfoldings and instances. FIXME: fix this, rather than just documenting it
+(see compiledAs in the props).
+
+Before GHC 9.12, the linker leaves the modules behind boot files out
+anyway, as `ghc -c` does. GHC's own --make doesn't, and we don't know why
+(see the test suite's T.N, and the README's known issues).
 -}
 
 {- Note [Modules above the compile's boot interface]

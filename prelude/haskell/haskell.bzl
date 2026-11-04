@@ -811,6 +811,7 @@ def _build_haskell_lib(
         native_shared_libs_dir = native_shared_libs_dir,
         dynamic_too = dynamic_too,
         dynamic_from = non_profiling_shared_compiled if enable_profiling else None,
+        **({"ghci_native": ghci_native} if compiles_per_module(ctx) else {})
     )
     solibs = {}
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
@@ -1452,6 +1453,7 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
             _native_shared_libs_dir(ctx.actions, ctx.attrs.name, attr_deps_shared_library_infos(ctx))
             if haskell_toolchain.dynamic_ghc else None
         ),
+        **({"ghci_native": _native_ghci_libs(ctx, ctx.attrs.name)} if compiles_per_module(ctx) else {})
     )
 
     output = ctx.actions.declare_output(ctx.attrs.exe_name or ctx.attrs.name, has_content_based_path = False)

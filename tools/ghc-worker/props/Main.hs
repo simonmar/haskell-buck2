@@ -10,16 +10,15 @@
 --
 -- - The package has modules M0..Mn, each importing some of those before
 --   it. Some have a boot file that modules before them import
---   {-# SOURCE #-}. Some have a Template Haskell splice, which can't run
---   the package's own code (see Note [Template Haskell modules] in
---   compile_per_module.bzl).
+--   {-# SOURCE #-}. Some have a Template Haskell splice that runs a module
+--   it imports.
 -- - p has modules P0..Pk, which the package's modules import through p's
 --   early package db, as the rules have it: it has no library, and its
 --   import directory is the one p's interfaces are written to one by one.
 --   p's modules are sometimes named M0..Mk instead, like the main
 --   package's. A module of each package may then have the same name, which
 --   only its unit tells apart (as in the usages of the dep files).
--- - On Linux, a splice may run p's code. Its compile loads that from p's
+-- - On Linux, a splice may run p's code too. Its compile loads that from p's
 --   library, linked as the rules link one, through p's final package db.
 --   The library calls a native library, which depends on another, and no
 --   library has a RUNPATH.
@@ -47,7 +46,7 @@ import Control.Monad (forM, forM_, unless, when)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.ByteString as B
 import Data.IORef
-import Data.List (intercalate, sort)
+import Data.List (intercalate, sort, sortOn)
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe, isJust)
 import Data.Version (showVersion, versionBranch)
@@ -89,7 +88,10 @@ data Ty = TInt | TInteger
 --   each SOURCE import a function that shows the import's type T;
 -- - whether it has a boot file, which declares its value 0 and its type T
 --   with a Show instance;
--- - the number a Template Haskell splice of it lifts, if it has one;
+-- - the import whose value 0 a Template Haskell splice of it uses, if it
+--   has one. The splice evaluates a value of p. It only links a value of
+--   the package's own, without evaluating it, since the package's values
+--   may form a cycle through SOURCE imports;
 -- - the numbers of comment-only edits made to it and to its boot file;
 -- - whether it has a type error;
 -- - whether its requests have flags of their own (as a Template Haskell
@@ -162,9 +164,12 @@ genHistory bootsAllowed = do
     let imports = own' ++ fromP
     k <- Gen.int (Range.constant 1 3)
     values <- forM [0 .. k - 1] $ \v -> (,,) v <$> Gen.element [TInt, TInteger] <*> Gen.int (Range.linear 0 9)
-    -- A literal, or a value of p, which it evaluates.
-    splice <- Gen.frequency ([(3, pure Nothing), (1, Just <$> Gen.int (Range.constant 0 9))] ++ [(2, Just <$> Gen.element fromP) | pSplices, not (null fromP)])
-    sourceImports <- Gen.subsequence [j | j <- [i + 1 .. n - 1], boots !! j]
+    -- A splice of p's code is twice as likely as one of the package's own.
+    -- Either way, it uses a module it imports.
+    splice <- Gen.frequency ([(3, pure Nothing)] ++ [(1, Just <$> Gen.element own') | not (null own')] ++ [(2, Just <$> Gen.element fromP) | pSplices, not (null fromP)])
+    -- A module with a splice gets no SOURCE imports, since compiledAs would
+    -- drop its splice. (An edit may still add one later.)
+    sourceImports <- if isJust splice then pure [] else Gen.subsequence [j | j <- [i + 1 .. n - 1], boots !! j]
     own <- Gen.frequency [(2, pure False), (1, pure True)]
     reexports <- Gen.subsequence imports
     pure (Mod imports sourceImports values (boots !! i) splice 0 0 False own reexports)
@@ -244,15 +249,21 @@ nodes mods = concat [[(i, True) | mBoot m] ++ [(i, False)] | (i, m) <- M.toList 
 -- | What a node's compile reads the results of: a boot file, nothing; a
 -- module, its imports, the boot files of its SOURCE imports, and its own.
 --
+-- A module that runs a splice also waits for the whole modules behind the
+-- boot files below its imports, which its splice may link, as the rules
+-- have it (see Note [Template Haskell modules] in compile_per_module.bzl, and
+-- linksOf).
+--
 -- A module of the main package also waits for the modules of p below those
 -- it imports from p, whose interfaces GHC reads with theirs, as the rules
 -- have it (see Note [Compiling against dependencies module by module] in
 -- compile_per_module.bzl).
-nodeDeps :: M.Map Int Mod -> Node -> [Node]
-nodeDeps _ (_, True) = []
-nodeDeps mods (i, False) =
+nodeDeps :: M.Map Int Mod -> Links -> Node -> [Node]
+nodeDeps _ _ (_, True) = []
+nodeDeps mods ls (i, False) =
   [(j, False) | j <- mImports m] ++ [(j, True) | j <- mSourceImports m] ++ [(i, True) | mBoot m]
     ++ (if inP i then [] else [(j, False) | j <- belowInP mods [x | x <- mImports m, inP x]])
+    ++ [(k, False) | k <- ls M.! i]
     -- And for all of p, whose library its splice loads (see linkP).
     ++ (if splicesP m then [(j, False) | j <- M.keys mods, inP j] else [])
   where
@@ -269,6 +280,51 @@ pSplices = os == "linux"
 splicesP :: Mod -> Bool
 splicesP m = maybe False inP (mSplice m)
 
+-- | The modules each module's splice may link past boot files.
+type Links = M.Map Int [Int]
+
+-- | Each module's links (see 'links'), with cycles of waits broken as the
+-- rules break them (_registration_order in compile_per_module.bzl). Of the
+-- modules left waiting, the first by name stops waiting for the others.
+linksOf :: M.Map Int Mod -> Links
+linksOf mods = go (M.fromList [(i, links mods i) | i <- M.keys mods])
+  where
+    go ls = case sortOn modName [i | (i, False) <- left, any (`elem` leftMods) (ls M.! i)] of
+      [] -> ls
+      i : _ -> go (M.insert i (filter (`notElem` leftMods) (ls M.! i)) ls)
+      where
+        left = snd (layers (nodeDeps mods ls) (nodes mods))
+        leftMods = [j | (j, False) <- left]
+
+-- | For a module that runs a splice, the modules that its splice may link
+-- past boot files, as the rules name them (_linked_closure in
+-- compile_per_module.bzl). They are the modules of its own package whose
+-- boot files are in its closure, or in turn in the closure of one of those.
+-- They don't include the module itself, or modules that import it, which
+-- can't be compiled before it.
+links :: M.Map Int Mod -> Int -> [Int]
+links mods i
+  | isJust (mSplice (mods M.! i)) = [k | (k, True) <- linked, (k, False) `elem` linked]
+  | otherwise = []
+  where
+    linked = go (closure i) [k | (k, True) <- closure i]
+    go seen [] = seen
+    go seen (k : todo)
+      | k == i || (k, False) `elem` seen || (i, False) `elem` closure k = go seen todo
+      | otherwise =
+          let new = [d | d <- (k, False) : closure k, d `notElem` seen, d /= (i, False)]
+           in go (seen ++ new) ([b | (b, True) <- new] ++ todo)
+    -- The nodes below a module, as the rules have them: the modules of its
+    -- package, each whole, or as its boot file (True) below a SOURCE
+    -- import. A boot file imports nothing.
+    closure x = walk [] (edges x)
+    walk seen [] = seen
+    walk seen (d@(y, boot) : ds)
+      | d `elem` seen = walk seen ds
+      | boot = walk (d : seen) ds
+      | otherwise = walk (d : seen) (edges y ++ ds)
+    edges y = let my = mods M.! y in [(z, False) | z <- mImports my, inP z == inP i] ++ [(z, True) | z <- mSourceImports my, inP z == inP i]
+
 -- | The modules of p below the given ones of p.
 belowInP :: M.Map Int Mod -> [Int] -> [Int]
 belowInP mods = go []
@@ -277,6 +333,37 @@ belowInP mods = go []
     go visited (x : xs)
       | x `elem` visited = go visited xs
       | otherwise = go (x : visited) (mImports (mods M.! x) ++ xs)
+
+-- | The modules behind the boot files below the given modules.
+linkedPastBoots :: M.Map Int Mod -> [Int] -> [Int]
+linkedPastBoots mods = go [] []
+  where
+    go _ found [] = found
+    go visited found (x : xs)
+      | x `elem` visited = go visited found xs
+      | otherwise = let mx = mods M.! x in go (x : visited) (mSourceImports mx ++ found) (mImports mx ++ mSourceImports mx ++ xs)
+
+-- | The package as a build compiles it. It drops the splices that would
+-- link past a boot file, unless this GHC can do that both one-shot and in
+-- the worker:
+--
+-- - GHC 9.14.1's one-shot mode can't: it links the splice's code without
+--   the module behind the boot file.
+-- - Before GHC 9.12, neither can (see the worker's README).
+-- - GHC 9.12's one-shot mode can, but not when the compile has read the
+--   boot interface itself: when the module imports one {-# SOURCE #-}, or,
+--   with -O, when an unfolding mentions one.
+--
+-- It also drops the splices of a module that imports one {-# SOURCE #-}.
+-- FIXME: the rules have such a module wait for the module behind that boot
+-- file, and name it with --link. The worker then gives the compile that
+-- module whole, where `ghc -c` reads the boot interface, so the module's ABI
+-- hash differs from `ghc -c`'s, even without -O.
+compiledAs :: Config -> History -> M.Map Int Mod -> M.Map Int Mod
+compiledAs cfg h mods = M.map (\m -> if linksPast m && not (oneShotLinks m) || not (null (mSourceImports m)) then m{mSplice = Nothing} else m) mods
+  where
+    linksPast m = not (null (linkedPastBoots mods (mImports m)))
+    oneShotLinks m = cBootSplices cfg && not (hOptimise h) && null (mSourceImports m)
 
 nodeName :: Node -> String
 nodeName (i, boot) = modName i ++ (if boot then "-boot" else "")
@@ -339,9 +426,10 @@ render mods (i, False) =
       ++ concat [["t" ++ show i ++ " :: Integer", "t" ++ show i ++ " = 0" ++ concat [" + fromIntegral " ++ alias j ++ "." ++ value j 0 | j <- mSourceImports m], "{-# INLINE t" ++ show i ++ " #-}"] | hasT i]
       ++ concat [[shows' j ++ " :: " ++ alias j ++ "." ++ ty j ++ " -> String", shows' j ++ " = show"] | j <- mSourceImports m]
       ++ concat [["data " ++ ty i ++ " = " ++ ty i, "instance Show " ++ ty i ++ " where show _ = " ++ show (ty i)] | mBoot m]
-      -- A splice of p's code evaluates it, so a splice that ran a stale
-      -- library would make a different object from the clean build's.
-      ++ concat [["s" ++ show i ++ " :: Integer", "s" ++ show i ++ " = $(lift (" ++ (if inP j then "fromIntegral " ++ alias j ++ "." ++ value j 0 else show j) ++ " :: Integer))"] | Just j <- [mSplice m]]
+      -- A splice of p's code evaluates it, and its values can't form a cycle
+      -- (p has no boot files). So a splice that ran a stale library would
+      -- make a different object from the clean build's.
+      ++ concat [["s" ++ show i ++ " :: Integer", "s" ++ show i ++ " = $(lift (" ++ (if inP j then "fromIntegral " ++ alias j ++ "." ++ value j 0 else "fromIntegral (length [" ++ alias j ++ "." ++ value j 0 ++ "])") ++ " :: Integer))"] | Just j <- [mSplice m]]
       ++ (if mBroken m then ["broken :: Int", "broken = \"not an Int\""] else [])
   where
     m = mods M.! i
@@ -397,8 +485,9 @@ isCompiled (Compiled _ _ _) = True
 isCompiled _ = False
 
 -- | The worker, GHC and working directory; whether the objects are compared
--- (deterministic, from GHC 9.12) or else the usages.
-data Config = Config {cWorker :: FilePath, cGhc :: String, cDir :: FilePath, cObjects :: Bool, cOneShot :: Bool}
+-- (deterministic, from GHC 9.12) or else the usages; whether a splice may
+-- link past a boot file (see compiledAs).
+data Config = Config {cWorker :: FilePath, cGhc :: String, cDir :: FilePath, cObjects :: Bool, cBootSplices :: Bool, cOneShot :: Bool}
 
 -- | What a history's builds did, to see that the histories reach what they
 -- are for.
@@ -427,7 +516,7 @@ runHistory cfg h = do
   let go _ _ [] = pure (Right ())
       go mods n (b : rest) = do
         let mods' = foldl applyEdit mods (bEdits b)
-            built = mods'
+            built = compiledAs cfg h mods'
         forM_ (nodes built) $ \node -> writeFileIfChanged (dir </> "w" </> source node) (render built node)
         (worker, skipped) <- workerBuild cfg h b built lastOk libSeen stats
         ref <- refBuild cfg h built
@@ -535,11 +624,12 @@ workerBuild cfg h b mods lastOk libSeen stats = do
       let result node = readMVar (vars M.! node) >>= either (\(e :: SomeException) -> throwIO e) pure
       forM_ (nodes mods) $ \node -> forkIO $ do
         r <- try $ do
-          deps <- mapM result (nodeDeps mods node)
+          deps <- mapM result (nodeDeps mods ls node)
           decide wdir sock skippedRef pLib (all isCompiled deps) node
         putMVar (vars M.! node) r
       (,) . M.fromList <$> forM (nodes mods) (\node -> (,) node <$> result node) <*> readIORef skippedRef
   where
+    ls = linksOf mods
     count f = atomicModifyIORef' stats (\st -> (f st, ()))
     decide wdir sock skippedRef pLib depsOk node@(i, boot)
       | not depsOk = do
@@ -587,7 +677,7 @@ workerBuild cfg h b mods lastOk libSeen stats = do
       [ "--request", "--contract", contract
       , "--depfile", depFile node, "--abi", outDir i </> modName i <.> ("abi" ++ suffix node), "--module", modName i
       , "--source", source node, "--outdir", outDir i, "--hisuf", "hi", "--srcroot=" ++ srcDir i
-      ] ++ ["--boot" | boot]
+      ] ++ ["--boot" | boot] ++ ["--link=" ++ modName k | not boot, k <- ls M.! i]
       ++ ["--hidir=p=" ++ outDir pkgP | not (inP i)]
       ++ ["--", cGhc cfg] ++ commonFlags h ++ nodeFlags mods node
       ++ ["--", "-c", source node, "-o", outDir i </> modName i <.> ("o" ++ suffix node), "-ohi", outDir i </> modName i <.> ("hi" ++ suffix node)]
@@ -602,10 +692,11 @@ refBuild cfg h mods = do
   forM_ (nodes mods) $ \node -> writeFile (rdir </> source node) (render mods node)
   outcomes <- newIORef M.empty
   linked <- newIORef False
-  forM_ (concat (fst (layers (nodeDeps mods) (nodes mods)))) $ \node@(i, boot) -> do
+  let ls = linksOf mods
+  forM_ (concat (fst (layers (nodeDeps mods ls) (nodes mods)))) $ \node@(i, boot) -> do
     done <- readIORef outcomes
     outcome <-
-      if any (\d -> not (maybe False isCompiled (M.lookup d done))) (nodeDeps mods node)
+      if any (\d -> not (maybe False isCompiled (M.lookup d done))) (nodeDeps mods ls node)
         then pure Blocked
         else do
           already <- readIORef linked
@@ -650,7 +741,7 @@ main = do
   tmp <- getTemporaryDirectory
   pid <- getProcessID
   let v = versionBranch fullCompilerVersion
-      cfg = Config worker ghc (tmp </> ("ghc-worker-props-" ++ show pid)) (v >= [9, 12]) False
+      cfg = Config worker ghc (tmp </> ("ghc-worker-props-" ++ show pid)) (v >= [9, 12]) (take 2 v == [9, 12]) False
       -- (In a directory of its own, as the properties run at once.)
       oneShotCfg = cfg{cOneShot = True, cDir = cDir cfg ++ "-one-shot"}
       bootCycleCfg = cfg{cDir = cDir cfg ++ "-boot-cycle"}
@@ -732,7 +823,7 @@ historyProp cfg tests =
     -- generator that stops making what the histories are for. Each is far
     -- enough below its usual share that 30 histories miss one about once in
     -- 3,000 runs. With fewer histories, we only count them.
-    let mods = M.fromList (hModules h)
+    let mods = compiledAs cfg h (M.fromList (hModules h))
         ms = M.elems mods
         sourced j = not (null (mSourceImports (mods M.! j)))
         cover' p l b = if tests >= 30 then cover p l b else classify l b
@@ -746,6 +837,8 @@ historyProp cfg tests =
       cover' 10 "a SOURCE import" (any (not . null . mSourceImports) ms)
       cover' 10 "an import of a module with SOURCE imports" (any (any sourced . filter (not . inP) . mImports) ms)
     cover' 10 "a splice" (any (isJust . mSplice . snd) (hModules h))
+    -- (Fewer before GHC 9.12 and with 9.14: see compiledAs.)
+    classify "a splice compiled" (any (isJust . mSplice) ms)
     unless (cOneShot cfg) $ classify "a splice in a module with a boot file" (any (\m -> mBoot m && isJust (mSplice m)) ms)
     cover' 10 "an import from p" (any (any inP . mImports) ms)
     (if pSplices then cover' 10 else classify) "a splice that runs p's code, from p's library" (any splicesP ms)

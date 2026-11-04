@@ -12,7 +12,7 @@ import Contract (contract)
 --
 -- > --request --contract V --depfile DEP --abi ABI --module Foo/Bar
 -- >   --source Foo/Bar.hs --outdir OUT --hisuf SUF --unit UNIT [--boot]
--- >   --hidir=UNIT=DIR... --srcroot=SRCS --mkdir=DIR...
+-- >   --link=Foo.Baz... --hidir=UNIT=DIR... --srcroot=SRCS --mkdir=DIR...
 -- >   -- ghc SESSION_FLAGS... -- -c Foo/Bar.hs -o ... -ohi ...
 --
 -- The compile's flags come in two parts: the flags of the module's session,
@@ -32,6 +32,7 @@ data Request = Request
   , reqSrcRoots :: [FilePath] -- the tree of the target's sources, where imports are found
   , reqMkdirs :: [FilePath] -- output directories to create first
   , reqBoot :: Bool
+  , reqLinks :: [String] -- modules with boot files that its splices may link (see Note [Each compile's home modules] in Session)
   , reqCompiler :: String
   , reqSessionArgs :: [String] -- the flags of every module of the session
   , reqModuleArgs :: [String] -- the module's own: `ghc -c`'s source and outputs, and -hiedir and -stubdir
@@ -43,7 +44,7 @@ data Request = Request
 parseRequest :: [String] -> Either String Request
 parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
   "--contract" : v : rest
-    | v == contract -> go (Request "" "" "" "" "" "" [] [] [] False "" [] []) rest
+    | v == contract -> go (Request "" "" "" "" "" "" [] [] [] False [] "" [] []) rest
     | otherwise -> Left ("this program takes version " ++ contract ++ " of the rules' requests, but the rules sent version " ++ v ++ ": build it from the same version of the rules")
   _ -> Left "the request names no version: build this program from the same version of the rules"
   where
@@ -63,6 +64,7 @@ parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
       | Just v <- stripPrefix "--hidir=" x, (unit, '=' : d) <- break (== '=') v = go r{reqHidirs = reqHidirs r ++ [(unit, d)]} rest
       | Just v <- stripPrefix "--srcroot=" x = go r{reqSrcRoots = reqSrcRoots r ++ [v]} rest
       | Just v <- stripPrefix "--mkdir=" x = go r{reqMkdirs = reqMkdirs r ++ [v]} rest
+      | Just v <- stripPrefix "--link=" x = go r{reqLinks = reqLinks r ++ [v]} rest
       | otherwise = Left ("unexpected request argument " ++ show x)
     go _ [] = Left "the request has no compiler command"
 
