@@ -108,7 +108,10 @@ def _cxx_tools_info_toolchain_impl(ctx: AnalysisContext):
 def _cxx_toolchain_from_cxx_tools_info(ctx: AnalysisContext, cxx_tools_info: CxxToolsInfo, target_name = "x86_64"):
     os = ctx.attrs._target_os_type[OsLookup].os
     archiver_supports_argfiles = os != Os("macos")
-    additional_linker_flags = ["-fuse-ld=lld"] if os == Os("linux") and cxx_tools_info.linker != "g++" and cxx_tools_info.cxx_compiler != "g++" else []
+    # Not when the linker is given (as cabal-buck2's toolchain gives it): it
+    # is then the one to use as it is, lld or not.
+    linker_given = getattr(ctx.attrs, "linker", None) != None
+    additional_linker_flags = ["-fuse-ld=lld"] if os == Os("linux") and not linker_given and cxx_tools_info.linker != "g++" and cxx_tools_info.cxx_compiler != "g++" else []
 
     linker_type = cxx_tools_info.linker_type
     if os == Os("windows"):
