@@ -419,14 +419,6 @@ def _make_package(
     hi: dict[bool, Artifact],
     lib: dict[bool, Artifact],
     enable_profiling: bool,
-    # Overrides which link_style's artifact-suffix convention `hi`'s
-    # directory name is computed from - only needed when `hi` wasn't built
-    # for `link_style` itself (see _build_haskell_lib's shared-via-
-    # dynamic-too derivation, where a "shared" package's interfaces
-    # actually live in the *static* compile's "hi-static", written there by
-    # -dynamic-too alongside the plain .hi this "shared" package reads).
-    # Defaults to `link_style`, matching every other, non-derived caller.
-    hi_link_style: [LinkStyle, None] = None,
     # This same target's own "shared" variant (built alongside any other
     # link style whenever Linkage allows it - see haskell_library_impl).
     # Referenced here (for non-shared link styles) via `dynamic-library-dirs:`
@@ -445,7 +437,6 @@ def _make_package(
     all_hlis: list[HaskellLibraryInfo] = [],
 ) -> Artifact:
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
-    hi_link_style = hi_link_style if hi_link_style != None else link_style
 
     # Don't expose boot sources, as they're only meant to be used for compiling.
     modules = [x for x, src in srcs_to_pairs(ctx.attrs.srcs) if is_haskell_src(src)]
@@ -455,12 +446,16 @@ def _make_package(
         # following this logic (https://fburl.com/code/3gmobm5x) and will fail.
         libname += "_p"
 
-    def mk_artifact_dir(dir_prefix: str, profiled: bool, for_style: LinkStyle = link_style) -> str:
-        art_suff = get_artifact_suffix(for_style, profiled)
-        return '"${pkgroot}/' + dir_prefix + "-" + art_suff + '"'
+    db = ctx.actions.declare_output("db-" + artifact_suffix, has_content_based_path = False)
 
-    import_dirs = [mk_artifact_dir("hi", profiled, hi_link_style) for profiled in hi.keys()]
-    library_dirs = [mk_artifact_dir("lib", profiled) for profiled in hi.keys()]
+    # The package names the directories of the interfaces and libraries it
+    # was given, wherever they are, by their paths relative to ${pkgroot}: the
+    # directory that the package db is in.
+    def pkgroot_path(artifact: Artifact, parent: int = 0) -> cmd_args:
+        return cmd_args(artifact, parent = parent, relative_to = (db, 1), format = '"${pkgroot}/{}"')
+
+    import_dirs = cmd_args([pkgroot_path(d) for d in hi.values()], delimiter = ", ")
+    library_dirs = cmd_args([pkgroot_path(l, parent = 1) for l in lib.values()], delimiter = ", ")
 
     # Reexports are named by the unit they come from, which GHC finds in the
     # package databases whether or not the unit is exposed.
@@ -481,16 +476,14 @@ def _make_package(
         "exposed: " + ("True" if ctx.attrs.exposed else "False"),
         "exposed-modules: " + ", ".join([m for m in modules if m not in ctx.attrs.hidden_modules] + reexports),
         "hidden-modules: " + ", ".join(ctx.attrs.hidden_modules),
-        "import-dirs:" + ", ".join(import_dirs),
-        "library-dirs:" + ", ".join(library_dirs),
+        cmd_args("import-dirs: ", import_dirs, delimiter = ""),
+        cmd_args("library-dirs: ", library_dirs, delimiter = ""),
         "extra-libraries: " + libname,
         "depends: " + ", ".join([lib.id for lib in hlis]),
     ]
     if own_shared_lib != None:
-        conf.append('dynamic-library-dirs:"${pkgroot}/lib-shared"')
+        conf.append(cmd_args("dynamic-library-dirs: ", pkgroot_path(own_shared_lib, parent = 1), delimiter = ""))
     pkg_conf = ctx.actions.write("pkg-" + artifact_suffix + ".conf", conf, has_content_based_path = False)
-
-    db = ctx.actions.declare_output("db-" + artifact_suffix, has_content_based_path = False)
 
     # While the list of hlis is unique, there may be multiple packages in the same db.
     # Cutting down the GHC_PACKAGE_PATH significantly speeds up GHC.
@@ -643,6 +636,19 @@ def _link_haskell_shared_lib(
             linkables = [SharedLibLinkable(lib = lib)],
         )),
     )
+
+# _build_haskell_lib() is invoked once for each combination of
+#
+#    (enable_profiling, link_style)
+#
+# that the library offers (see Note [Link styles and profiling]), except that
+#
+#    - there's no enable_profiling = True + link_style = "shared"
+#
+#    - when we're building both shared and the static style that executables
+#      use (consumed_static_link_style: "static", or "static_pic" on macOS)
+#      non-profiled, with a dynamic GHC, we combine those into a single build
+#      of the static style with -dynamic-too
 
 def _build_haskell_lib(
     ctx,
@@ -857,7 +863,6 @@ def _build_haskell_lib(
             {False: compiled.hi},
             {False: shared_lib},
             enable_profiling = False,
-            hi_link_style = link_style,
             all_hlis = all_hlis,
         )
         shared_hlib = HaskellLibraryInfo(
@@ -982,12 +987,13 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
         process_output_style_for_pic_behavior(LibOutputStyle("archive"), pic_behavior),
     )
 
-    # See build_shared_too on _build_haskell_lib: when set (opt mode - see
-    # buck2/haskell.bzl), and this Linkage wants both a static and a shared
-    # output style, build them together from one -dynamic-too compile
-    # instead of two independent ones. Only meaningful when both exist.
-    # It has to be the static style consumers use: its package registration
-    # is what lets their Template Haskell slices load this one the dynamic way.
+    # With a dynamically linked GHC, when this library's preferred_linkage
+    # offers both a shared variant and the static style that executables use,
+    # build the two together from one -dynamic-too compile instead of two
+    # independent ones (see build_shared_too on _build_haskell_lib). It has to
+    # be the static style consumers use: its package registration is what lets
+    # their Template Haskell splices load this one the dynamic way. See Note
+    # [Link styles and profiling].
     build_shared_too = (
         haskell_toolchain.dynamic_ghc and
         consumed_static_link_style in link_styles and
@@ -1040,16 +1046,35 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 )
             ]
 
+    # Profiled code can only be linked statically, so whatever the library's
+    # preferred_linkage, a profiled link wants a profiled archive of it: a
+    # library that is otherwise only shared (preferred_linkage "shared") is a
+    # profiled archive to a profiled executable. These are only built when a
+    # profiled link asks for them. See Note [Link styles and profiling].
+    prof_link_styles = [legacy_output_style_to_link_style(o) for o in get_output_styles_for_linkage(Linkage("static"))]
+
+    # Each profiled library is registered together with a non-profiled build
+    # of the library (see non_profiling_hlib on _build_haskell_lib), from
+    # which GHC loads it to run a Template Haskell splice. A dynamically
+    # linked GHC loads the shared library, with its .dyn_hi interfaces. A
+    # statically linked one loads the static library of the same style, which
+    # is built for it if the library otherwise has none.
+    pair_with_shared = haskell_toolchain.dynamic_ghc and LinkStyle("shared") in link_styles
+
+    def non_profiling_style(link_style: LinkStyle) -> LinkStyle:
+        return LinkStyle("shared") if pair_with_shared else link_style
+
+    unprof_link_styles = link_styles + [
+        s
+        for s in prof_link_styles
+        if s not in link_styles and non_profiling_style(s) == s
+    ]
+
     # The non-profiling library is also needed to build the package with
     # profiling enabled, so we need to keep track of it for each link style.
     non_profiling_hlib = {}
     for enable_profiling in [False, True]:
-        for output_style in get_output_styles_for_linkage(preferred_linkage):
-            link_style = legacy_output_style_to_link_style(output_style)
-            if link_style == LinkStyle("shared") and enable_profiling:
-                # Profiling isn't support with dynamic linking
-                continue
-
+        for link_style in (prof_link_styles if enable_profiling else unprof_link_styles):
             if build_shared_too and link_style == LinkStyle("shared"):
                 # Derived below, alongside "static" - see the
                 # build_shared_too branch of this same iteration.
@@ -1073,7 +1098,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 link_style = link_style,
                 enable_profiling = enable_profiling,
                 native_shared_libs_dir = native_shared_libs_dir,
-                non_profiling_hlib = non_profiling_hlib.get(link_style),
+                non_profiling_hlib = non_profiling_hlib.get(non_profiling_style(link_style) if enable_profiling else link_style),
                 non_profiling_shared_lib = non_profiling_shared.libs[0] if (enable_profiling and non_profiling_shared) else None,
                 non_profiling_shared_compiled = non_profiling_shared.compiled if (enable_profiling and non_profiling_shared) else None,
                 build_shared_too = (build_shared_too and link_style == consumed_static_link_style and not enable_profiling),
@@ -1102,14 +1127,17 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     # who understands the intent of the code here.
     actual_link_style = legacy_output_style_to_link_style(output_style)
 
-    if preferred_linkage != Linkage("static"):
-        # Profiling isn't support with dynamic linking, but `prof_link_infos`
-        # needs entries for all link styles.
-        # We only need to set the shared link_style in both `prof_link_infos`
-        # and `link_infos` if the target doesn't force static linking.
-        prof_link_infos[LinkStyle("shared")] = link_infos[LinkStyle("shared")]
-
-    default_link_infos = prof_link_infos if ctx.attrs.enable_profiling else link_infos
+    # The link info for this library as a dependency of a non-Haskell target
+    # (a cxx_binary(), say). When the library is profiled and that target
+    # links it shared, there is no profiled shared library (GHC doesn't
+    # support profiling with dynamic linking), so it gets the non-profiled
+    # one. A profiled Haskell link uses prof_merged_link_info, which never
+    # does.
+    default_link_infos = link_infos
+    if ctx.attrs.enable_profiling:
+        default_link_infos = dict(prof_link_infos)
+        if LinkStyle("shared") in link_infos:
+            default_link_infos[LinkStyle("shared")] = link_infos[LinkStyle("shared")]
     merged_link_info = create_merged_link_info(
         ctx,
         pic_behavior = pic_behavior,
@@ -1126,7 +1154,8 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
         ctx,
         pic_behavior = pic_behavior,
         link_infos = {_to_lib_output_style(s): v for s, v in prof_link_infos.items()},
-        preferred_linkage = preferred_linkage,
+        # A profiled archive, for any link strategy (see prof_link_styles).
+        preferred_linkage = Linkage("static"),
         exported_deps = _exported_link_infos(ctx, enable_profiling = True),
     )
 
@@ -1589,3 +1618,185 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         providers.append(HaskellIndexInfo(info = indexing_tsets))
 
     return providers
+
+# Note [Link styles and profiling]
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#
+# The big picture
+# ---------------
+#
+# Haskell code can be linked in three styles:
+#
+#   static      archives (.a) of ordinary code
+#   static_pic  archives of position-independent code
+#   shared      shared libraries (.so, .dylib)
+#
+# and, independently, profiled or not. Profiled code can only be linked
+# statically: GHC doesn't support profiling with dynamic linking. So there are
+# five variants of a library: static, static_pic and shared unprofiled, and
+# static and static_pic profiled.
+#
+# Two parties decide how a library is linked, separately:
+#
+#  * The library, by its preferred_linkage, decides which variants it offers.
+#    It can't know how the executables that use it will be linked: a target
+#    is analysed apart from the targets that depend on it, and all it sees of
+#    them is its configuration.
+#
+#  * The executable, by its link_style, decides which variant it asks for.
+#
+# Where the two disagree, buck2 lets the library win: for each library, the
+# variant an executable gets is get_lib_output_style(link strategy,
+# preferred_linkage), in prelude/linking/link_info.bzl. In particular, a
+# library whose preferred_linkage is "shared" is linked shared whatever the
+# executable asks for.
+#
+# Profiling breaks that rule, because a profiled executable can't link a
+# shared library: to it, every library is linked statically. The rest of this
+# Note is about how each side does its part, and how profiling and Template
+# Haskell fit in.
+#
+# What a library offers
+# ---------------------
+#
+# haskell_library_impl declares the actions for each variant it offers. For
+# each, it compiles the library's modules, registers the package in a package
+# database of its own (for compiling against it), and makes the library
+# itself (an archive, or a shared library). buck2 only runs the actions whose
+# outputs are demanded, so it costs nothing extra to offer all the variants.
+#
+#  * The unprofiled variants are those of its preferred_linkage
+#    (get_output_styles_for_linkage):
+#
+#      "any"     static, static_pic, shared
+#      "static"  static, static_pic
+#      "shared"  static_pic, shared
+#
+#  * The profiled variants are always static and static_pic, whatever its
+#    preferred_linkage (prof_link_styles).
+#
+# What it offers is described by these providers:
+#
+#  * HaskellLinkInfo: the package of each variant, with those of its
+#    dependencies, by link style: `info` for the unprofiled variants and
+#    `prof_info` for the profiled ones. This is what a compile against the
+#    library uses.
+#
+#  * MergedLinkInfo: how to link the library and its dependencies, for each
+#    link strategy, by the get_lib_output_style table. This is what an
+#    unprofiled link uses, and what any non-Haskell target that depends on the
+#    library uses (a cxx_binary, say).
+#
+#  * HaskellProfLinkInfo: the same for a profiled link, made as if the
+#    library's preferred_linkage were "static", so that it gives the profiled
+#    archive of the same style for every link strategy (prof_merged_link_info).
+#    It never gives a shared library: there is no profiled one, and an
+#    unprofiled one linked into a profiled executable fails at runtime.
+#
+# A library can itself have enable_profiling = True. Then its "any" linkage
+# becomes "static", and its MergedLinkInfo is that of its profiled variants,
+# for a non-Haskell target to link. Such a target may still link it shared, so
+# its MergedLinkInfo also offers the unprofiled shared library, where there is
+# one (default_link_infos).
+#
+# What an executable asks for
+# ---------------------------
+#
+# haskell_binary_impl takes its link_style from the attribute, or else from the
+# C++ toolchain's default, and then adjusts it:
+#
+#  * A profiled executable asking for "shared" is linked "static".
+#
+#  * Where all code is position-independent (macOS: the toolchain's
+#    pic_behavior is "always_enabled"), "static" is "static_pic".
+#
+# It then uses that link style twice, with the libraries it depends on:
+#
+#  1. To compile its own modules against them. It asks each for the package of
+#     that link style (info[link_style], or prof_info[link_style] when
+#     profiled), so each library must offer a variant of that style.
+#
+#  2. To link them. An unprofiled executable takes each library's
+#     MergedLinkInfo for its link strategy, and so gets whatever variant the
+#     get_lib_output_style table picks; a profiled one takes each library's
+#     HaskellProfLinkInfo, and so gets the profiled archive of its style.
+#
+# Template Haskell
+# ----------------
+#
+# GHC runs a Template Haskell splice in its own process, by loading the code
+# the splice uses: the modules it uses of the libraries the module depends on,
+# and of the module's own library. GHC loads code the way that it was itself
+# linked. A GHC linked statically loads archives, and the ordinary .hi
+# interfaces that go with them: any static variant will do. A GHC linked
+# dynamically (haskell_toolchain.dynamic_ghc, which is how GHC is normally
+# installed) loads shared libraries, and the .dyn_hi interfaces that go with
+# them. GHC finds them through the package of the variant being compiled
+# against: the .dyn_hi in its import-dirs, beside the .hi, and the shared
+# library in its dynamic-library-dirs.
+#
+# So with a dynamic GHC every variant's package needs to have a shared
+# library and a set of .dyn_hi files. A shared variant's package has its
+# own. For static variants this works as follows:
+#
+#  * Non-profiled: when the library offers both shared and the static style
+#    that executables use (consumed_static_link_style: "static", or
+#    "static_pic" on macOS), we build the two together, by compiling the
+#    static variant with -dynamic-too (build_shared_too). Then the .dyn_o and
+#    .dyn_hi files are alongside the regular .o and .hi files; the shared
+#    library is linked from the .dyn_o, and goes in the dynamic-library-dirs
+#    of the static variant's package. The other static style (static_pic on
+#    Linux) gets neither: see Known gaps below.
+#
+#  * Profiled: the profiled package also needs to contain a non-profiled
+#    library and interfaces (non_profiling_hlib). With a dynamic GHC, that
+#    is the shared variant, but where its interfaces live depends on whether
+#    we used -dynamic-too or not. In the case of -dynamic-too the .dyn_hi
+#    files live alongside the static variant's .hi files, otherwise they're
+#    in the shared variant's own directory. The package names whichever
+#    directory the interfaces were written to (_make_package uses the paths
+#    of the artifacts it is given). GHC looks for the shared library by the
+#    profiled library's name, with its _p, so the shared library is given
+#    that name too (own_shared_lib). With a static GHC, or a library that
+#    offers no shared variant, the non-profiled library is instead the
+#    unprofiled static variant of the same style, which is built for the
+#    purpose if the library doesn't otherwise offer it.
+#
+# A splice can also use a module of the same library. GHC then loads that
+# module's .dyn_o from the compile's own output directory, where it would be
+# if, as with Cabal, both ways were compiled in one place. A profiled compile
+# writes only profiled objects, so the .dyn_o of the unprofiled compile that
+# made the shared library are copied in before it runs (`dynamic_from` on
+# compile).
+#
+# Examples
+# --------
+#
+# With a dynamic GHC:
+#
+#  * Libraries "shared", executables "shared": each module is compiled once,
+#    the dynamic way. (Offering a static variant as well would make that one
+#    compile with -dynamic-too, which costs about as much as two.)
+#
+#  * Libraries "any", executables "static": each module is compiled once with
+#    -dynamic-too, for both the static and the shared variant.
+#
+#  * Either of those, with executables that have enable_profiling = True: the
+#    executables compile against their libraries' profiled packages and link
+#    their profiled archives, whatever their link_style. The libraries'
+#    profiled variants are compiled as well, and registered with their shared
+#    variants, which are built already.
+#
+# Known gaps
+# ----------
+#
+#  * An unprofiled executable whose link_style is "static" fails analysis when
+#    a library it depends on doesn't offer static (its preferred_linkage is
+#    "shared"): there is no package of that style to compile against. One
+#    whose link_style is "static_pic" compiles against the libraries'
+#    static_pic packages, but still links their shared libraries.
+#
+#  * With a dynamic GHC, an unprofiled static variant that isn't the style
+#    executables use (static_pic on Linux) is compiled without -dynamic-too,
+#    and its package has no .dyn_hi: a module that uses Template Haskell can't
+#    be compiled against it.
