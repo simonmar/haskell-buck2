@@ -563,6 +563,7 @@ def _make_package(
         ),
         category = "haskell_package_" + db_suffix.replace("-", "_"),
         env = {"GHC_PACKAGE_PATH": ghc_package_path} if db_deps else {},
+        allow_cache_upload = haskell_toolchain.allow_cache_upload,
     )
 
     return db
@@ -664,6 +665,7 @@ def _link_haskell_shared_lib(
         link,
         category = category,
         env = haskell_toolchain.link_env,
+        allow_cache_upload = haskell_toolchain.allow_cache_upload,
     )
 
     return (
@@ -1676,7 +1678,7 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         if is_gnu_linker:
             link.add("-optl", cmd_args("-Wl,-rpath-link,", symlink_dir, delimiter = ""))
 
-    ctx.actions.run(link, category = "haskell_link", env = haskell_toolchain.link_env)
+    ctx.actions.run(link, category = "haskell_link", env = haskell_toolchain.link_env, allow_cache_upload = haskell_toolchain.allow_cache_upload)
 
     if symlink_dir != None:
         run = cmd_args(output, hidden = symlink_dir)

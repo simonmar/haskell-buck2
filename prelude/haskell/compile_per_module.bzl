@@ -433,6 +433,8 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps_mk: Art
             category = "haskell_compile_module_" + suffix.replace("-", "_"),
             identifier = n,
             dep_files = {"hs": tag},
+            allow_cache_upload = s.allow_cache_upload,
+            allow_dep_file_cache_upload = s.allow_dep_file_cache_upload,
         )
 
     obj_map = {}
@@ -563,6 +565,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     ctx.actions.run(
         in_env(env, cmd_args(ctx.attrs._per_module_deps[RunInfo], splices_file.as_output(), hs_srcs, "--", deps_cmd)),
         category = "haskell_deps_" + suffix.replace("-", "_"),
+        allow_cache_upload = haskell_toolchain.allow_cache_upload,
     )
 
     # The output directory of each dependency compiled per-module, where the
@@ -620,6 +623,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             producing_indices = producing_indices,
             base_cmd = base_cmd,
             env = env,
+            allow_cache_upload = haskell_toolchain.allow_cache_upload,
+            allow_dep_file_cache_upload = haskell_toolchain.allow_dep_file_cache_upload,
         ),
         deps_mk = deps_mk,
         splices_file = splices_file,

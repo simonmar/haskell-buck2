@@ -19,6 +19,8 @@ def _haskell_toolchain_impl(ctx):
             linker_flags = ctx.attrs.linker_flags,
             compile_env = ctx.attrs.compile_env,
             link_env = ctx.attrs.link_env,
+            allow_cache_upload = ctx.attrs.allow_cache_upload,
+            allow_dep_file_cache_upload = ctx.attrs.allow_dep_file_cache_upload,
             dynamic_ghc = ctx.attrs.dynamic_ghc,
         ),
         HaskellPlatformInfo(name = host_info().arch),
@@ -39,6 +41,9 @@ haskell_toolchain = rule(
         "linker_flags": attrs.list(attrs.string(), default = []),
         "compile_env": attrs.dict(attrs.string(), attrs.string(), default = {}),
         "link_env": attrs.dict(attrs.string(), attrs.string(), default = {}),
+        # See HaskellToolchainInfo.
+        "allow_cache_upload": attrs.bool(default = False),
+        "allow_dep_file_cache_upload": attrs.bool(default = False),
         # Whether the `compiler` above is itself dynamically linked -
         # see buck2/gen-haskell-prebuilt.py's own `_ghc_dynamic()` for
         # how this gets discovered (not assumed), and buck2/prelude/

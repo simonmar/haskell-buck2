@@ -10,8 +10,9 @@
       # Keep in step with the matrix of .github/workflows/rules.yml.
       ghcs = [ "ghc967" "ghc984" "ghc9103" "ghc9124" "ghc9141" ];
       # What tests/rules/run.sh needs besides GHC. clang: the C compiler of
-      # buck2's default C toolchain.
-      testTools = pkgs: [ pkgs.buck2 pkgs.python3 pkgs.clang ];
+      # buck2's default C toolchain. bazel-remote: the remote cache of
+      # check_cache (BAZEL_REMOTE).
+      testTools = pkgs: [ pkgs.buck2 pkgs.python3 pkgs.clang pkgs.bazel-remote ];
     in
     {
       checks = forAllSystems (pkgs:
@@ -24,6 +25,7 @@
           rules = ghc: pkgs.runCommandCC "rules-tests-${ghc}"
             {
               nativeBuildInputs = testTools pkgs;
+              BAZEL_REMOTE = "${pkgs.bazel-remote}/bin/bazel-remote";
               src = clean (lib.cleanSourceWith {
                 src = ./.;
                 filter = path: type: !(lib.hasPrefix (toString ./.github) path);
@@ -49,6 +51,7 @@
         let
           shell = ghc: pkgs.mkShell {
             packages = [ pkgs.haskell.compiler.${ghc} pkgs.cabal-install ] ++ testTools pkgs;
+            BAZEL_REMOTE = "${pkgs.bazel-remote}/bin/bazel-remote";
           };
         in
         nixpkgs.lib.genAttrs ghcs shell // { default = shell "ghc9124"; });
