@@ -1046,6 +1046,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     link_infos = {}
     prof_link_infos = {}
     hlib_infos = {}
+    hlib_compiled = {}
     hlink_infos = {}
     prof_hlib_infos = {}
     prof_hlink_infos = {}
@@ -1104,6 +1105,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
             prof_link_infos[link_style] = hlib_build_out.link_infos
         else:
             hlib_infos[link_style] = hlib
+            hlib_compiled[link_style] = compiled
             hlink_infos[link_style] = ctx.actions.tset(
                 HaskellLibraryInfoTSet,
                 value = hlib,
@@ -1275,6 +1277,9 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     #            flatten([["-isystem", dir] for dir in hlib_infos[actual_link_style].stub_dirs]),
     #    )]
     pp = []
+
+    # The interfaces of the default output's compile.
+    sub_targets["interfaces"] = [DefaultInfo(default_output = hlib_compiled[actual_link_style].hi)]
 
     providers = [
         DefaultInfo(
@@ -1726,7 +1731,10 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         run = cmd_args(_run_with_data_dirs(ctx, output), hidden = [run, data_dirs_env(ctx).values()])
 
     providers = [
-        DefaultInfo(default_output = output),
+        DefaultInfo(
+            default_output = output,
+            sub_targets = {"interfaces": [DefaultInfo(default_output = compiled.hi)]},
+        ),
         RunInfo(args = run),
     ]
 
