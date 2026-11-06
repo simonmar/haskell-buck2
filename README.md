@@ -25,6 +25,11 @@ buck2 build my-package:my-program -m opt
 
 There are other build options that can be selected in a similar way, such as `-m prof` to enable profiling. See `constraints/BUCK` for details.
 
+# Checking without linking
+
+`buck2 build my-package:my-program[check]` compiles a target without linking
+it, which is enough to see its type errors. 
+
 # Compiler and linker flags from the environment
 
 buck2 runs every build action with a clean environment, so directories that
