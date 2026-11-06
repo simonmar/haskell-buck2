@@ -25,6 +25,11 @@ buck2 build my-package:my-program -m opt
 
 There are other build options that can be selected in a similar way, such as `-m prof` to enable profiling. See `constraints/BUCK` for details.
 
+# Checking without linking
+
+`buck2 build my-package:my-program[interfaces]` compiles a target without
+linking it, which is enough to see its type errors.
+
 # Per-module compilation (experimental)
 
 By default each `haskell_library()`/`haskell_binary()` is compiled by one
@@ -53,6 +58,10 @@ sufficiently high that `per_module` is often significantly worse than
 The recompilation check used by `per_module` is also currently slightly coarser
 than GHC's, in that GHC also looks at which definitions from a dependency are
 used by a module. We don't do this currently but we could do in future.
+
+With `per_module`, `[interfaces]` (above) doesn't link the target's
+dependencies either, because a module's compile needs only the interfaces of
+its imports.
 
 # Compiler and linker flags from the environment
 
