@@ -31,6 +31,12 @@ def default_haskell_toolchain(name, **kwargs):
     # here would read the toolchains cell's own (nonexistent) one.
     kwargs.setdefault("compiler_flags", read_root_config("haskell", "compiler_flags", "").split())
     kwargs.setdefault("linker_flags", read_root_config("haskell", "linker_flags", "").split())
+    # With the remote cache (see platforms/defs.bzl), the actions' results and
+    # the per-module compiles' dep files may be uploaded to it, as the C
+    # toolchain's object files are (see prelude/toolchains/cxx.bzl).
+    cache = read_root_config("cabal_buck2", "cache", "false") == "true"
+    kwargs.setdefault("allow_cache_upload", cache)
+    kwargs.setdefault("allow_dep_file_cache_upload", cache)
     # GHC_DYNAMIC is what `ghc --info` says of the configured GHC
     # (`("GHC Dynamic", ...)`), so it follows a change of GHC too.
     kwargs.setdefault("dynamic_ghc", GHC_DYNAMIC)

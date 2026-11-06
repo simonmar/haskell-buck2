@@ -24,10 +24,16 @@ GHC. A dev shell has what they need, so with one GHC:
 nix develop .#ghc9141 -c sh -c 'tests/rules/run.sh "$(dirname "$(command -v ghc)")"'
 ```
 
+With `BAZEL_REMOTE` set to a `bazel-remote` binary, `check_cache` runs one
+as a remote cache, and checks that the rules' actions upload their results
+and that a clean build finds them there. The dev shells and `nix flake
+check` set it.
+
 Each check prints `PASS` or `FAIL` (with the missing and unexpected members
-of the set it compared). The script fails on any `FAIL`. Some checks are of
-what per_module doesn't support, a splice that runs local code: they check
-that the compile fails, saying how to build the target instead.
+of the set it compared) or `SKIP` (`check_cache` without `BAZEL_REMOTE`).
+The script fails on any `FAIL`. Some checks are of what per_module doesn't
+support, a splice that runs local code: they check that the compile fails,
+saying how to build the target instead.
 
 ## How it works
 

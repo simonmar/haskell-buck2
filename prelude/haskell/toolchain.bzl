@@ -21,6 +21,14 @@ HaskellToolchainInfo = provider(
         # Environment for the link actions, unlike `compile_env` literally
         # (not shell-evaluated).
         "link_env": provider_field(typing.Any, default = {}),
+        # Whether the results of the compile, link and package actions may be
+        # uploaded to the remote cache when they run locally, if the execution
+        # platform allows uploads (its executor config's allow_cache_uploads).
+        "allow_cache_upload": provider_field(bool, default = False),
+        # Whether a per-module compile's dep file may be uploaded with its
+        # result, so that the cached result is found by the files the compile
+        # actually read (see Note [Early cut-off by dep files]).
+        "allow_dep_file_cache_upload": provider_field(bool, default = False),
         "dynamic_ghc": provider_field(bool, default = True),
         "linker": provider_field(typing.Any, default = None),
         "linker_flags": provider_field(typing.Any, default = None),

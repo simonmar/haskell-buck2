@@ -8,15 +8,16 @@
 # ever changes.
 load("@prelude//cfg/exec_platform:marker.bzl", "get_exec_platform_marker")
 
-# Actions run locally, and their results are looked up in, and uploaded to, a
-# remote action cache (the one `[buck2_re_client]` in .buckconfig points to).
-# Nothing runs remotely.
-def _cache_executor_config():
+# Actions run locally, and their results are looked up in a remote action
+# cache (the one `[buck2_re_client]` in .buckconfig points to) and, with
+# `uploads`, uploaded to it: those of the actions that allow it. Nothing runs
+# remotely.
+def _cache_executor_config(uploads: bool):
     return CommandExecutorConfig(
         local_enabled = True,
         remote_enabled = False,
         remote_cache_enabled = True,
-        allow_cache_uploads = True,
+        allow_cache_uploads = uploads,
     )
 
 def _execution_platform_with_constraints_impl(ctx: AnalysisContext) -> list[Provider]:
@@ -31,7 +32,7 @@ def _execution_platform_with_constraints_impl(ctx: AnalysisContext) -> list[Prov
     platform = ExecutionPlatformInfo(
         label = name,
         configuration = cfg,
-        executor_config = _cache_executor_config() if ctx.attrs.cache else base.executor_config,
+        executor_config = _cache_executor_config(ctx.attrs.cache_uploads) if ctx.attrs.cache else base.executor_config,
     )
 
     return [
@@ -52,6 +53,10 @@ execution_platform_with_constraints = rule(
         # `[cabal_buck2] cache = true` in .buckconfig, which `cabal buck2
         # --cache=ADDRESS` writes together with the remote cache's address.
         "cache": attrs.bool(default = read_root_config("cabal_buck2", "cache", "false") == "true"),
+        # `[cabal_buck2] cache_uploads = false` looks results up in the cache
+        # without uploading any, on a machine that shouldn't write to a shared
+        # cache, say.
+        "cache_uploads": attrs.bool(default = read_root_config("cabal_buck2", "cache_uploads", "true") == "true"),
     },
 )
 

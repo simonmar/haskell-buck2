@@ -11,6 +11,8 @@ on:
 
 env:
   BUCK2_VERSION: "2026-10-15"
+  # Likewise, the bazel-remote of check_cache's remote cache.
+  BAZEL_REMOTE_VERSION: "2.6.3"
 
 jobs:
   rules:
@@ -40,6 +42,13 @@ jobs:
             | zstd -d > "$HOME/.local/bin/buck2"
           chmod +x "$HOME/.local/bin/buck2"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install bazel-remote
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/bazel-remote" \
+            "https://github.com/buchgr/bazel-remote/releases/download/v${BAZEL_REMOTE_VERSION}/bazel-remote-${BAZEL_REMOTE_VERSION}-linux-amd64"
+          chmod +x "$RUNNER_TEMP/bazel-remote"
+          echo "BAZEL_REMOTE=$RUNNER_TEMP/bazel-remote" >> "$GITHUB_ENV"
 
       - name: Test
         run: tests/rules/run.sh "$(dirname "${{ steps.setup.outputs.ghc-exe }}")" "$RUNNER_TEMP/rules"

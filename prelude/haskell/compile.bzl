@@ -408,6 +408,7 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
     ctx.actions.run(
         in_env(ghc_env(ctx, artifact_suffix + "-build-tool-depends"), compile_cmd),
         category = "haskell_compile_" + artifact_suffix.replace("-", "_"),
+        allow_cache_upload = haskell_toolchain.allow_cache_upload,
         # Keep the previous run's -odir/-hidir so that `ghc --make` can do its
         # own recompilation checking and only rebuild the modules whose
         # sources or imported interfaces changed, rather than the whole
