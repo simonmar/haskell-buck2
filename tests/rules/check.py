@@ -18,7 +18,7 @@ import sys
 import time
 import traceback
 
-MAIN_TARGETS = ["//lib:lib", "//lib-user:lib-user", "//th-gen:th-gen", "//th-local-splice:th-local-splice", "//th-local-splice:show", "//th-prebuilt-splice:th-prebuilt-splice", "//th-make-dep:th-make-dep", "//th-make-dep:mkrun", "//th-make-dep:mkall", "//ffi-import:ffi-import", "//make-between:t", "//boot-cycle:boot-cycle", "//main:main", "//reexport:reexport", "//reexport-user:reexport-user", "//flat-sources:flat-sources"]
+MAIN_TARGETS = ["//lib:lib", "//lib-user:lib-user", "//th-gen:th-gen", "//th-local-splice:th-local-splice", "//th-local-splice:show", "//th-prebuilt-splice:th-prebuilt-splice", "//th-make-dep:th-make-dep", "//th-make-dep:mkrun", "//th-make-dep:mkall", "//ffi-import:ffi-import", "//make-between:t", "//boot-cycle:boot-cycle", "//main:main", "//reexport:reexport", "//reexport-user:reexport-user", "//th-boot-cycles:th-boot-cycles", "//flat-sources:flat-sources"]
 ELI_TARGETS = ["//eli:eli", "//eli-reexport:eli-reexport", "//eli-persist:eli-persist"]
 
 LOG_DIR = "buck-logs"
@@ -148,15 +148,21 @@ def short(path):
 
 def parse_compile(cmd):
     """The parts of a per-module compile's request (to the worker or the
-    compile tool) that the rules decide: package dbs, interface dirs."""
+    compile tool) that the rules decide: package dbs, interface dirs, and
+    the modules a splice may link past boot files."""
     args = cmd[cmd.index("--request"):]
     sep = args.index("--")
     script, rest = args[:sep], args[sep + 1:]
     session = rest[:rest.index("--")]
-    hidirs = {short(a[len("--hidir="):].split("=", 1)[1]) for a in script if a.startswith("--hidir=")}
+    hidirs, links = set(), set()
+    for a in script:
+        if a.startswith("--hidir="):
+            hidirs.add(short(a[len("--hidir="):].split("=", 1)[1]))
+        elif a.startswith("--link="):
+            links.add(a[len("--link="):])
     dbs = {short(session[n + 1]) for n, a in enumerate(session) if a == "-package-db"}
     units = [session[n + 1] for n, a in enumerate(session) if a == "-this-unit-id"]
-    return {"dbs": dbs, "hidirs": hidirs, "unit": units[-1] if units else None}
+    return {"dbs": dbs, "hidirs": hidirs, "links": links, "unit": units[-1] if units else None}
 
 
 def find_compile(actions, target, module):
@@ -209,17 +215,19 @@ class State:
 def check_clean_build(st):
     """The fixtures build from clean, compiling every module. The build itself
     guards against some regressions: flat-sources's flat Lib taken for
-    make-lib's Q.Lib (whose interface path ends the same way); the hs-boot pair
-    of boot-cycle; B.Lit, a literate source."""
+    make-lib's Q.Lib (whose interface path ends the same way); th-boot-cycles's
+    Template Haskell modules, which would each wait for the other; the hs-boot
+    pair of boot-cycle; B.Lit, a literate source."""
     buck2("clean")
     build(*st.targets)
     st.entries = what_ran_entries()
     st.actions = what_ran(st.entries)
     expect_set("modules compiled from clean", compiled_modules(st.actions),
                {"lib:A.Base", "lib:A.Mid", "lib:A.Unused", "lib-user:B.M", "th-gen:TH.Gen", "th-local-splice:C.Splice", "th-local-splice:C.Plain", "th-local-splice:C.Ann", "th-make-dep:MK.Lit", "mkrun:MK.Run", "mkall:MK.All", "ffi-import:FFI.C", "p:Chain.P", "t:Chain.T",
-                "th-prebuilt-splice:D.Splice", "boot-cycle:Cyc.A", "boot-cycle:Cyc.B", "boot-cycle:Cyc.B-boot", "reexport:R.R", "reexport-user:U.M", "main:Main", "main:Main.Util", "show:Main",
-                "flat-sources:Lib", "flat-sources:User", "lib-user:B.Lit", "lib-user:B.UsesLit", "lib-user:B.Safe"}
-               | ({"eli:E.Gen", "eli:E.Lib", "eli:E.Mk", "eli-reexport:ER.M", "eli-persist:P.Persist"} if st.eli else set()))
+                "th-prebuilt-splice:D.Splice", "boot-cycle:Cyc.A", "boot-cycle:Cyc.B", "boot-cycle:Cyc.B-boot", "boot-cycle:Cyc.AS", "reexport:R.R", "reexport-user:U.M", "main:Main", "main:Main.Util", "show:Main",
+                "th-boot-cycles:Tie.A", "th-boot-cycles:Tie.B", "th-boot-cycles:Tie.I", "th-boot-cycles:Tie.K", "th-boot-cycles:Tie.I-boot", "th-boot-cycles:Tie.K-boot",
+                "th-boot-cycles:Tie.AZ", "th-boot-cycles:Tie.V", "th-boot-cycles:Tie.W", "th-boot-cycles:Tie.W-boot", "flat-sources:Lib", "flat-sources:User", "lib-user:B.Lit", "lib-user:B.UsesLit", "lib-user:B.Safe"}
+               | ({"eli:E.Gen", "eli:E.Lib", "eli:E.Mk", "eli:E.Own", "eli:E.UseOwn", "eli-reexport:ER.M", "eli-persist:P.Persist"} if st.eli else set()))
 
 
 def check_workers(st):
@@ -413,16 +421,6 @@ def check_unlisted_th_dependency_fails(st):
            "MK.MissAfter" in p.stderr and "th_build_depends" in p.stderr)
 
 
-def check_internal_splice_fails(st):
-    """Not supported: a splice that runs code of its own target. P.Use's
-    runs P.Gen's, so it fails to compile, saying how to build the target
-    instead."""
-    p = build("//th-internal-splice:th-internal-splice", keep_going=True)
-    expect("//th-internal-splice:th-internal-splice fails to build", p.returncode != 0)
-    expect("its failure is P.Use's, and names the fix (got:\n{})".format(tail(p.stderr, 15)),
-           "P.Use" in p.stderr and "this target's own modules" in p.stderr and "per_module = False" in p.stderr)
-
-
 def check_explicit_level_imports(st):
     """GHC 9.14: explicit level imports choose each module's package dbs. In
     //eli:eli, whose th_build_depends = []:
@@ -432,6 +430,8 @@ def check_explicit_level_imports(st):
       (make-lib is built with --make).
     - E.Lib (`import splice Language.Haskell.TH`) compiles only against dbs
       that name no library.
+    - E.UseOwn (`import splice E.Own`, of its own target) compiles against
+      th-gen's final db, since E.Own imports TH.Gen.
 
     ER.M (`import splice A.Base`, which reexport re-exports) compiles against
     lib's and reexport's final dbs. P.Persist, which turns implicit stage
@@ -445,6 +445,8 @@ def check_explicit_level_imports(st):
     expect_set("E.Mk's package dbs", c["dbs"], {"lib:early", "th-gen:early", "make-lib:final", "ghc:global"})
     c = find_compile(st.actions, "eli-reexport", "ER.M")
     expect_set("ER.M's package dbs", c["dbs"], {"lib:final", "reexport:final", "ghc:global"})
+    c = find_compile(st.actions, "eli", "E.UseOwn")
+    expect_set("E.UseOwn's package dbs", c["dbs"], {"lib:early", "th-gen:final", "make-lib:nolib", "ghc:global"})
     c = find_compile(st.actions, "eli-persist", "P.Persist")
     expect_set("P.Persist's package dbs", c["dbs"], {"th-gen:final", "ghc:global"})
 
@@ -478,13 +480,18 @@ def check_boot(st):
     """The hs-boot pair: the boot file has its own action, which Cyc.A (its
     {-# SOURCE #-} importer) and Cyc.B (checked against it) depend on; its
     own dep file doesn't list its own output, and Cyc.A's lists the boot
-    file's, even once Cyc.B's own is there too."""
+    file's, even once Cyc.B's own is there too. Cyc.AS, whose splice may link
+    Cyc.B past its boot file, names Cyc.B with --link. Cyc.B, which runs no
+    splice, names nothing."""
     tagged, _ = dep_file("//boot-cycle:boot-cycle", "haskell_compile_module_shared", "Cyc.B-boot")
     expect_set("Cyc.B-boot's dep file", tagged, set())
     tagged, _ = dep_file("//boot-cycle:boot-cycle", "haskell_compile_module_shared", "Cyc.A")
     expect_set("Cyc.A's dep file", tagged, {"boot-cycle:Cyc.B.abi-boot"})
     tagged, _ = dep_file("//boot-cycle:boot-cycle", "haskell_compile_module_shared", "Cyc.B")
     expect_set("Cyc.B's dep file", tagged, {"boot-cycle:Cyc.A.abi", "boot-cycle:Cyc.B.abi-boot"})
+    # The clean build's compiles (st.actions):
+    expect_set("the modules Cyc.AS links past boot files", find_compile(st.actions, "boot-cycle", "Cyc.AS")["links"], {"Cyc.B"})
+    expect_set("the modules Cyc.B links past boot files", find_compile(st.actions, "boot-cycle", "Cyc.B")["links"], set())
     # Compiled again, with Cyc.B's whole interface there now too, Cyc.A's
     # dep file still lists the boot file's .abi, which is what Cyc.A
     # imports. We read the file the action wrote, since buck2's record of it
@@ -502,6 +509,18 @@ def check_boot_cycle_inline(st):
     sees Loop.B's boot interface, as `ghc -c` does, with the worker too."""
     p = build("//boot-cycle-inline:boot-cycle-inline", keep_going=True)
     expect("//boot-cycle-inline:boot-cycle-inline builds (got:\n{})".format(tail(p.stderr, 15)), p.returncode == 0)
+
+
+def check_th_boot_cycles(st):
+    """Tie.I and Tie.K run Template Haskell, and each one's boot file is
+    below the other, so each would wait for the other. Tie.I, the first by
+    name, doesn't wait for Tie.K. Tie.K waits for Tie.I, and names it to
+    link past its boot file. Tie.AZ, which is only behind that cycle, keeps
+    its waits."""
+    expect_set("the modules Tie.I links past boot files", find_compile(st.actions, "th-boot-cycles", "Tie.I")["links"], set())
+    expect_set("the modules Tie.K links past boot files", find_compile(st.actions, "th-boot-cycles", "Tie.K")["links"], {"Tie.I"})
+    expect_set("the modules Tie.AZ, only behind the cycle, links past boot files",
+               find_compile(st.actions, "th-boot-cycles", "Tie.AZ")["links"], {"Tie.I", "Tie.K", "Tie.W"})
 
 
 def index_files(target, *config):
@@ -535,8 +554,13 @@ def check_native_library_change(st):
 
 def check_native_libraries_for_splices(st):
     """Splices find a native library whose soname isn't of the form
-    libfoo.so: V.S's runs code that calls libver.so.1."""
+    libfoo.so: V.S's runs code that calls libver.so.1. They also find the
+    native libraries of their own targets: A.S's and B.S's splices run their
+    targets' own modules, which call their targets' own C libraries. Built
+    at once with the worker, they compile in one process."""
     expect_output("//th-native-soname:show", "", "5")
+    build("//th-own-native:a", "//th-own-native:b")
+    expect_output("//th-own-native:show", "", "(9,11)")
 
 
 def check_configurations(st):
@@ -663,35 +687,69 @@ def expect_output(target, when, value, mode=None):
     expect("{} should print {} {}; it printed {}".format(target, value, when, out), out == value)
 
 
+def bump_literal(path, by):
+    """Adds `by` to the integerL literal in the given Template Haskell
+    generator."""
+    with open(path) as f:
+        n = int(re.search(r"integerL (\d+)", f.read()).group(1))
+    replace(path, "integerL {}".format(n), "integerL {}".format(n + by))
+
+
 def check_th_modes(st):
     """Splices run in the other build modes: opt (static, -dynamic-too) and
-    prof, whose compiles run splices in GHC's static and profiled
-    interpreters. Those find libraries in other places than the dynamic one.
+    prof. Their compiles run splices in GHC's static and profiled
+    interpreters. These find libraries in other places than the dynamic
+    one, and load the compile's own objects (.o or .p_o).
 
-    - //th-make-dep:lit prints MK.Lit's splice, which runs template-haskell's
-      code, and //th-local-splice:show prints C.Splice's, which runs th-gen's
-      TH.Gen, as in dev mode.
-    - U.V's, U.W's and V.S's splices, which call native libraries (one with
-      the soname libver.so.1), compile.
-    - After a change to the body of TH.Gen, C.Splice and C.Ann compile again
-      in each mode, and //th-local-splice:show prints the new value."""
+    In each mode, these binaries print the same as in dev mode:
+
+    - //th-make-dep:lit prints MK.Lit's splice, which runs
+      template-haskell's code.
+    - //th-local-splice:show prints C.Splice's, which runs th-gen's TH.Gen.
+    - //th-internal-splice:main prints P.Use's, which runs P.Gen of the
+      same library, from P.Gen's object of the same way.
+    - //th-internal-splice:static-main does the same for a library that is
+      linked statically only.
+    - //th-internal-splice:own prints its own Main's splice, which runs
+      P.Gen of the same binary.
+
+    The splices of U.V, U.W and V.S, which call native libraries (one with
+    the soname libver.so.1), compile.
+
+    After we change the bodies of TH.Gen and P.Gen, the modules whose
+    splices run them compile again in every mode, dev mode too, and the
+    binaries print the new values."""
+    internal = ["//th-internal-splice:main", "//th-internal-splice:static-main", "//th-internal-splice:own"]
     shown = buck2("run", "//th-local-splice:show").stdout.strip()
+    used = {t: buck2("run", t).stdout.strip() for t in internal}
     for mode in ["opt", "prof"]:
-        build("//th-make-dep:lit", "//th-local-splice:show", "//th-ffi-splice:th-ffi-splice", "//th-native-soname:th-native-soname", mode=mode)
+        build("//th-make-dep:lit", "//th-local-splice:show", "//th-ffi-splice:th-ffi-splice", "//th-native-soname:th-native-soname", *internal, mode=mode)
         ran = compiled_modules(what_ran())
         expect("the splicing modules compiled per-module in {} mode (ran: {})".format(mode, sorted(ran)),
-               {"th-make-dep:MK.Lit", "th-local-splice:C.Splice", "th-ffi-splice:U.V", "th-ffi-splice:U.W", "th-native-soname:V.S"} <= ran)
+               {"th-make-dep:MK.Lit", "th-local-splice:C.Splice", "th-ffi-splice:U.V", "th-ffi-splice:U.W", "th-native-soname:V.S",
+                "th-internal-splice:P.Use", "static:P.Use", "own:Main"} <= ran)
+        category, obj = ("haskell_compile_module_static", "P.Gen.o") if mode == "opt" else ("haskell_compile_module_static_prof", "P.Gen.p_o")
+        for t in ["//th-internal-splice:th-internal-splice", "//th-internal-splice:static"]:
+            tagged, _ = dep_file(t, category, "P.Use", mode=mode)
+            expect_set("the objects {}'s P.Use's splice loaded in {} mode".format(t, mode),
+                       {e.split(":", 1)[1] for e in tagged if not e.endswith(".abi")}, {obj})
         expect_output("//th-make-dep:lit", "in {} mode".format(mode), "2", mode)
         expect_output("//th-local-splice:show", "in {} mode".format(mode), shown, mode)
-    gen = "th-gen/TH/Gen.hs"
-    with open(gen) as f:
-        n = int(re.search(r"integerL (\d+)", f.read()).group(1))
-    replace(gen, "integerL {}".format(n), "integerL {}".format(n + 10))
-    for mode in ["opt", "prof"]:
-        build("//th-local-splice:show", mode=mode)
-        expect_set("modules of th-local-splice compiled in {} mode after a body-only edit to TH.Gen".format(mode),
-                   {m for m in compiled_modules(what_ran()) if m.startswith("th-local-splice:")}, {"th-local-splice:C.Splice", "th-local-splice:C.Ann"})
-        expect_output("//th-local-splice:show", "in {} mode after the edit to TH.Gen".format(mode), str(int(shown) + 10), mode)
+        for t in internal:
+            expect_output(t, "in {} mode".format(mode), used[t], mode)
+    bump_literal("th-gen/TH/Gen.hs", 10)
+    bump_literal("th-internal-splice/P/Gen.hs", 10)
+    for mode in [None, "opt", "prof"]:
+        when = "in {} mode after the edits".format(mode or "dev")
+        build("//th-local-splice:show", *internal, mode=mode)
+        ran = compiled_modules(what_ran())
+        expect_set("modules of th-local-splice compiled " + when,
+                   {m for m in ran if m.startswith("th-local-splice:")}, {"th-local-splice:C.Splice", "th-local-splice:C.Ann"})
+        expect("P.Use and own's Main compiled {} (ran: {})".format(when, sorted(ran)),
+               {"th-internal-splice:P.Use", "static:P.Use", "own:Main"} <= ran)
+        expect_output("//th-local-splice:show", when, str(int(shown) + 10), mode)
+        for t in internal:
+            expect_output(t, when, str(int(used[t]) + 10), mode)
 
 
 def check_unrelated_modules(st):
@@ -734,13 +792,13 @@ CHECKS = [
     check_th_modules_dbs,
     check_unlisted_th_dependency_fails,
     check_th_build_depends_not_a_dependency,
-    check_internal_splice_fails,
     check_explicit_level_imports,
     check_own_boot,
     check_main_file,
     check_rts_flags,
     check_boot,
     check_boot_cycle_inline,
+    check_th_boot_cycles,
     check_index,
     check_native_library_change,
     check_native_libraries_for_splices,

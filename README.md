@@ -56,9 +56,6 @@ native (C) libraries that buck2 builds. GHC's interpreter has to load those
 libraries too, and the rules only give them to it with a GNU linker (see
 Note [Template Haskell modules] in `prelude/haskell/compile_per_module.bzl`).
 
-A splice can't run code of its own target's modules. Such a target fails to
-compile, saying so, and has to be built with `per_module = False`.
-
 `per_module` is often much faster at rebuilds:
 
 - With `--make`, an edit to any module rebuilds its whole target from

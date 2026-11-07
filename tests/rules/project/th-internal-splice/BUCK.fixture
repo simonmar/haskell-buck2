@@ -1,12 +1,55 @@
-load("//buck2:haskell.bzl", "haskell_library")
+load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
 
-# A splice of P.Use runs P.Gen, of the same library, which per_module
-# doesn't support: P.Use's compile fails.
+# A splice of P.Use runs P.Gen, of the same library.
 haskell_library(
     name = "th-internal-splice",
     srcs = {
         "P.Gen": "P/Gen.hs",
         "P.Use": "P/Use.hs",
+    },
+    packages = ["base", "template-haskell"],
+    per_module = True,
+)
+
+# Prints P.Use's use, in each build mode (see check_th_modes).
+haskell_binary(
+    name = "main",
+    srcs = {"Main": "Main.hs"},
+    packages = ["base"],
+    deps = [":th-internal-splice"],
+    per_module = True,
+)
+
+# The library again, linked statically only: it has no shared compile of
+# its own to load P.Gen from.
+haskell_library(
+    name = "static",
+    srcs = {
+        "P.Gen": "P/Gen.hs",
+        "P.Use": "P/Use.hs",
+    },
+    packages = ["base", "template-haskell"],
+    preferred_linkage = "static",
+    per_module = True,
+)
+
+# Linked statically whatever the mode, as a binary linked shared can't
+# depend on the library.
+haskell_binary(
+    name = "static-main",
+    srcs = {"Main": "Main.hs"},
+    packages = ["base"],
+    deps = [":static"],
+    link_style = "static",
+    per_module = True,
+)
+
+# A binary whose splice (in Main) runs a module of its own, P.Gen.
+haskell_binary(
+    name = "own",
+    srcs = {
+        "Main": "Own.hs",
+        "P.Gen": "P/Gen.hs",
     },
     packages = ["base", "template-haskell"],
     per_module = True,

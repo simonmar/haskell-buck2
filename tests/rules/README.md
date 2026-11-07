@@ -32,9 +32,9 @@ target's environment. `nix flake check` runs the tests both ways.
 
 Each check prints `PASS` or `FAIL` (with the missing and unexpected members
 of the set it compared) or `SKIP` (the explicit level imports check,
-before GHC 9.14). The script fails on any `FAIL`. Some checks are of what
-per_module doesn't support, or of a mistake in `th_build_depends`: they
-check that the compile fails, saying what to do instead.
+before GHC 9.14). The script fails on any `FAIL`. One check is of a
+mistake in `th_build_depends`: it checks that the compile fails, saying
+what to do instead.
 
 ## How it works
 
@@ -60,7 +60,7 @@ check that the compile fails, saying what to do instead.
 | `//th-local-splice:th-local-splice` | `th_build_depends = ["//th-gen:th-gen"]`: `C.Splice`, a splice of `gen`; `C.Plain`, a module without Template Haskell; `C.Ann`, an `ANN` pragma |
 | `//th-local-splice:show` | prints `C.Splice`'s value, which comes from `gen` |
 | `//th-prebuilt-splice:th-prebuilt-splice` | `th_build_depends = []`: a splice that runs only `template-haskell` |
-| `//eli:eli` | GHC 9.14: `import splice TH.Gen`, and `import splice Language.Haskell.TH` |
+| `//eli:eli` | GHC 9.14: `import splice TH.Gen`, `import splice Language.Haskell.TH`, and `import splice E.Own`, a module of its own that imports `TH.Gen` |
 | `//eli-reexport:eli-reexport` | GHC 9.14: `import splice A.Base`, which `//reexport:reexport` re-exports |
 | `//eli-persist:eli-persist` | GHC 9.14: a splice that runs `TH.Gen`, imported without `splice`, in a module with `ExplicitLevelImports` and then `ImplicitStagePersistence` |
 | `//boot-cycle:boot-cycle` | two modules in an import cycle, through an hs-boot file |
@@ -71,6 +71,7 @@ check that the compile fails, saying what to do instead.
 | `//main:main` | a binary depending on `lib-user`; `main-shared`, the same linked shared |
 | `//unrelated-failure:w` | imports a module of `//unrelated-failure:s`, whose other module doesn't compile |
 | `//reexport:reexport`, `//reexport-user:reexport-user` | `reexport` re-exports `A.Base`; `reexport-user` imports `A.Base` through it |
+| `//th-boot-cycles:th-boot-cycles` | two Template Haskell modules, each with its boot file below the other, and one that is only behind them; their splices run only `template-haskell` |
 | `//th-make-dep:th-make-dep`, `//th-make-dep:mkrun`, `//th-make-dep:mkmiss` | Template Haskell modules depending on `//make-lib:make-lib`, built with `--make`: `MK.Lit`'s splice runs only `template-haskell`, and its `th_build_depends` leaves `make-lib` out; `MK.Run`'s runs `make-lib`'s code, which it lists; `MK.Miss`'s does too, without listing it, so its compile fails |
 | `//make-between:p`, `//make-between:m`, `//make-between:t` | `t`'s module imports `m`'s, built with `--make`, whose interface refers to `p`'s, compiled per-module |
 | `//flat-sources:flat-sources`, `//make-lib:make-lib` | `flat-sources`'s flat sources (`Lib.hs`), one of which imports `Q.Lib` from `make-lib` (built with `--make`), whose interface path ends in `/Lib.hi` |
@@ -83,4 +84,7 @@ check that the compile fails, saying what to do instead.
 | `//toolchain-th:toolchain-th` | a splice without a LANGUAGE pragma, for Template Haskell enabled by the toolchain's flags |
 | `//c-lib:c-lib`, `//ffi-import:ffi-import`, `//th-ffi-splice:th-ffi-splice` | a C library, a library that imports its function, and a splice that calls it; `//th-ffi-splice:show` prints the splice |
 | `//th-native-soname:show` | prints a splice that runs code calling a C library whose soname is `libver.so.1` |
-| `//th-internal-splice:th-internal-splice` | a splice that runs a module of its own library, which isn't supported: its compile fails |
+| `//th-own-native:a`, `//th-own-native:b`, `//th-own-native:show` | splices that run their own targets' modules, which call their own C libraries; `show` prints them |
+| `//th-internal-splice:th-internal-splice`, `//th-internal-splice:main` | a splice that runs a module of its own library; `main` prints the splice |
+| `//th-internal-splice:static`, `//th-internal-splice:static-main` | the same library linked statically only, and a binary that prints its splice |
+| `//th-internal-splice:own` | a binary whose splice runs a module of its own |
