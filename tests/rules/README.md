@@ -24,6 +24,12 @@ GHC. A dev shell has what they need, so with one GHC:
 nix develop .#ghc9141 -c sh -c 'tests/rules/run.sh "$(dirname "$(command -v ghc)")"'
 ```
 
+With `GHC_WORKER` set to a `ghc-worker` (`tools/ghc-worker`) built with the
+same GHC, the modules are compiled in that worker (`[haskell]
+per_module_worker`). The same checks apply, and `check_workers` checks that
+the modules were compiled in the worker, except those that need their
+target's environment. `nix flake check` runs the tests both ways.
+
 Each check prints `PASS` or `FAIL` (with the missing and unexpected members
 of the set it compared). The script fails on any `FAIL`. Some checks are of
 what per_module doesn't support, a splice that runs local code: they check
@@ -54,6 +60,7 @@ that the compile fails, saying how to build the target instead.
 | `//th-local-splice:th-local-splice` | a splice of `TH.Gen.gen`, from another local library, which isn't supported: its compile fails |
 | `//th-prebuilt-splice:th-prebuilt-splice` | a splice that runs only `template-haskell` |
 | `//boot-cycle:boot-cycle` | two modules in an import cycle, through an hs-boot file |
+| `//boot-cycle-inline:boot-cycle-inline` | with -O, a module that needs the interface of a module in an import cycle that it reaches only through an unfolding |
 | `//ownboot:ownboot` | a module whose hs-boot file no import cycle needs |
 | `//mainname:server` | a binary whose Main module is in `app/Server.hs`, without a module header |
 | `//rtsflags:rtsflags` | `+RTS ... -RTS` among the compiler flags |
@@ -64,6 +71,8 @@ that the compile fails, saying how to build the target instead.
 | `//make-between:p`, `//make-between:m`, `//make-between:t` | `t`'s module imports `m`'s, built with `--make`, whose interface refers to `p`'s, compiled per-module |
 | `//flat-sources:flat-sources`, `//make-lib:make-lib` | `flat-sources`'s flat sources (`Lib.hs`), one of which imports `Q.Lib` from `make-lib` (built with `--make`), whose interface path ends in `/Lib.hi` |
 | `//module-move:hi`, `//module-move:lo`, `//module-move:main` | a module that moves from `hi` to `lo`, its dependency |
+| `//worker-attr:worker-attr` | with `GHC_WORKER`: a target that names its worker (`//worker-attr:w`) |
+| `//build-tools:shared`, `//build-tools:own` | a module run through a preprocessor (`-pgmF`), a build tool: `bt-shared`, which the project's buckconfig puts on the worker's `PATH`, and `bt-own`, which it doesn't |
 | `//index:index` | built with `-fwrite-ide-info`, for its index (`index.bxl` prints it) |
 | `//module-name-clash:user` | `X` uses `bar` through `second`'s `Re`, which re-exports it from `second`'s `Utils`; `first` and `user` have a module `Utils` too |
 | `//header:header` | a module that `#include`s a header in the target's `srcs` (`Hdr/value.h`) |

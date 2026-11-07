@@ -1,0 +1,5 @@
+-- The repository's Haskell package, the persistent worker, with its test
+-- suites and benchmark enabled, so that `cabal build all` builds them too.
+packages: tools/ghc-worker
+tests: True
+benchmarks: True

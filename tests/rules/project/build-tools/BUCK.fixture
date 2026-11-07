@@ -1,0 +1,33 @@
+load("//buck2:haskell.bzl", "haskell_library")
+load("//worker-attr:defs.bzl", "exe")
+
+# Two preprocessors (-pgmF), used as build tools. The buckconfig puts
+# bt-shared on the shared worker's PATH (per_module_worker_build_tools), but
+# not bt-own. Each writes its module, ignoring the source.
+exe(
+    name = "bt-shared",
+    exe = "bt-shared",
+    # The toolchain depends on it.
+    visibility = ["PUBLIC"],
+)
+
+exe(
+    name = "bt-own",
+    exe = "bt-own",
+)
+
+haskell_library(
+    name = "shared",
+    srcs = {"BT.Shared": "BT/Shared.hs"},
+    packages = ["base"],
+    build_tool_depends = [":bt-shared"],
+    per_module = True,
+)
+
+haskell_library(
+    name = "own",
+    srcs = {"BT.Own": "BT/Own.hs"},
+    packages = ["base"],
+    build_tool_depends = [":bt-own"],
+    per_module = True,
+)

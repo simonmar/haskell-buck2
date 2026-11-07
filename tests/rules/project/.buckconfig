@@ -27,3 +27,6 @@
 # project uses through its buck2/, are BUCK.
 [buildfile]
   name = BUCK.fixture,BUCK
+
+[haskell]
+  per_module_worker_build_tools = root//build-tools:bt-shared

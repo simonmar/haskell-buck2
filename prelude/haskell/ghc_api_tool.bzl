@@ -1,5 +1,5 @@
 load("@prelude//decls:toolchains_common.bzl", "toolchains_common")
-load("@prelude//haskell:toolchain.bzl", "HaskellToolchainInfo")
+load("@prelude//haskell:toolchain.bzl", "HaskellToolchainInfo", "compile_env_script", "in_compile_env")
 
 # A program of the rules' own that uses the GHC API (prelude/haskell/tools/
 # ghc-api), built with the toolchain's GHC from `srcs` and the packages that
@@ -8,23 +8,18 @@ load("@prelude//haskell:toolchain.bzl", "HaskellToolchainInfo")
 # installed. The program gets that GHC's libdir as the CPP macro GHC_LIBDIR.
 def _haskell_ghc_api_tool_impl(ctx: AnalysisContext) -> list[Provider]:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
-    # The toolchain's compile_env, whose values are shell-evaluated, as for
-    # every GHC command (see ghc_env in compile.bzl).
-    env_script = "".join(['export {}="{}"; '.format(name, value) for name, value in haskell_toolchain.compile_env.items()])
-
-    def in_compile_env(cmd):
-        return cmd_args("sh", "-c", env_script + 'exec "$@"', "sh", cmd) if env_script else cmd
+    env_script = compile_env_script(haskell_toolchain.compile_env)
     srcs = ctx.actions.symlinked_dir("srcs", {src.basename: src for src in ctx.attrs.srcs}, has_content_based_path = False)
 
     libdir = ctx.actions.declare_output("libdir")
     ctx.actions.run(
-        in_compile_env(cmd_args("sh", "-c", 'out="$1"; shift; "$@" --print-libdir > "$out"', "sh", libdir.as_output(), haskell_toolchain.compiler)),
+        in_compile_env(env_script, [], cmd_args("sh", "-c", 'out="$1"; shift; "$@" --print-libdir > "$out"', "sh", libdir.as_output(), haskell_toolchain.compiler)),
         category = "haskell_ghc_api_tool_libdir",
     )
 
     exe = ctx.actions.declare_output(ctx.attrs.name)
     ctx.actions.run(
-        in_compile_env(cmd_args(
+        in_compile_env(env_script, [], cmd_args(
             "sh",
             "-c",
             'libdir=$(cat "$1"); shift; exec "$@" -outputdir "$BUCK_SCRATCH_PATH" "-DGHC_LIBDIR=\\"$libdir\\""',

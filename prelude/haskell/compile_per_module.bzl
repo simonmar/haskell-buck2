@@ -111,6 +111,14 @@ def _module_of(node: str) -> str:
 def _node_file(node: str, ext: str) -> str:
     return module_name_to_file(_module_of(node), ext + (_BOOT if _is_boot(node) else ""))
 
+# A path's stem and extension: src/Foo.hs-boot gives src/Foo and
+# hs-boot.
+def _split_ext(path: str) -> (str, str):
+    dot = path.rfind(".")
+    if dot < 0 or "/" in path[dot:]:
+        return path, ""
+    return path[:dot], path[dot + 1:]
+
 # The directory of a target's per-module compile in one way, relative to the
 # target's outputs. The modules' outputs are below it, in per_module_out_dir.
 def per_module_dir(link_style: LinkStyle, enable_profiling: bool) -> str:
@@ -217,6 +225,25 @@ def _declare_module_outputs(ctx: AnalysisContext, out_dir: str, nodes: list, osu
         dyn_hi = {n: declare(n, "dyn_hi") for n, _ in nodes} if dynamic_too else {},
     )
 
+# The persistent worker for a target's compile actions (see Note [The
+# persistent worker]). That's the worker the target names
+# (per_module_worker), or else the toolchain's shared one. It's None if
+# there's no worker, or if the target has a build tool that isn't on the
+# worker's PATH (see per_module_worker_build_tools).
+def _per_module_worker(ctx: AnalysisContext) -> WorkerInfo | None:
+    haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
+    shared_tools = haskell_toolchain.per_module_worker_build_tools
+    if any([t.label.raw_target() not in shared_tools for t in ctx.attrs.build_tool_depends]):
+        return None
+    own_worker = getattr(ctx.attrs, "per_module_worker", None)
+    return own_worker[WorkerInfo] if own_worker != None else haskell_toolchain.per_module_shared_worker
+
+# The version of the request that the worker takes (as does the per-module
+# compile script), and of what the worker writes back. The worker refuses a
+# request of any other version. When either changes, bump this and the
+# worker's version in tools/ghc-worker/src/Contract.hs.
+_WORKER_CONTRACT = "1"
+
 # Once the target's module graph is known, this registers a compile action
 # for each node, and makes its modules' closure sets for its dependents
 # (see _ModuleClosureTSet). `s` holds compile_per_module's values.
@@ -244,8 +271,10 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     hisuf = s.hisuf
     tag = s.tag
     producing_indices = s.producing_indices
+    src_tree = s.src_tree
     base_cmd = s.base_cmd
     env = s.env
+    worker_info = s.worker_info
     compile_script = s.compile_script
 
     imports, upstream, th_nodes = _read_deps(s.label, deps.read_json(), nodes, module_libs)
@@ -301,21 +330,28 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             hie_of[n] = actions.declare_output(prefix + "hie/" + n + "/" + _node_file(n, "hie"), has_content_based_path = False)
             module_flags.add("-hiedir", _dir_of(hie_of[n].as_output(), n, "hie"))
 
-        # The compile tool's request (see Request in tools/ghc-api).
+        # The request goes to the worker if there is one, or else to the
+        # compile tool: see Note [The persistent worker].
         depfile = actions.declare_output(prefix + "dep/" + n + ".dep", has_content_based_path = False)
         request = cmd_args(
+            "--request",
+            "--contract",
+            _WORKER_CONTRACT,
             "--depfile",
             tag.tag_artifacts(depfile.as_output()),
             "--abi",
             out[abi_of[n]],
             "--module",
             _module_of(n).replace(".", "/"),
+            "--source",
+            src_of[n],
             "--outdir",
             _dir_of(out[hi_of[n]], n, hisuf),
             "--hisuf",
             hisuf,
             "--unit",
             s.unit,
+            "--boot" if _is_boot(n) else [],
             # Paths only, not inputs: the interfaces the module reads are
             # inputs already (upstream_closure_sets, and the import
             # directories of --make libraries, with the package dbs). A
@@ -323,6 +359,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             # of its interfaces, which as an input would make the module wait
             # for that interface.
             [cmd_args(d, format = "--hidir=" + unit + "={}", ignore_artifacts = True) for unit, d in hidirs],
+            tag.tag_artifacts(cmd_args(src_tree, format = "--srcroot={}")) if src_tree != None else [],
             cmd_args(mkdirs, format = "--mkdir={}"),
             "--",
             base_cmd,
@@ -330,12 +367,13 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             "--",
             module_flags,
         )
-        actions.run(
-            in_env(env, cmd_args(compile_script, request)),
-            category = "haskell_compile_module_" + suffix.replace("-", "_"),
-            identifier = n,
-            dep_files = {"hs": tag},
-        )
+        # The compile tool, which runs the request as one `ghc -c`.
+        script = in_env(env, cmd_args(compile_script))
+        category = "haskell_compile_module_" + suffix.replace("-", "_")
+        if worker_info != None:
+            actions.run(request, exe = WorkerRunInfo(worker = worker_info, exe = script), category = category, identifier = n, dep_files = {"hs": tag})
+        else:
+            actions.run(cmd_args(script, request), category = category, identifier = n, dep_files = {"hs": tag})
 
     obj_map = {}
     hi_map = {}
@@ -413,7 +451,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     this_pkg = pkgname or haskell_library_unit_id(ctx.label)
 
     # A binary's modules also get a unit named after the target, rather than
-    # GHC's default `main`, which every binary would share.
+    # GHC's default `main`. A persistent worker runs the splices of many
+    # targets in one process, and its runtime would confuse two targets'
+    # modules with the same unit and name.
     cmd_flags, file_flags = ghc_flags(ctx, link_style, enable_profiling, this_pkg, dynamic_too)
     # The target's other sources (headers a module #includes, say), whose
     # use GHC doesn't record: plain inputs of every compile, as with --make.
@@ -422,8 +462,23 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     base_cmd = cmd_args(haskell_toolchain.compiler, ghc_args)
     env = ghc_env(ctx, prefix + "build-tool-depends")
 
+    worker_info = _per_module_worker(ctx)
+
     nodes = _nodes(ctx)
     src_of = {n: src for n, src in nodes}
+
+    # A tree of the target's sources, which is the worker's import path (see
+    # Note [The persistent worker]). It's a tagged input: the tree changes
+    # with any of the target's sources, which is no reason to compile the
+    # other modules again. A module's own source is an ordinary input anyway.
+    src_tree = None
+    if worker_info != None:
+        src_tree = ctx.actions.symlinked_dir(
+            prefix + "srcs",
+            # Each source keeps its extension: .lhs, say, is literate.
+            {_module_of(n).replace(".", "/") + "." + _split_ext(src.short_path)[1]: src for n, src in nodes},
+            has_content_based_path = False,
+        )
 
     out_dir = per_module_out_dir(ctx, link_style, enable_profiling)
     module_outputs = _declare_module_outputs(ctx, out_dir, nodes, osuf, hisuf, dynamic_too)
@@ -500,8 +555,10 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             hisuf = hisuf,
             tag = tag,
             producing_indices = producing_indices,
+            src_tree = src_tree,
             base_cmd = base_cmd,
             env = env,
+            worker_info = worker_info,
         ),
         deps = deps,
         dep_closures = {lib.name: lib.closures for lib in module_libs.values()},
@@ -523,7 +580,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #
 # The price is CPU. Each `ghc -c` reads the interfaces of everything its
 # module imports (and, for Template Haskell, loads the prebuilt libraries),
-# which `ghc --make` does only once per target.
+# which `ghc --make` does only once per target. A persistent worker takes
+# most of that cost away (see Note [The persistent worker]).
 #
 # Terms
 #
@@ -575,6 +633,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #   edit.
 # - Note [Template Haskell modules]: what code the modules that run code at
 #   compile time can run.
+# - Note [The persistent worker]: compiling the modules in long-running
+#   GHC sessions rather than one `ghc -c` per module.
 
 # Note [Compiling against dependencies module by module]
 #
@@ -643,7 +703,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #
 # - For each imported module, its .abi file, which holds just the
 #   interface's ABI hash. Each action writes one next to its interface, from
-#   the interface itself (DepFile in tools/ghc-api).
+#   the interface itself (DepFile in tools/ghc-api, which the compile tool
+#   and the persistent worker share).
 # - Each file a Template Haskell splice read, which GHC records as a
 #   dependent file (addDependentFile). (The libraries the splices loaded are
 #   plain inputs instead: see Note [Template Haskell modules].)
@@ -713,3 +774,77 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # pragmas and the target's flags, and looks for ANN pragmas in its
 # (preprocessed) source. That can find too much (an ANN pragma in a comment,
 # say), but it's better to be conservative. It doesn't catch GHC plugins.
+
+# Note [The persistent worker]
+#
+# 1. The problem
+#
+# Most of what compiling per-module costs over --make is starting a GHC for
+# every module, which reads the interfaces of the module's imports all over
+# again.
+#
+# 2. The solution
+#
+# A buck2 persistent worker is a long-running process that buck2 sends
+# actions to. Ours (tools/ghc-worker) compiles each module as it arrives,
+# concurrently with the others, in a GHC session that keeps the interfaces
+# it has read. It is configured by `[haskell] per_module_worker` (see
+# toolchains/per_module_worker.bzl).
+#
+# 3. The request
+#
+# A module's action sends the same request with or without a worker. It
+# goes either to the worker, or to the compile tool, which runs it as one
+# `ghc -c`. The request has the module's source and the compile's flags,
+# which come in two parts:
+#
+# - The session flags, shared by all the target's modules. The worker keeps
+#   a session for each set of session flags.
+# - The module's own flags, of which the worker takes only the outputs: -o,
+#   -ohi, -dyno, -dynohi, -hiedir and -stubdir.
+#
+# _WORKER_CONTRACT is the version of the request, so that a worker
+# installed for another version of the rules refuses it.
+#
+# 4. Which worker takes a module
+#
+# buck2 starts a process for each worker (WorkerInfo) that an action names,
+# and keeps it until the end of the build. A worker per target would be
+# hundreds of processes in a large project, each with its own runtime and
+# sessions, which would take far too much memory. So the targets share one
+# worker, made once by the toolchain.
+#
+# A process can't change its environment from one request to the next, so
+# the shared worker can only take modules that need nothing from their
+# target's environment. Those are the modules of targets whose build tools
+# are all on the worker's PATH (see per_module_worker_build_tools in
+# toolchains/per_module_worker.bzl). Splices need nothing from it either,
+# since they load only prebuilt libraries, which find their own dependencies
+# (see Note [Template Haskell modules]).
+#
+# The other modules are compiled without a worker, each by its own
+# `ghc -c`. A worker for each such target, in its environment, would compile
+# them faster. But each would keep its memory until the end of the build,
+# and there may be dozens.
+#
+# With a local worker (`per_module_worker = local`), the worker is a
+# haskell_binary built with the Haskell toolchain, so the toolchain can't
+# depend on it without a cycle. Instead the targets name it themselves
+# (per_module_worker), through a target that wraps it (see worker.bzl).
+#
+# 5. The import path
+#
+# A session finds the modules a compile imports by name, on an import path.
+# This is a tree of just the target's sources. In the project's source
+# directories, a module of another target (a sublibrary's, say) could be
+# found before the current target's.
+#
+# 6. Memory and concurrency
+#
+# A worker lives for one build. It drops a target's sessions once all the
+# target's modules are compiled. It also keeps a bounded number of sessions,
+# dropping the least recently used idle ones (see Note [Dropping the idle
+# sessions] in tools/ghc-worker/src/Worker.hs). It has no concurrency limit
+# of its own: buck2's -j limits the actions in workers along with all the
+# others, and a lower limit per worker would only hold a target's modules
+# back.
