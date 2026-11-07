@@ -84,10 +84,27 @@ def _exported_linker_flags_arg():
         ),
     }
 
+def _data_dirs_arg():
+    return {
+        "data_dirs": attrs.dict(
+            attrs.string(),
+            attrs.dep(),
+            sorted = False,
+            default = {},
+            doc = """
+    Directories of data files, by the environment variable that says where each
+    one is. It is set for this rule's compiles (a Template Haskell splice can
+    read the files) and, for a binary, when it is run with `buck2 run` or as a
+    test or a tool.
+""",
+        ),
+    }
+
 haskell_common = struct(
     srcs_arg = _srcs_arg,
     deps_arg = _deps_arg,
     compiler_flags_arg = _compiler_flags_arg,
     exported_linker_flags_arg = _exported_linker_flags_arg,
     build_tool_depends_arg = _build_tool_depends_arg,
+    data_dirs_arg = _data_dirs_arg,
 )

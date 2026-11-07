@@ -306,6 +306,10 @@ exec "$@"
 # p_o extension of the module's object for dyn_o), which is where they'd be if
 # both compiles shared a build directory, as they do in Cabal; here the two
 # compiles have -odirs of their own, so the objects are copied in first.
+# The environment variables that say where the rule's data files are.
+def data_dirs_env(ctx: AnalysisContext) -> dict[str, Artifact]:
+    return {name: dep[DefaultInfo].default_outputs[0] for name, dep in ctx.attrs.data_dirs.items()}
+
 def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, native_shared_libs_dir: [Artifact, None] = None, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None) -> CompileResultInfo:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     compile_cmd = cmd_args(haskell_toolchain.compiler)
@@ -388,7 +392,7 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
         # timestamps, so this is safe even though Buck doesn't preserve
         # timestamps on artifacts.
         no_outputs_cleanup = True,
-        env = {"LD_LIBRARY_PATH": cmd_args(native_shared_libs_dir)} if native_shared_libs_dir != None else {},
+        env = data_dirs_env(ctx) | ({"LD_LIBRARY_PATH": cmd_args(native_shared_libs_dir)} if native_shared_libs_dir != None else {}),
     )
 
     return args.result
