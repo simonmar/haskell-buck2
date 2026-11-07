@@ -1,0 +1,13 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# A splice of P.Use runs P.Gen, of the same library, which per_module
+# doesn't support: P.Use's compile fails.
+haskell_library(
+    name = "th-internal-splice",
+    srcs = {
+        "P.Gen": "P/Gen.hs",
+        "P.Use": "P/Use.hs",
+    },
+    packages = ["base", "template-haskell"],
+    per_module = True,
+)

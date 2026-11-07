@@ -1,0 +1,33 @@
+load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
+
+# Template Haskell modules with a dependency built with --make
+# (//make-lib:make-lib). MK.Lit's splice runs only template-haskell's code, so
+# it compiles against make-lib's library-less db, without loading make-lib's
+# library. MK.Run's splice runs make-lib's code, which per_module doesn't
+# support, so it fails to compile.
+haskell_library(
+    name = "th-make-dep",
+    srcs = {"MK.Lit": "MK/Lit.hs"},
+    packages = ["base", "template-haskell"],
+    deps = ["//make-lib:make-lib"],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)
+
+# Prints MK.Lit's lit, in each build mode (see check_th_modes).
+haskell_binary(
+    name = "lit",
+    srcs = {"Main": "Lit.hs"},
+    packages = ["base"],
+    deps = [":th-make-dep"],
+    per_module = True,
+)
+
+haskell_library(
+    name = "mkrun",
+    srcs = {"MK.Run": "MK/Run.hs"},
+    packages = ["base", "template-haskell"],
+    deps = ["//make-lib:make-lib"],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)
