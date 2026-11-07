@@ -57,6 +57,7 @@ load(
     "@prelude//haskell:compile.bzl",
     "CompileResultInfo",
     "compile",
+    "data_dirs_env",
 )
 load(
     "@prelude//haskell:haskell_haddock.bzl",
@@ -1275,6 +1276,27 @@ def derive_indexing_tset(actions: AnalysisActions, link_style: LinkStyle, value:
         children = index_children,
     )
 
+# A script that runs the binary with the variables of its data_dirs set, as
+# `cabal run` does. The paths are made absolute from where the script is, so
+# that they still work if the binary (or run_in_cwd) changes directory.
+def _run_with_data_dirs(ctx: AnalysisContext, binary: Artifact) -> Artifact:
+    script = ctx.actions.declare_output(binary.basename + "-with-data-dirs", has_content_based_path = False)
+    ctx.actions.write(
+        script,
+        cmd_args(
+            "#!/bin/sh",
+            'here=$(cd "$(dirname "$0")" && pwd)',
+            [
+                cmd_args("export ", name, '="$here/', dir, '"', delimiter = "")
+                for name, dir in data_dirs_env(ctx).items()
+            ],
+            cmd_args('exec "$here/', binary, '" "$@"', delimiter = ""),
+            relative_to = (script, 1),
+        ),
+        is_executable = True,
+    )
+    return script
+
 def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     enable_profiling = ctx.attrs.enable_profiling
 
@@ -1608,6 +1630,9 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         run = cmd_args(output, hidden = symlink_dir)
     else:
         run = cmd_args(output)
+
+    if ctx.attrs.data_dirs:
+        run = cmd_args(_run_with_data_dirs(ctx, output), hidden = [run, data_dirs_env(ctx).values()])
 
     providers = [
         DefaultInfo(default_output = output),

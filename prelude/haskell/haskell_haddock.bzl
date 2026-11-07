@@ -6,7 +6,7 @@
 # of this source tree. You may select, at your option, one of the
 # above-listed licenses.
 
-load("@prelude//haskell:compile.bzl", "compile_args")
+load("@prelude//haskell:compile.bzl", "compile_args", "data_dirs_env")
 load("@prelude//haskell:link_info.bzl", "cxx_toolchain_link_style")
 load(
     "@prelude//haskell:toolchain.bzl",
@@ -110,6 +110,7 @@ def haskell_haddock_lib(ctx: AnalysisContext, pkgname: str) -> Provider:
         cmd_args(script, hidden = cmd),
         category = "haskell_haddock",
         no_outputs_cleanup = True,
+        env = data_dirs_env(ctx),
     )
 
     return HaskellHaddockInfo(interface = iface, html = odir)
