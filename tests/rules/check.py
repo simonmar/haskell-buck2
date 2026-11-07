@@ -18,7 +18,8 @@ import sys
 import time
 import traceback
 
-MAIN_TARGETS = ["//lib:lib", "//lib-user:lib-user", "//th-gen:th-gen", "//th-prebuilt-splice:th-prebuilt-splice", "//th-make-dep:th-make-dep", "//ffi-import:ffi-import", "//make-between:t", "//boot-cycle:boot-cycle", "//main:main", "//reexport:reexport", "//reexport-user:reexport-user", "//flat-sources:flat-sources"]
+MAIN_TARGETS = ["//lib:lib", "//lib-user:lib-user", "//th-gen:th-gen", "//th-local-splice:th-local-splice", "//th-local-splice:show", "//th-prebuilt-splice:th-prebuilt-splice", "//th-make-dep:th-make-dep", "//th-make-dep:mkrun", "//th-make-dep:mkall", "//ffi-import:ffi-import", "//make-between:t", "//boot-cycle:boot-cycle", "//main:main", "//reexport:reexport", "//reexport-user:reexport-user", "//flat-sources:flat-sources"]
+ELI_TARGETS = ["//eli:eli", "//eli-reexport:eli-reexport", "//eli-persist:eli-persist"]
 
 LOG_DIR = "buck-logs"
 
@@ -157,6 +158,7 @@ def parse_compile(cmd):
     units = [session[n + 1] for n, a in enumerate(session) if a == "-this-unit-id"]
     return {"dbs": dbs, "hidirs": hidirs, "unit": units[-1] if units else None}
 
+
 def find_compile(actions, target, module):
     for t, c, i, cmd in actions:
         if target_name(t) == target and c.startswith("haskell_compile_module_") and i == module:
@@ -196,9 +198,10 @@ def replace(path, old, new):
 # --- The checks -------------------------------------------------------------------
 
 class State:
-    def __init__(self, worker):
+    def __init__(self, eli, worker):
+        self.eli = eli
         self.worker = worker
-        self.targets = MAIN_TARGETS
+        self.targets = MAIN_TARGETS + (ELI_TARGETS if eli else [])
         self.entries = None
         self.actions = None
 
@@ -213,17 +216,16 @@ def check_clean_build(st):
     st.entries = what_ran_entries()
     st.actions = what_ran(st.entries)
     expect_set("modules compiled from clean", compiled_modules(st.actions),
-               {"lib:A.Base", "lib:A.Mid", "lib:A.Unused", "lib-user:B.M", "th-gen:TH.Gen", "th-make-dep:MK.Lit", "ffi-import:FFI.C", "p:Chain.P", "t:Chain.T",
-                "th-prebuilt-splice:D.Splice", "boot-cycle:Cyc.A", "boot-cycle:Cyc.B", "boot-cycle:Cyc.B-boot", "reexport:R.R", "reexport-user:U.M", "main:Main", "main:Main.Util",
-                "flat-sources:Lib", "flat-sources:User", "lib-user:B.Lit", "lib-user:B.UsesLit", "lib-user:B.Safe"})
+               {"lib:A.Base", "lib:A.Mid", "lib:A.Unused", "lib-user:B.M", "th-gen:TH.Gen", "th-local-splice:C.Splice", "th-local-splice:C.Plain", "th-local-splice:C.Ann", "th-make-dep:MK.Lit", "mkrun:MK.Run", "mkall:MK.All", "ffi-import:FFI.C", "p:Chain.P", "t:Chain.T",
+                "th-prebuilt-splice:D.Splice", "boot-cycle:Cyc.A", "boot-cycle:Cyc.B", "boot-cycle:Cyc.B-boot", "reexport:R.R", "reexport-user:U.M", "main:Main", "main:Main.Util", "show:Main",
+                "flat-sources:Lib", "flat-sources:User", "lib-user:B.Lit", "lib-user:B.UsesLit", "lib-user:B.Safe"}
+               | ({"eli:E.Gen", "eli:E.Lib", "eli:E.Mk", "eli-reexport:ER.M", "eli-persist:P.Persist"} if st.eli else set()))
 
 
 def check_workers(st):
     """All the module compiles of the clean build ran in the shared persistent
     worker when the project has one (run.sh with GHC_WORKER), and as their
-    own processes otherwise. That includes the Template Haskell modules,
-    since splices load only prebuilt libraries (see Note [The persistent
-    worker]).
+    own processes otherwise. That includes the Template Haskell modules.
 
     A target with build tools compiles in the worker too, if its build tools
     are all on the worker's PATH (per_module_worker_build_tools, which the
@@ -282,6 +284,20 @@ def check_early_db_conf(st):
     expect("lib's early db conf has one import-dir, the modules' output directory (got {})".format(dirs),
            len(dirs) == 1 and re.fullmatch(r'"\$\{pkgroot\}/per-module-shared/out-[0-9]+"', dirs[0]) is not None)
     expect("lib's final db conf names its library (fields: {})".format(sorted(final)), "extra-libraries" in final)
+
+
+def check_native_libraries_in_conf(st):
+    """For GHC's interpreter, ffi-import's final db names the native libraries
+    it depends on, each after those it depends on (c-base before c-lib), then
+    its own library, and the directory they are in. So a splice that loads
+    ffi-import finds them without LD_LIBRARY_PATH."""
+    out = buck2("aquery", "all_actions(root//ffi-import:ffi-import)", "--output-all-attributes").stdout
+    confs = {v.get("identifier"): v.get("contents", "") for v in json.loads(out).values() if v.get("kind") == "write"}
+    final = parse_conf(confs["pkg-shared.conf"])
+    expect_set("ffi-import's libraries for GHC's interpreter, in order",
+               [tuple(final.get("extra-ghci-libraries", []))], [("c-lib_c-base", "c-lib_c-lib", "root_ffi-import_ffi-import")])
+    expect("ffi-import's dynamic-library-dirs have its native libraries' tree (got {})".format(final.get("dynamic-library-dirs")),
+           any("ghci_native_libs" in d for d in final.get("dynamic-library-dirs", [])))
 
 
 def parse_conf(text):
@@ -344,27 +360,57 @@ def check_binary_unit(st):
 
 
 def check_th_modules_dbs(st):
-    """A Template Haskell module compiles against the same dbs as one that runs
-    none, since its splices can run only prebuilt code: D.Splice against lib's
-    and th-gen's early dbs, MK.Lit against make-lib's library-less db (make-lib
-    is built with --make)."""
+    """The package dbs of Template Haskell modules:
+
+    - With th_build_depends = ["//th-gen:th-gen"], C.Splice and C.Ann (an ANN
+      pragma) compile against th-gen's final db and lib's early one.
+    - With th_build_depends = [], D.Splice compiles only against early dbs.
+    - Of make-lib, built with --make, MK.Lit (th_build_depends = []) gets the
+      library-less db, and MK.Run (th_build_depends =
+      ["//make-lib:make-lib"]) and MK.All (no th_build_depends) the final
+      db."""
+    for module in ["C.Splice", "C.Ann"]:
+        c = find_compile(st.actions, "th-local-splice", module)
+        expect_set("{}'s package dbs".format(module), c["dbs"], {"lib:early", "th-gen:final", "ghc:global"})
+        expect_set("{}'s interface dirs".format(module), c["hidirs"], {"lib:out", "th-gen:hi"})
     c = find_compile(st.actions, "th-prebuilt-splice", "D.Splice")
     expect_set("D.Splice's package dbs", c["dbs"], {"lib:early", "th-gen:early", "ghc:global"})
     c = find_compile(st.actions, "th-make-dep", "MK.Lit")
     expect_set("MK.Lit's package dbs", c["dbs"], {"make-lib:nolib", "ghc:global"})
+    c = find_compile(st.actions, "mkrun", "MK.Run")
+    expect_set("MK.Run's package dbs", c["dbs"], {"make-lib:final", "ghc:global"})
+    c = find_compile(st.actions, "mkall", "MK.All")
+    expect_set("MK.All's package dbs", c["dbs"], {"make-lib:final", "ghc:global"})
 
 
-def check_local_splice_fails(st):
-    """Not supported: a splice that runs code of another local package.
-    C.Splice's runs TH.Gen's (//th-gen:th-gen, compiled per-module), MK.Run's
-    runs Q.Lib's (//make-lib:make-lib, built with --make). Their dbs name no
-    library, so each fails to compile, saying how to build the target
-    instead."""
-    for target, module in [("//th-local-splice:th-local-splice", "C.Splice"), ("//th-make-dep:mkrun", "MK.Run")]:
-        p = build(target, keep_going=True)
-        expect("{} fails to build".format(target), p.returncode != 0)
-        expect("{}'s failure is {}'s, and names the fix (got:\n{})".format(target, module, tail(p.stderr, 15)),
-               module in p.stderr and "per_module = False" in p.stderr)
+def check_th_build_depends_not_a_dependency(st):
+    """th_build_depends naming a target that isn't a dependency
+    (//th-make-dep:mkbad's names //lib:lib) is an error of the target's
+    analysis."""
+    p = build("//th-make-dep:mkbad", keep_going=True)
+    expect("//th-make-dep:mkbad fails to build", p.returncode != 0)
+    expect("its failure says th_build_depends names a non-dependency (got:\n{})".format(tail(p.stderr, 15)),
+           "th_build_depends names root//lib:lib, which is not a dependency" in p.stderr)
+
+
+def check_unlisted_th_dependency_fails(st):
+    """A splice that runs code of a local library that its target's
+    th_build_depends leaves out: MK.Miss's runs Q.Lib's (//make-lib:make-lib,
+    built with --make). make-lib's db names no library, so the compile fails,
+    saying to list make-lib in th_build_depends. It still fails after another
+    target's splice has loaded make-lib's library in the same build."""
+    p = build("//th-make-dep:mkmiss", keep_going=True)
+    expect("//th-make-dep:mkmiss fails to build", p.returncode != 0)
+    expect("its failure is MK.Miss's, and names the fix (got:\n{})".format(tail(p.stderr, 15)),
+           "MK.Miss" in p.stderr and "th_build_depends" in p.stderr)
+    # The same after a splice that loaded make-lib's library in the same
+    # build (MK.Load's, which MK.MissAfter imports). With the worker, both
+    # compile in the same process, but a target's splices mustn't see what
+    # another target's loaded.
+    p = build("//th-make-dep:mkmiss-after", keep_going=True)
+    expect("//th-make-dep:mkmiss-after fails to build", p.returncode != 0)
+    expect("its failure is MK.MissAfter's, and names the fix (got:\n{})".format(tail(p.stderr, 15)),
+           "MK.MissAfter" in p.stderr and "th_build_depends" in p.stderr)
 
 
 def check_internal_splice_fails(st):
@@ -375,6 +421,32 @@ def check_internal_splice_fails(st):
     expect("//th-internal-splice:th-internal-splice fails to build", p.returncode != 0)
     expect("its failure is P.Use's, and names the fix (got:\n{})".format(tail(p.stderr, 15)),
            "P.Use" in p.stderr and "this target's own modules" in p.stderr and "per_module = False" in p.stderr)
+
+
+def check_explicit_level_imports(st):
+    """GHC 9.14: explicit level imports choose each module's package dbs. In
+    //eli:eli, whose th_build_depends = []:
+
+    - E.Gen (`import splice TH.Gen`) compiles against th-gen's final db.
+    - E.Mk (`import splice Q.Lib`) compiles against make-lib's final db
+      (make-lib is built with --make).
+    - E.Lib (`import splice Language.Haskell.TH`) compiles only against dbs
+      that name no library.
+
+    ER.M (`import splice A.Base`, which reexport re-exports) compiles against
+    lib's and reexport's final dbs. P.Persist, which turns implicit stage
+    persistence back on, has no explicit level imports: it compiles against
+    the final dbs of all of eli-persist's dependencies."""
+    c = find_compile(st.actions, "eli", "E.Gen")
+    expect_set("E.Gen's package dbs", c["dbs"], {"lib:early", "th-gen:final", "make-lib:nolib", "ghc:global"})
+    c = find_compile(st.actions, "eli", "E.Lib")
+    expect_set("E.Lib's package dbs", c["dbs"], {"lib:early", "th-gen:early", "make-lib:nolib", "ghc:global"})
+    c = find_compile(st.actions, "eli", "E.Mk")
+    expect_set("E.Mk's package dbs", c["dbs"], {"lib:early", "th-gen:early", "make-lib:final", "ghc:global"})
+    c = find_compile(st.actions, "eli-reexport", "ER.M")
+    expect_set("ER.M's package dbs", c["dbs"], {"lib:final", "reexport:final", "ghc:global"})
+    c = find_compile(st.actions, "eli-persist", "P.Persist")
+    expect_set("P.Persist's package dbs", c["dbs"], {"th-gen:final", "ghc:global"})
 
 
 def check_own_boot(st):
@@ -447,6 +519,53 @@ def check_index(st):
     expect_set("the .hie files of //index:index's index", index_files("//index:index"), {"A.hie", "B.hie"})
 
 
+def check_native_library_change(st):
+    """U.V's and U.W's splices run //c-lib:c-lib's code, through
+    //ffi-import:ffi-import and //ffi-import:ffi-wrap, and c-lib calls
+    //c-lib:c-base. A change to c-lib compiles both modules again, and the
+    splices run the new code."""
+    expect_output("//th-ffi-splice:show", "before the edit to //c-lib:c-lib", "(7,7)")
+    replace("c-lib/cl.c", "return 7", "return 8")
+    build("//th-ffi-splice:th-ffi-splice")
+    ran = compiled_modules(what_ran())
+    expect("U.V and U.W compiled after the edit to //c-lib:c-lib (ran: {})".format(sorted(ran)),
+           {"th-ffi-splice:U.V", "th-ffi-splice:U.W"} <= ran)
+    expect_output("//th-ffi-splice:show", "after the edit to //c-lib:c-lib", "(8,8)")
+
+
+def check_native_libraries_for_splices(st):
+    """Splices find a native library whose soname isn't of the form
+    libfoo.so: V.S's runs code that calls libver.so.1."""
+    expect_output("//th-native-soname:show", "", "5")
+
+
+def check_configurations(st):
+    """l is built in two configurations in one build, with the same unit id
+    and soname in both. Its v is 4 in the execution platform's configuration,
+    and 3 in the target platform's. tool's splice (tool is gen's build tool)
+    runs the execution platform's l, and user's runs the target platform's.
+    Each gets its own configuration's l. We check that with the toolchain's
+    worker, which has a worker for each configuration, and, with GHC_WORKER,
+    with a worker that the targets name themselves, which compiles both
+    configurations' modules in one process."""
+    for suffix in [""] + (["-local"] if st.worker else []):
+        gen, show = "//th-exec-config:gen" + suffix, "//th-exec-config:show" + suffix
+        out = buck2("build", "--show-full-output", gen, show).stdout
+        entries = what_ran_entries()
+        path = [l.split()[1] for l in out.splitlines() if l.split() and l.split()[0].endswith(gen[1:])][0]
+        with open(path) as f:
+            value = f.read().strip()
+        expect("tool{}'s splice ran the execution platform's l (gen.txt: {!r})".format(suffix, value), value == "4")
+        expect_output(show, "(the target platform's l)", "3")
+        if suffix == "" and st.worker:
+            inits = {}
+            for e in entries:
+                m = re.match(r"^(\S+) \(cfg:([^)]*)\) \((\S+)", e["identity"])
+                if m and m.group(3).startswith("haskell_compile_module_") and e["reproducer"].get("executor") == "WorkerInit":
+                    inits[m.group(2)] = inits.get(m.group(2), 0) + 1
+            expect("a worker for each configuration (started: {})".format(inits), sorted(inits.values()) == [1, 1])
+
+
 def check_module_moved(st):
     """A module moved from a target to its dependency (MV.X, from
     //module-move:hi to //module-move:lo): its importer compiles against the
@@ -469,8 +588,10 @@ def check_header_change(st):
 
 def check_toolchain_th(st):
     """With Template Haskell enabled by the toolchain's flags, a module
-    without a LANGUAGE pragma, which runs a splice, compiles: the build is
-    the check. (At the end: it changes the configuration.)"""
+    without a LANGUAGE pragma compiles as one that runs Template Haskell.
+    The build is the check: TF.M's splice runs A.Base's code, which it
+    can't unless it has lib's final db and library. (At the end: it changes
+    the configuration.)"""
     buck2("build", "-c", "haskell.compiler_flags=-XTemplateHaskell", "//toolchain-th:toolchain-th")
 
 
@@ -505,17 +626,36 @@ def check_cutoff_abi_base(st):
     append("lib/A/Base.hs", "\nbase2 :: Int\nbase2 = 2\n")
     ran = rebuild(st)
     expect_set("modules compiled after a new export of A.Base", ran,
-               {"lib:A.Base", "lib:A.Mid", "th-prebuilt-splice:D.Splice", "reexport-user:U.M"})
+               {"lib:A.Base", "lib:A.Mid", "th-local-splice:C.Splice", "th-local-splice:C.Ann", "th-prebuilt-splice:D.Splice", "reexport-user:U.M"}
+               | ({"eli:E.Gen", "eli:E.Lib", "eli-reexport:ER.M"} if st.eli else set()))
 
 
 def check_cutoff_abi_mid(st):
     """A new export of A.Mid recompiles its importers in other packages
-    (B.M, and B.Safe, whose import is a safe one), not B.M's importers in
-    main, whose ABI is unchanged."""
+    (B.M, C.Plain, and B.Safe, whose import is a safe one), not B.M's
+    importers in main, whose ABI is unchanged. With GHC 9.14 it also
+    recompiles ER.M: its splice runs lib's code, so its compile has lib's
+    library, which is linked again, as an input."""
     replace("lib/A/Mid.hs", "module A.Mid (mid) where", "module A.Mid (mid, mid2) where")
     append("lib/A/Mid.hs", "\nmid2 :: Int\nmid2 = 2\n")
     expect_set("modules compiled after a new export of A.Mid", rebuild(st),
-               {"lib:A.Mid", "lib-user:B.M", "lib-user:B.Safe"})
+               {"lib:A.Mid", "lib-user:B.M", "lib-user:B.Safe", "th-local-splice:C.Plain"} | ({"eli-reexport:ER.M"} if st.eli else set()))
+
+
+def check_th_body_change(st):
+    """A change to the body of TH.Gen's gen, which leaves its type and so its
+    ABI the same, recompiles the modules of th-local-splice that load
+    th-gen's library. The library is a plain input of their compiles, since
+    GHC records no use of it. Those modules are C.Splice, whose splice runs
+    gen, and C.Ann, whose ANN pragma runs the interpreter too, but not
+    C.Plain. //th-local-splice:show then prints the new value."""
+    expect_output("//th-local-splice:show", "before the edit to TH.Gen", "43")
+    replace("th-gen/TH/Gen.hs", "integerL 42", "integerL 43")
+    ran = rebuild(st)
+    expect("TH.Gen recompiled after its edit (ran: {})".format(sorted(ran)), "th-gen:TH.Gen" in ran)
+    expect_output("//th-local-splice:show", "after the edit to TH.Gen", "44")
+    expect_set("modules of th-local-splice compiled after a body-only edit to TH.Gen",
+               {m for m in ran if m.startswith("th-local-splice:")}, {"th-local-splice:C.Splice", "th-local-splice:C.Ann"})
 
 
 def expect_output(target, when, value, mode=None):
@@ -525,14 +665,33 @@ def expect_output(target, when, value, mode=None):
 
 def check_th_modes(st):
     """Splices run in the other build modes: opt (static, -dynamic-too) and
-    prof, whose profiled compiles load unprofiled libraries into GHC's
-    interpreter. //th-make-dep:lit prints MK.Lit's splice, which runs
-    template-haskell's code, as in dev mode."""
+    prof, whose compiles run splices in GHC's static and profiled
+    interpreters. Those find libraries in other places than the dynamic one.
+
+    - //th-make-dep:lit prints MK.Lit's splice, which runs template-haskell's
+      code, and //th-local-splice:show prints C.Splice's, which runs th-gen's
+      TH.Gen, as in dev mode.
+    - U.V's, U.W's and V.S's splices, which call native libraries (one with
+      the soname libver.so.1), compile.
+    - After a change to the body of TH.Gen, C.Splice and C.Ann compile again
+      in each mode, and //th-local-splice:show prints the new value."""
+    shown = buck2("run", "//th-local-splice:show").stdout.strip()
     for mode in ["opt", "prof"]:
-        build("//th-make-dep:lit", mode=mode)
+        build("//th-make-dep:lit", "//th-local-splice:show", "//th-ffi-splice:th-ffi-splice", "//th-native-soname:th-native-soname", mode=mode)
         ran = compiled_modules(what_ran())
-        expect("MK.Lit compiled per-module in {} mode (ran: {})".format(mode, sorted(ran)), "th-make-dep:MK.Lit" in ran)
+        expect("the splicing modules compiled per-module in {} mode (ran: {})".format(mode, sorted(ran)),
+               {"th-make-dep:MK.Lit", "th-local-splice:C.Splice", "th-ffi-splice:U.V", "th-ffi-splice:U.W", "th-native-soname:V.S"} <= ran)
         expect_output("//th-make-dep:lit", "in {} mode".format(mode), "2", mode)
+        expect_output("//th-local-splice:show", "in {} mode".format(mode), shown, mode)
+    gen = "th-gen/TH/Gen.hs"
+    with open(gen) as f:
+        n = int(re.search(r"integerL (\d+)", f.read()).group(1))
+    replace(gen, "integerL {}".format(n), "integerL {}".format(n + 10))
+    for mode in ["opt", "prof"]:
+        build("//th-local-splice:show", mode=mode)
+        expect_set("modules of th-local-splice compiled in {} mode after a body-only edit to TH.Gen".format(mode),
+                   {m for m in compiled_modules(what_ran()) if m.startswith("th-local-splice:")}, {"th-local-splice:C.Splice", "th-local-splice:C.Ann"})
+        expect_output("//th-local-splice:show", "in {} mode after the edit to TH.Gen".format(mode), str(int(shown) + 10), mode)
 
 
 def check_unrelated_modules(st):
@@ -567,22 +726,29 @@ CHECKS = [
     check_clean_build,
     check_workers,
     check_early_db_conf,
+    check_native_libraries_in_conf,
     check_cross_package_dep_file,
     check_module_name_clash,
     check_plain_module_uses_early_dbs,
     check_binary_unit,
     check_th_modules_dbs,
-    check_local_splice_fails,
+    check_unlisted_th_dependency_fails,
+    check_th_build_depends_not_a_dependency,
     check_internal_splice_fails,
+    check_explicit_level_imports,
     check_own_boot,
     check_main_file,
     check_rts_flags,
     check_boot,
     check_boot_cycle_inline,
     check_index,
+    check_native_library_change,
+    check_native_libraries_for_splices,
+    check_configurations,
     check_cutoff_comment,
     check_cutoff_abi_base,
     check_cutoff_abi_mid,
+    check_th_body_change,
     check_unrelated_modules,
     check_opt_static,
     check_th_modes,
@@ -597,16 +763,21 @@ CHECKS = [
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", action="append", help="run only this check (by name, without check_); repeatable")
+    ap.add_argument("--ghc-version", required=True)
     ap.add_argument("--worker", action="store_true", help="the project compiles in a persistent worker")
     args = ap.parse_args()
     unknown = set(args.only or []) - {check.__name__[len("check_"):] for check in CHECKS}
     if unknown:
         ap.error("no such check: " + " ".join(sorted(unknown)))
-    st = State(worker=args.worker)
+    major, minor = (int(x) for x in args.ghc_version.split(".")[:2])
+    st = State(eli=(major, minor) >= (9, 14), worker=args.worker)
     failed = []
     for check in CHECKS:
         name = check.__name__[len("check_"):]
         if args.only and name not in args.only and check is not check_clean_build:
+            continue
+        if check is check_explicit_level_imports and not st.eli:
+            print("SKIP   {} (GHC {})".format(name, args.ghc_version))
             continue
         start = time.time()
         try:

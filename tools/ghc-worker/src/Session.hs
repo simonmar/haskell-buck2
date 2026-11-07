@@ -66,6 +66,7 @@ data GhcSession = GhcSession
   , gsModules :: Maybe (Set.Set Node) -- its target's modules and boot interfaces, unless GHC's analysis of them failed
   , gsOutDir :: FilePath -- its target's outputs, in the way it is built: its other sessions share it
   , gsOneShot :: Bool -- whether it compiles in one-shot mode: see Note [One-shot sessions]
+  , gsInterpLock :: Maybe (MVar ()) -- held by each compile, when its external interpreter needs one: see 'interpreterLock'
   }
 
 -- | How sessions compile: see Note [One-shot sessions].
@@ -147,7 +148,7 @@ newSession libdir files names shared mode r = do
     hsc0 <- readIORef ref
     let modules = Set.fromList [(ms_mod_name ms, isBootSummary ms) | ms <- mgModSummaries (hsc_mod_graph hsc0)]
     hsc <- if oneShot then oneShotEnv shared r hsc0 else pure hsc0
-    GhcSession hsc{hsc_FC = withFileHashes files fc} <$> newMVar (Homes M.empty M.empty) <*> pure tmp <*> pure (if analysed then Just modules else Nothing) <*> pure (reqOutDir r) <*> pure oneShot
+    GhcSession hsc{hsc_FC = withFileHashes files fc} <$> newMVar (Homes M.empty M.empty) <*> pure tmp <*> pure (if analysed then Just modules else Nothing) <*> pure (reqOutDir r) <*> pure oneShot <*> interpreterLock (hsc_dflags hsc)
   where
     sources dir = do
       entries <- listDirectory dir
@@ -264,7 +265,10 @@ newTmpDir = do
 -- | Compile the request's module, reporting its diagnostics with the given
 -- action, then write its ABI and dep files. Returns the node compiled.
 compile :: GhcSession -> (Diagnostic -> IO ()) -> Request -> IO Node
-compile s report r = do
+compile s report r = maybe id (\l -> withMVar l . const) (gsInterpLock s) (compileHeld s report r)
+
+compileHeld :: GhcSession -> (Diagnostic -> IO ()) -> Request -> IO Node
+compileHeld s report r = do
   mapM_ (createDirectoryIfMissing True) (reqMkdirs r)
   let hsc0 = gsEnv s
   ems <- summariseFile hsc0 (hsc_home_unit hsc0) M.empty (reqSource r) Nothing Nothing

@@ -9,3 +9,14 @@ haskell_library(
     per_module = True,
     visibility = ["PUBLIC"],
 )
+
+# Re-exports clValue: a splice that runs it through this library reaches
+# //c-lib:c-lib only through //ffi-import:ffi-import.
+haskell_library(
+    name = "ffi-wrap",
+    srcs = {"FFI.W": "FFI/W.hs"},
+    packages = ["base"],
+    deps = [":ffi-import"],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)

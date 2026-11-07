@@ -18,7 +18,9 @@
 -- - "external": the modules it imports from other units, as [unit id,
 --   module];
 -- - "th": whether it may run code at compile time: a splice, or an ANN
---   pragma, which GHC also evaluates with its interpreter.
+--   pragma, which GHC also evaluates with its interpreter;
+-- - "splice": with explicit level imports (GHC 9.14), the modules it imports
+--   at the splice level. Left out without them.
 module Main (main) where
 
 import Control.Monad (forM, unless)
@@ -50,7 +52,7 @@ import GHC.Driver.Config.Diagnostic (initIfaceMessageOpts)
 import GHC.Iface.Errors.Ppr (missingInterfaceErrorDiagnostic)
 #endif
 
-import Imports (importLocated, importName, srcImportName)
+import Imports (importLocated, importName, spliceImport, srcImportName)
 import Request (withoutRts)
 
 main :: IO ()
@@ -116,6 +118,7 @@ analyse sources flags = defaultErrorHandler defaultFatalMessager defaultFlushOut
         , nub (mapMaybe (uncurry home . importName) imports ++ mapMaybe (\i -> M.lookup (srcImportName i) bootOf) (ms_srcimps ms) ++ own)
         , external
         , th
+        , if not (isBoot ms) && explicitLevelImports opts then Just [moduleNameString mn | i <- ms_textual_imps ms, spliceImport i, let (mn, _) = importName i] else Nothing
         )
     pure (render nodes)
 
@@ -131,6 +134,18 @@ notFound hsc (L loc mn) found = do
   hPutStrLn stderr (showSDoc dflags (ppr loc) ++ ": error:\n" ++ unlines (map ("    " ++) (lines (showSDoc dflags doc))))
   exitWith (ExitFailure 1)
 
+-- | Whether a module has explicit level imports: whether its imports carry
+-- levels that say what its splices run (see Note [Explicit level imports] in
+-- compile_per_module.bzl). ExplicitLevelImports turns implicit stage
+-- persistence off, but a module may turn it back on, and then its splices
+-- can still run code of its ordinary imports.
+explicitLevelImports :: DynFlags -> Bool
+#if MIN_VERSION_ghc(9,14,0)
+explicitLevelImports opts = not (xopt LangExt.ImplicitStagePersistence opts)
+#else
+explicitLevelImports _ = False
+#endif
+
 -- | Whether the (preprocessed) source has an ANN pragma, whose name, like
 -- any pragma's, may be in any case.
 hasAnn :: String -> Bool
@@ -138,13 +153,15 @@ hasAnn text = or [isAnn (dropWhile isSpace (drop 3 t)) | t <- tails text, "{-#" 
   where
     isAnn s = map toLower (take 3 s) == "ann" && all isSpace (take 1 (drop 3 s))
 
-render :: [(String, [String], [(String, String)], Bool)] -> String
+render :: [(String, [String], [(String, String)], Bool, Maybe [String])] -> String
 render nodes = "{" ++ intercalate ",\n" (map node nodes) ++ "}\n"
   where
-    node (n, imports, external, th) =
+    node (n, imports, external, th, splice) =
       str n ++ ": {"
         ++ intercalate ", "
-          ["\"imports\": " ++ list (map str imports), "\"external\": " ++ list [list [str u, str m] | (u, m) <- external], "\"th\": " ++ if th then "true" else "false"]
+          ( ["\"imports\": " ++ list (map str imports), "\"external\": " ++ list [list [str u, str m] | (u, m) <- external], "\"th\": " ++ if th then "true" else "false"]
+              ++ ["\"splice\": " ++ list (map str s) | Just s <- [splice]]
+          )
         ++ "}"
     list xs = "[" ++ intercalate ", " xs ++ "]"
     str s = "\"" ++ concatMap char s ++ "\""

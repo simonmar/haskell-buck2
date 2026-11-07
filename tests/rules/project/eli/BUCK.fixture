@@ -1,0 +1,17 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# GHC 9.14 and later: explicit level imports choose each splice module's
+# package dbs, whatever th_build_depends says.
+haskell_library(
+    name = "eli",
+    srcs = {
+        "E.Gen": "E/Gen.hs",
+        "E.Lib": "E/Lib.hs",
+        "E.Mk": "E/Mk.hs",
+    },
+    packages = ["base", "template-haskell"],
+    deps = ["//lib:lib", "//make-lib:make-lib", "//th-gen:th-gen"],
+    th_build_depends = [],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)

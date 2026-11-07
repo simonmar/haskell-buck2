@@ -6,6 +6,7 @@ haskell_library(
     srcs = {"D.Splice": "D/Splice.hs"},
     packages = ["base", "template-haskell"],
     deps = ["//lib:lib", "//th-gen:th-gen"],
+    th_build_depends = [],
     per_module = True,
     visibility = ["PUBLIC"],
 )
