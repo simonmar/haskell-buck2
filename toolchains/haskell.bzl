@@ -39,11 +39,10 @@ haskell_toolchain = rule(
         "linker_flags": attrs.list(attrs.string(), default = []),
         "compile_env": attrs.dict(attrs.string(), attrs.string(), default = {}),
         "link_env": attrs.dict(attrs.string(), attrs.string(), default = {}),
-        # Whether the `compiler` above is itself dynamically linked -
-        # see buck2/gen-haskell-prebuilt.py's own `_ghc_dynamic()` for
-        # how this gets discovered (not assumed), and buck2/prelude/
-        # haskell/haskell.bzl's own uses of `haskell_toolchain.
-        # dynamic_ghc` for what it actually gates.
+        # Whether the `compiler` above is itself dynamically linked.
+        # We need to know this because it affects how Template Haskell
+        # code needs to be compiled. It can be found by running `ghc
+        # --info`: look for the "GHC Dynamic" value.
         "dynamic_ghc": attrs.bool(default = True),
     },
     is_toolchain_rule = True,
