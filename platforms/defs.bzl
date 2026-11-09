@@ -9,7 +9,7 @@
 load("@prelude//cfg/exec_platform:marker.bzl", "get_exec_platform_marker")
 
 # Actions run locally, and their results are looked up in, and uploaded to, a
-# remote action cache (the one `[buck2_re_client]` in .buckconfig points to).
+# remote action cache (the one `[buck2_re_client]` in the buckconfig points to).
 # Nothing runs remotely.
 def _cache_executor_config():
     return CommandExecutorConfig(
@@ -49,8 +49,9 @@ execution_platform_with_constraints = rule(
     attrs = {
         "base": attrs.dep(providers = [ExecutionPlatformInfo]),
         "constraint_values": attrs.list(attrs.dep(providers = [ConstraintValueInfo]), default = []),
-        # `[cabal_buck2] cache = true` in .buckconfig, which `cabal buck2
-        # --cache=ADDRESS` writes together with the remote cache's address.
+        # `[cabal_buck2] cache = true` in the buckconfig (.buckconfig.local,
+        # where `cabal buck2 --cache=ADDRESS` writes it together with the
+        # remote cache's address).
         "cache": attrs.bool(default = read_root_config("cabal_buck2", "cache", "false") == "true"),
     },
 )
