@@ -47,11 +47,6 @@ CxxToolsInfo = provider(
     },
 )
 
-load("@third-party-haskell//:tools.bzl", "CC_FINGERPRINT")
-
-# Whether there is a remote action cache (see buck2/platforms/defs.bzl).
-_CACHE = read_root_config("cabal_buck2", "cache", "false") == "true"
-
 def _legacy_equivalent_cxx_tools_info_windows(ctx: AnalysisContext, default_toolchain: CxxToolsInfo) -> CxxToolsInfo:
     return CxxToolsInfo(
         compiler = default_toolchain.compiler if ctx.attrs.compiler == None or ctx.attrs.compiler == "cl.exe" else ctx.attrs.compiler,
@@ -246,13 +241,7 @@ def _cxx_toolchain_from_cxx_tools_info(ctx: AnalysisContext, cxx_tools_info: Cxx
     ]
 
 def _run_info(args):
-    if args == None:
-        return None
-
-    # With the cache, a fingerprint of the C toolchain is part of the command
-    # (`env` ignores it), and so of the key of every action that runs one of
-    # its tools. The tools are found on the PATH and not tracked by buck2.
-    return RunInfo(args = ["env", "CABAL_BUCK2_CC=" + CC_FINGERPRINT, args] if _CACHE else [args])
+    return None if args == None else RunInfo(args = [args])
 
 system_cxx_toolchain = rule(
     impl = _system_cxx_toolchain_impl,

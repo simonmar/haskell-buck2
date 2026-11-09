@@ -92,8 +92,13 @@ def default_haskell_toolchain(name, **kwargs):
 # gave Cabal for `gcc` (`--with-gcc`, or `gcc-location:` in the
 # `program-locations` of the project file) and the C++ compiler of the same
 # name next to it, else GHC's if it has absolute paths for them (a GHC built
-# by Nix), else clang and clang++, linking with g++. Like GHC (see default_haskell_toolchain()), by their symlinks under
-# third-party/haskell/toolchain/.
+# by Nix), else clang and clang++, linking with g++. Like GHC (see
+# default_haskell_toolchain()), by their symlinks under
+# third-party/haskell/toolchain/. Each is in a directory named by the
+# fingerprint of the C toolchain (CC_FINGERPRINT), so that the fingerprint is
+# part of the command of every action that runs one, and so of its key: buck2
+# doesn't track the files of the tools, and the paths of the symlinks are the
+# same wherever the tools are installed.
 def default_toolchains(c_flags = [], cxx_flags = []):
     system_cxx_toolchain(
         name = "cxx",
