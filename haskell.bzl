@@ -207,7 +207,9 @@ def haskell_binary(
         **kwargs
     )
 
-def haskell_test(name, test_args = [], test_env = {}, cwd = None, **kwargs):
+# `labels` are the test's rather than its binary's, so that `buck2 test
+# --exclude <label>` can leave a test out.
+def haskell_test(name, test_args = [], test_env = {}, cwd = None, labels = [], **kwargs):
     bin = name + "-bin"
     haskell_binary(name = bin, **kwargs)
     test_target = ":" + bin
@@ -236,6 +238,7 @@ def haskell_test(name, test_args = [], test_env = {}, cwd = None, **kwargs):
         # `LANG` at all - so GHC's `hGetContents`/`readFile` fall back
         # to the POSIX/ASCII encoding and choke on any non-ASCII byte
         # in a test fixture.
+        labels = labels,
     )
 
 
