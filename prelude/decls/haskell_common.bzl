@@ -84,10 +84,31 @@ def _exported_linker_flags_arg():
         ),
     }
 
+def _data_dirs_arg():
+    return {
+        "data_dirs": attrs.dict(
+            attrs.string(),
+            attrs.dep(),
+            sorted = False,
+            default = {},
+            doc = """
+    Directories of data files, each keyed by the name of the environment
+    variable that should point at it (for a Cabal package, `<pkg>_datadir`,
+    which its Paths_<pkg> module reads).
+
+    The variables are set when this rule's sources are compiled, so that a
+    Template Haskell splice or a build tool can read the files. For a
+    haskell_binary they are also set whenever the binary is run through its
+    RunInfo: by `buck2 run`, as a test, or as a tool of another rule.
+""",
+        ),
+    }
+
 haskell_common = struct(
     srcs_arg = _srcs_arg,
     deps_arg = _deps_arg,
     compiler_flags_arg = _compiler_flags_arg,
     exported_linker_flags_arg = _exported_linker_flags_arg,
     build_tool_depends_arg = _build_tool_depends_arg,
+    data_dirs_arg = _data_dirs_arg,
 )

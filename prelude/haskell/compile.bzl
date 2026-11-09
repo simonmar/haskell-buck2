@@ -297,6 +297,14 @@ done
 exec "$@"
 """
 
+# The environment for the rule's `data_dirs`: each variable name mapped to the
+# directory it should point at. A package's generated Paths_<pkg> module reads
+# its `<pkg>_datadir` variable to find the package's data-files, so setting
+# these lets `getDataFileName` work both at compile time (in a Template Haskell
+# splice, or a build tool run by the compile) and when a binary runs.
+def data_dirs_env(ctx: AnalysisContext) -> dict[str, Artifact]:
+    return {name: dep[DefaultInfo].default_outputs[0] for name, dep in ctx.attrs.data_dirs.items()}
+
 # Compile all the context's sources.
 #
 # `dynamic_from`, for a profiled compile, is the non-profiled compile of the
@@ -388,7 +396,7 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
         # timestamps, so this is safe even though Buck doesn't preserve
         # timestamps on artifacts.
         no_outputs_cleanup = True,
-        env = {"LD_LIBRARY_PATH": cmd_args(native_shared_libs_dir)} if native_shared_libs_dir != None else {},
+        env = data_dirs_env(ctx) | ({"LD_LIBRARY_PATH": cmd_args(native_shared_libs_dir)} if native_shared_libs_dir != None else {}),
     )
 
     return args.result

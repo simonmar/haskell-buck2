@@ -617,7 +617,7 @@ cxx_library = prelude_rule(
         ```
     """,
     further = None,
-    attrs = library_attrs | cxx_common.default_deps_arg("exported_deps"),
+    attrs = library_attrs | cxx_common.default_deps_arg("exported_deps") | buck.allow_cache_upload_arg(),
 )
 
 cxx_precompiled_header = prelude_rule(

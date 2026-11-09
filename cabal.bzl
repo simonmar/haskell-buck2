@@ -60,6 +60,12 @@
 # whichever project: moving a package only changes packages.bzl. (All of the
 # packages are in the root cell.)
 #
+# DATA_PACKAGES, also in packages.bzl, says which data-files each package
+# needs. It maps the name of a package to the packages that have data-files,
+# out of that package itself and everything it depends on (directly or
+# indirectly) that the project builds. Each of those has a Paths_<pkg> module
+# that must be told where its data-files are (see _data_dirs).
+#
 # A project customises the generated targets of its packages in a
 # cabal-buck2.bzl at its root, rather than in each package's BUCK file (which
 # may not be the project's to change, in a git submodule say): its OVERRIDES
@@ -79,7 +85,7 @@ load("//buck2:cxx.bzl", "cxx_binary", "cxx_library")
 load("//buck2:headers.bzl", "headers_of")
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library", "haskell_test")
 load("//buck2:variant.bzl", "variant")
-load("//cabal-buck2:packages.bzl", "OVERRIDES", "PACKAGES")
+load("//cabal-buck2:packages.bzl", "DATA_PACKAGES", "OVERRIDES", "PACKAGES")
 load("@prelude//paths.bzl", "paths")
 load("@prelude//third-party:pkgconfig.bzl", "external_pkgconfig_library")
 
@@ -427,6 +433,27 @@ def _profiled(label):
     variant(name = name, actual = label, transition = "root//buck2/constraints:to-prof", visibility = ["PUBLIC"])
     return ":" + name
 
+def _data_dirs(c, spec):
+    # The data_dirs of a component: for each package whose data-files its code
+    # may read, the <pkg>_datadir environment variable that the package's
+    # Paths_<pkg> module looks at, mapped to the package's -data target. This
+    # is what `cabal build` and `cabal run` do too.
+    #
+    # Only packages that the project builds are included. A prebuilt package
+    # from the store has its data-files installed where its Paths_<pkg> module
+    # already expects to find them.
+    #
+    # The data-files of the component's build tools (alex and happy read their
+    # templates this way) are included too. The compile runs a build tool's
+    # binary directly, not through the wrapper script that a haskell_binary
+    # with data_dirs gets for `buck2 run`, so the compile has to set the tool's
+    # variables itself.
+    packages = DATA_PACKAGES.get(spec["package"]["name"], [])
+    for tool in c.get("build_tools", []):
+        if "package" in tool:
+            packages = packages + DATA_PACKAGES.get(tool["package"], [])
+    return {p.replace("-", "_") + "_datadir": _label(PACKAGES[p], p + "-data") for p in packages}
+
 def _haskell_kwargs(c, spec, helpers):
     # `helpers` are the rules of the component's C/C++/Cmm code.
     pkg_dir = _this_dir(spec)
@@ -441,6 +468,9 @@ def _haskell_kwargs(c, spec, helpers):
     }
     if "exe_name" in c:
         kwargs["exe_name"] = c["exe_name"]
+    data_dirs = _data_dirs(c, spec)
+    if data_dirs:
+        kwargs["data_dirs"] = data_dirs
     if kind == "test-suite":
         kwargs["cwd"] = pkg_dir
         if c.get("test_args"):
@@ -579,9 +609,11 @@ def cabal_targets(spec, defaults = {}, overrides = {}, transform = None, rules =
     _extra_source_files(spec)
 
 def _data_files(spec, pkg_dir):
-    # The package's data-files, as a directory laid out like its data-dir:
-    # what a tool of the package (alex, happy) reads when it runs, to be
-    # found through its <package>_datadir environment variable.
+    # A target <package>-data for the package's data-files: a directory laid
+    # out like the package's data-dir, so that a file is at the same relative
+    # path as in the package's source. The package's code finds the directory
+    # through its <package>_datadir environment variable, whether it reads the
+    # files at build time or when it runs (see _data_dirs).
     data = spec.get("data")
     if not data:
         return
