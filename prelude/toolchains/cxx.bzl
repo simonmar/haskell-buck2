@@ -23,6 +23,7 @@ load(
     "RuntimeDependencyHandling",
     "ShlibInterfacesMode",
 )
+load("@prelude//cxx:cxx_utility.bzl", "cxx_toolchain_allow_cache_upload_args")
 load("@prelude//cxx:headers.bzl", "HeaderMode")
 load("@prelude//cxx:linker.bzl", "is_pdb_generated")
 load("@prelude//decls:common.bzl", "buck")
@@ -48,8 +49,7 @@ CxxToolsInfo = provider(
 
 load("@third-party-haskell//:tools.bzl", "CC_FINGERPRINT")
 
-# Object files are uploaded to the remote action cache, if there is one (see
-# buck2/platforms/defs.bzl).
+# Whether there is a remote action cache (see buck2/platforms/defs.bzl).
 _CACHE = read_root_config("cabal_buck2", "cache", "false") == "true"
 
 def _legacy_equivalent_cxx_tools_info_windows(ctx: AnalysisContext, default_toolchain: CxxToolsInfo) -> CxxToolsInfo:
@@ -198,7 +198,7 @@ def _cxx_toolchain_from_cxx_tools_info(ctx: AnalysisContext, cxx_tools_info: Cxx
                 dwp = None,
             ),
             cxx_compiler_info = CxxCompilerInfo(
-                allow_cache_upload = _CACHE,
+                allow_cache_upload = ctx.attrs.cxx_compiler_allow_cache_upload,
                 compiler = _run_info(cxx_tools_info.cxx_compiler),
                 preprocessor_flags = [],
                 compiler_flags = ctx.attrs.cxx_flags,
@@ -207,7 +207,7 @@ def _cxx_toolchain_from_cxx_tools_info(ctx: AnalysisContext, cxx_tools_info: Cxx
                 supports_content_based_paths = ctx.attrs.supports_content_based_paths,
             ),
             c_compiler_info = CCompilerInfo(
-                allow_cache_upload = _CACHE,
+                allow_cache_upload = ctx.attrs.c_compiler_allow_cache_upload,
                 compiler = _run_info(cxx_tools_info.compiler),
                 preprocessor_flags = [],
                 compiler_flags = ctx.attrs.c_flags,
@@ -280,7 +280,7 @@ system_cxx_toolchain = rule(
             default = "prelude//toolchains/msvc:msvc_tools" if host_info().os.is_windows else "prelude//toolchains/cxx/clang:path_clang_tools",
         ),
         "_target_os_type": buck.target_os_type_arg(),
-    },
+    } | cxx_toolchain_allow_cache_upload_args(),
     is_toolchain_rule = True,
 )
 

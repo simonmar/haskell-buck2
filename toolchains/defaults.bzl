@@ -6,6 +6,10 @@ load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain")
 load("@prelude//toolchains:remote_test_execution.bzl", "remote_test_execution_toolchain")
 load(":haskell.bzl", "haskell_toolchain")
 
+# Whether actions upload their results to the remote action cache, if there
+# is one, when they say nothing about it (see `cabal buck2 --cache`).
+_DEFAULT_ALLOW_CACHE_UPLOAD = read_root_config("buck2", "default_allow_cache_upload", "false").lower() == "true"
+
 # The Haskell toolchain for a project set up by `cabal buck2`. A project can
 # define its own toolchains cell and call this, overriding any attribute of
 # haskell_toolchain(), e.g. to use a compiler that it builds itself.
@@ -99,6 +103,11 @@ def default_toolchains(c_flags = [], cxx_flags = []):
         cxx_compiler = CXX,
         compiler_type = CC_TYPE,
         linker = LINKER,
+        # Unlike most actions, C and C++ compiles don't leave uploading to
+        # `buck2.default_allow_cache_upload`: they upload only if the toolchain
+        # (or the target) says so. So the toolchain follows that config.
+        c_compiler_allow_cache_upload = _DEFAULT_ALLOW_CACHE_UPLOAD,
+        cxx_compiler_allow_cache_upload = _DEFAULT_ALLOW_CACHE_UPLOAD,
         visibility = ["PUBLIC"],
     )
 
