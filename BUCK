@@ -4,7 +4,7 @@
 # depends on.
 
 sh_binary(
-    name = "run_in_cwd",
-    main = "run_in_cwd.sh",
+    name = "run_test",
+    main = "run_test.sh",
     visibility = ["PUBLIC"],
 )

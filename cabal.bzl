@@ -272,8 +272,8 @@ def _classify_deps(deps):
     return _nub(packages), _nub(local + external_sublibs)
 
 def _build_tool_depends(build_tools):
-    # Each tool becomes a real dependency that is put on PATH for just this
-    # rule's compile actions.
+    # Each tool becomes a real dependency that is put on PATH for this rule's
+    # compile actions and, for a test-suite, when the test runs.
     labels = []
     for t in build_tools:
         if "package" in t:
