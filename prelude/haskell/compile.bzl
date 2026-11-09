@@ -297,6 +297,14 @@ done
 exec "$@"
 """
 
+# The environment for the rule's `data_dirs`: each variable name mapped to the
+# directory it should point at. A package's generated Paths_<pkg> module reads
+# its `<pkg>_datadir` variable to find the package's data-files, so setting
+# these lets `getDataFileName` work both at compile time (in a Template Haskell
+# splice, or a build tool run by the compile) and when a binary runs.
+def data_dirs_env(ctx: AnalysisContext) -> dict[str, Artifact]:
+    return {name: dep[DefaultInfo].default_outputs[0] for name, dep in ctx.attrs.data_dirs.items()}
+
 # Compile all the context's sources.
 #
 # `dynamic_from`, for a profiled compile, is the non-profiled compile of the
@@ -306,10 +314,6 @@ exec "$@"
 # p_o extension of the module's object for dyn_o), which is where they'd be if
 # both compiles shared a build directory, as they do in Cabal; here the two
 # compiles have -odirs of their own, so the objects are copied in first.
-# The environment variables that say where the rule's data files are.
-def data_dirs_env(ctx: AnalysisContext) -> dict[str, Artifact]:
-    return {name: dep[DefaultInfo].default_outputs[0] for name, dep in ctx.attrs.data_dirs.items()}
-
 def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, native_shared_libs_dir: [Artifact, None] = None, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None) -> CompileResultInfo:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     compile_cmd = cmd_args(haskell_toolchain.compiler)

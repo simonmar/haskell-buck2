@@ -92,10 +92,14 @@ def _data_dirs_arg():
             sorted = False,
             default = {},
             doc = """
-    Directories of data files, by the environment variable that says where each
-    one is. It is set for this rule's compiles (a Template Haskell splice can
-    read the files) and, for a binary, when it is run with `buck2 run` or as a
-    test or a tool.
+    Directories of data files, each keyed by the name of the environment
+    variable that should point at it (for a Cabal package, `<pkg>_datadir`,
+    which its Paths_<pkg> module reads).
+
+    The variables are set when this rule's sources are compiled, so that a
+    Template Haskell splice or a build tool can read the files. For a
+    haskell_binary they are also set whenever the binary is run through its
+    RunInfo: by `buck2 run`, as a test, or as a tool of another rule.
 """,
         ),
     }

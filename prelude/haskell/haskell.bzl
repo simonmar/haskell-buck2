@@ -1276,9 +1276,14 @@ def derive_indexing_tset(actions: AnalysisActions, link_style: LinkStyle, value:
         children = index_children,
     )
 
-# A script that runs the binary with the variables of its data_dirs set, as
-# `cabal run` does. The paths are made absolute from where the script is, so
-# that they still work if the binary (or run_in_cwd) changes directory.
+# Write a wrapper script that sets the environment variables of the rule's
+# data_dirs and then runs the binary, as `cabal run` does.
+#
+# The script refers to the data directories and the binary by paths relative
+# to its own location, and turns them into absolute paths when it runs. That
+# way they don't depend on where buck-out is, and they keep working if the
+# binary is started from another directory (a test run by run_in_cwd, say) or
+# changes directory itself.
 def _run_with_data_dirs(ctx: AnalysisContext, binary: Artifact) -> Artifact:
     script = ctx.actions.declare_output(binary.basename + "-with-data-dirs", has_content_based_path = False)
     ctx.actions.write(
@@ -1631,6 +1636,9 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     else:
         run = cmd_args(output)
 
+    # With data_dirs, `buck2 run` and tests go through the wrapper script. The
+    # original command and the data directories are hidden inputs, so that
+    # they (and the symlink_dir of shared libraries) are materialized too.
     if ctx.attrs.data_dirs:
         run = cmd_args(_run_with_data_dirs(ctx, output), hidden = [run, data_dirs_env(ctx).values()])
 
