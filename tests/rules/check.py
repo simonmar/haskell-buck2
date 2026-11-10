@@ -36,7 +36,7 @@ from both_ways import (
     check_toolchain_index,
     check_toolchain_th,
 )
-from harness import CheckFailed, State
+from harness import CheckFailed, Skipped, State
 from other_rules import (
     check_data_files,
     check_profiled_shared_only,
@@ -120,9 +120,12 @@ def main():
         if args.only and name not in args.only and check is not check_clean_build:
             continue
         start = time.time()
+        skipped = None
         try:
             check(st)
             error = None
+        except Skipped as e:
+            error, skipped = None, str(e)
         except CheckFailed as e:
             error = str(e)
         except Exception:
@@ -131,7 +134,9 @@ def main():
             error = traceback.format_exc()
         took = "{:.0f}s".format(time.time() - start)
         known = getattr(check, "known_failure", None)
-        if known is not None and error is not None:
+        if skipped is not None:
+            print("SKIP   {} ({})".format(name, skipped))
+        elif known is not None and error is not None:
             print("XFAIL  {} ({}): {}".format(name, took, known))
         elif known is not None:
             failed.append(name)

@@ -34,7 +34,8 @@ nix develop .#ghc9141 -c sh -c 'tests/rules/run.sh "$(dirname "$(command -v ghc)
 Each check prints `PASS` or `FAIL` (with the missing and unexpected members
 of the set it compared). A check of a known bug in the rules (marked with
 `known_failure` in harness.py) prints `XFAIL` when it fails, and `XPASS` when
-it passes, which means the bug is fixed and the mark should go. The script
+it passes, which means the bug is fixed and the mark should go. A check of
+what the platform doesn't have prints `SKIP`. The script
 fails on any `FAIL` or `XPASS`. Some checks are of
 what per_module doesn't support, a splice that runs local code: they check
 that the compile fails, saying how to build the target instead, and that it
