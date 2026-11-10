@@ -1,0 +1,58 @@
+# Tests for the rules (tests/rules), with the GHC versions
+# they support (9.6 to 9.14). They build a small project with GHC's own
+# packages alone, so they need GHC, buck2 and a C compiler, not cabal or
+# Hackage.
+name: rules
+
+# Pushes are only tested on master and the release branches (0.6.0.0, say).
+# A branch with a pull request is tested by the pull_request event, and
+# testing its pushes as well would run every job twice.
+on:
+  push:
+    branches:
+      - master
+      - "[0-9]+.[0-9]+.[0-9]+.[0-9]+"
+  pull_request:
+  workflow_dispatch:
+
+env:
+  BUCK2_VERSION: "2026-10-15"
+
+jobs:
+  rules:
+    name: rules (${{ matrix.os }}, GHC ${{ matrix.ghc }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        ghc: ["9.6.7", "9.8.4", "9.10.3", "9.12.4", "9.14.1"]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install GHC
+        id: setup
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: ${{ matrix.ghc }}
+
+      - name: Install buck2
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/facebook/buck2/releases/download/${BUCK2_VERSION}/buck2-x86_64-unknown-linux-gnu.zst" \
+            | zstd -d > "$HOME/.local/bin/buck2"
+          chmod +x "$HOME/.local/bin/buck2"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Test
+        run: tests/rules/run.sh "$(dirname "${{ steps.setup.outputs.ghc-exe }}")" "$RUNNER_TEMP/rules"
+
+      - name: Upload the buck2 logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buck-logs-${{ matrix.ghc }}
+          path: ${{ runner.temp }}/rules/project/buck-logs

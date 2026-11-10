@@ -1,0 +1,16 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# C.Splice's splice runs TH.Gen, of //th-gen:th-gen, which per_module doesn't
+# support: its compile fails.
+haskell_library(
+    name = "th-local-splice",
+    srcs = {
+        "C.Ann": "C/Ann.hs",
+        "C.Plain": "C/Plain.hs",
+        "C.Splice": "C/Splice.hs",
+    },
+    packages = ["base", "template-haskell"],
+    deps = ["//lib:lib", "//th-gen:th-gen"],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)

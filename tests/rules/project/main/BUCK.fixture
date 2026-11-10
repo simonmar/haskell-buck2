@@ -1,0 +1,26 @@
+load("//buck2:haskell.bzl", "haskell_binary")
+
+haskell_binary(
+    name = "main",
+    srcs = {
+        "Main": "Main.hs",
+        "Main.Util": "Main/Util.hs",
+    },
+    packages = ["base"],
+    deps = ["//lib-user:lib-user"],
+    per_module = True,
+)
+
+# The same, linked shared whatever the mode: in opt mode its dependencies'
+# shared libraries come from their -dynamic-too compiles.
+haskell_binary(
+    name = "main-shared",
+    srcs = {
+        "Main": "Main.hs",
+        "Main.Util": "Main/Util.hs",
+    },
+    packages = ["base"],
+    deps = ["//lib-user:lib-user"],
+    link_style = "shared",
+    per_module = True,
+)

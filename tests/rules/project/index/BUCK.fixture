@@ -1,0 +1,14 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# Built with -fwrite-ide-info, for an index of its .hie files.
+haskell_library(
+    name = "index",
+    srcs = {
+        "Idx.A": "Idx/A.hs",
+        "Idx.B": "Idx/B.hs",
+    },
+    compiler_flags = ["-fwrite-ide-info"],
+    packages = ["base"],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)

@@ -18,6 +18,15 @@ HaskellLibraryProvider = provider(
     },
 )
 
+# The files of a module compiled per-module that its dependents' modules
+# read: its interface, the file of its ABI hash, and for a -dynamic-too
+# compile its dynamic interface.
+HaskellModuleFiles = record(
+    hi = field(Artifact),
+    abi = field(Artifact),
+    dyn_hi = field(Artifact | None, None),
+)
+
 # A record of a Haskell library.
 HaskellLibraryInfo = record(
     # The library target name: e.g. "rts"
@@ -40,6 +49,25 @@ HaskellLibraryInfo = record(
     version = str,
     is_prebuilt = bool,
     profiling_enabled = bool,
+    # Its package db without the library, for the per-module compiles of its
+    # dependents. For a library compiled per-module, this is its early db,
+    # registered before anything is compiled (see Note [Compiling against
+    # dependencies module by module] in compile_per_module.bzl). For one
+    # built with --make, it is its library-less db. None for a prebuilt
+    # library.
+    early_db = field(Artifact | None, None),
+    # For a library built with --make: its dependencies. They include the
+    # libraries compiled per-module whose interfaces GHC reads whenever it
+    # reads this library's (see Note [Compiling against dependencies module
+    # by module] in compile_per_module.bzl).
+    below = field(TransitiveSet | None, None),
+    # The rest are set for a library compiled per-module only.
+    # Each module's files, by module name.
+    modules = field(dict[str, HaskellModuleFiles] | None, None),
+    # Each module's interfaces and those of its closure across packages: a
+    # DynamicValue, whose PerModuleClosures (compile_per_module.bzl) maps
+    # each module to its closure set.
+    closures = field(typing.Any, None),
 )
 
 HaskellLibraryInfoTSet = transitive_set()
