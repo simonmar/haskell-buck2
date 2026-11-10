@@ -342,6 +342,14 @@ def haskell_prebuilt_library_impl(ctx: AnalysisContext) -> list[Provider]:
         solibs[soname] = LinkedObject(output = lib, unstripped_output = lib)
     shared_libs = create_shared_libraries(ctx, solibs)
 
+    # The executables that depend on this library have its runtime_shared_libs
+    # in their symlink trees of shared libraries, along with its shared_libs.
+    # The linkable graph only has the shared_libs, so nothing is linked
+    # against the runtime_shared_libs.
+    for soname, lib in ctx.attrs.runtime_shared_libs.items():
+        solibs[soname] = LinkedObject(output = lib, unstripped_output = lib)
+    runtime_shared_libs = create_shared_libraries(ctx, solibs)
+
     linkable_graph = create_linkable_graph(
         ctx,
         node = create_linkable_graph_node(
@@ -368,7 +376,7 @@ def haskell_prebuilt_library_impl(ctx: AnalysisContext) -> list[Provider]:
         cxx_merge_cpreprocessors(ctx.actions, [own_pp_info], inherited_pp_info),
         merge_shared_libraries(
             ctx.actions,
-            shared_libs,
+            runtime_shared_libs,
             shared_library_infos,
         ),
         merge_link_group_lib_info(deps = ctx.attrs.deps),

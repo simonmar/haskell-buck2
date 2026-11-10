@@ -297,6 +297,20 @@ haskell_prebuilt_library = prelude_rule(
                  dynamically linked top-level target.
             """,
             ),
+            "runtime_shared_libs": attrs.dict(
+                key = attrs.string(),
+                value = attrs.source(),
+                sorted = False,
+                default = {},
+                doc = """
+                A map of shared library names to shared library paths that a dynamically
+                 linked top-level target needs when it runs, but which should not be
+                 explicitly linked. This is needed to support the RTS: GHC automatically
+                 links the appropriate flavour of the RTS when linking an executable,
+                 so we have to ensure the RTS shared libraries are available when
+                 the executable runs.
+            """,
+            ),
             "exported_compiler_flags": attrs.list(
                 attrs.string(),
                 default = [],
