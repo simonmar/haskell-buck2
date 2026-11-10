@@ -67,11 +67,19 @@
 # indirectly) that the project builds. Each of those has a Paths_<pkg> module
 # that must be told where its data-files are (see _data_dirs).
 #
-# A project customises the generated targets of its packages in a
-# cabal-buck2.bzl at its root, rather than in each package's BUCK file (which
-# may not be the project's to change, in a git submodule say): its OVERRIDES
-# maps the name of a package to the overrides of its components, as
-# cabal_targets() takes them. packages.bzl passes it on.
+# A project can customise the generated targets of its packages in a
+# cabal-buck2.bzl at its root, rather than in each package's BUCK file. This is
+# useful when a package's BUCK file isn't the project's to change (when the
+# package is a git submodule, for example). cabal-buck2.bzl can define either
+# or both of these, and packages.bzl passes them on:
+#
+# - OVERRIDES maps the name of a package to the overrides of its components,
+#   in the form that cabal_targets() takes them.
+# - DEFAULTS maps the name of a package, or "*" for every package, to defaults
+#   for its targets, in the form that cabal_targets() takes them. For example,
+#   this compiles every target of the project module by module:
+#
+#       DEFAULTS = {"*": {"*": {"per_module": True}}}
 
 # This load has to come before the others: they load more from tools.bzl (the
 # fingerprints, the alex and happy targets...), which a tools.bzl written by
@@ -86,7 +94,7 @@ load("//buck2:cxx.bzl", "cxx_binary", "cxx_library")
 load("//buck2:headers.bzl", "headers_of")
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library", "haskell_test")
 load("//buck2:variant.bzl", "variant")
-load("//cabal-buck2:packages.bzl", "DATA_PACKAGES", "OVERRIDES", "PACKAGES")
+load("//cabal-buck2:packages.bzl", "DATA_PACKAGES", "DEFAULTS", "OVERRIDES", "PACKAGES")
 load("@prelude//paths.bzl", "paths")
 load("@prelude//third-party:pkgconfig.bzl", "external_pkgconfig_library")
 
@@ -558,7 +566,9 @@ def cabal_targets(spec, defaults = {}, overrides = {}, transform = None, rules =
       spec: the package's build spec (see the top of this file).
       defaults: extra attributes for every target of a kind, keyed by kind
           ("library", "executable", "test-suite", "benchmark"), or "*" for all
-          of them.
+          of them. The project's own defaults (DEFAULTS["*"] and
+          DEFAULTS[package] in its cabal-buck2.bzl, if it has one) come
+          before these.
       overrides: extra attributes for individual components, keyed by
           component name. The project's own overrides of the package's
           components (OVERRIDES[package] in its cabal-buck2.bzl, if it has
@@ -571,8 +581,11 @@ def cabal_targets(spec, defaults = {}, overrides = {}, transform = None, rules =
           keyed by kind.
 
     Extra attributes are merged into the generated ones: lists are appended
-    to, dicts merged, anything else replaced. Later sources win: defaults for
-    "*", then for the kind, then the component's override, then transform.
+    to, dicts merged, anything else replaced. Later sources win. The order is:
+    the project's defaults for every package, then its defaults for this
+    package, then `defaults`, then the project's overrides of the component,
+    then `overrides`, then transform. Within each set of defaults, those for
+    "*" come before those for the kind.
     An executable whose main-is is C/C++ is a cxx_binary() (see
     _cxx_binary()), to which only its overrides apply: defaults, transform
     and rules are for the Haskell rules.
@@ -587,6 +600,7 @@ def cabal_targets(spec, defaults = {}, overrides = {}, transform = None, rules =
         ]))
     pkg_dir = _this_dir(spec)
     project_overrides = OVERRIDES.get(spec["package"]["name"], {})
+    all_defaults = [DEFAULTS.get("*", {}), DEFAULTS.get(spec["package"]["name"], {}), defaults]
     pkgconfig_seen = {}
     for c in spec["components"]:
         if _foreign_main(c):
@@ -598,8 +612,9 @@ def cabal_targets(spec, defaults = {}, overrides = {}, transform = None, rules =
 
         # The helpers' own dependencies are linked with the component's.
         kwargs["deps"] = kwargs.get("deps", []) + _pkgconfig_deps(c, pkgconfig_seen)
-        kwargs = _merge(kwargs, defaults.get("*", {}))
-        kwargs = _merge(kwargs, defaults.get(kind, {}))
+        for d in all_defaults:
+            kwargs = _merge(kwargs, d.get("*", {}))
+            kwargs = _merge(kwargs, d.get(kind, {}))
         kwargs = _merge(kwargs, project_overrides.get(c["name"], {}))
         kwargs = _merge(kwargs, overrides.get(c["name"], {}))
         if transform:
