@@ -13,10 +13,13 @@ import glob
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
+import urllib.request
 
 MAIN_TARGETS = ["//lib:lib", "//lib-user:lib-user", "//th-gen:th-gen", "//th-prebuilt-splice:th-prebuilt-splice", "//th-make-dep:th-make-dep", "//ffi-import:ffi-import", "//make-between:t", "//boot-cycle:boot-cycle", "//main:main", "//reexport:reexport", "//reexport-user:reexport-user", "//flat-sources:flat-sources"]
 
@@ -189,7 +192,8 @@ def replace(path, old, new):
 # --- The checks -------------------------------------------------------------------
 
 class State:
-    def __init__(self):
+    def __init__(self, bazel_remote):
+        self.bazel_remote = bazel_remote
         self.targets = MAIN_TARGETS
         self.actions = None
 
@@ -494,6 +498,92 @@ def check_opt_shared_consumer(st):
                {t for t in tagged if t.startswith("lib-user:")}, {"lib-user:B.M.abi"})
 
 
+# The targets of check_cache: per-module compiles, package dbs and a binary's
+# link (main), and a library built with --make (make-lib, below th-make-dep).
+CACHE_TARGETS = ["//main:main", "//th-make-dep:th-make-dep"]
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def check_cache(st):
+    """With a remote cache (bazel-remote), configured as `cabal buck2
+    --cache` configures it, the rules' actions upload their results, and a
+    clean build finds them all there. Without `[buck2]
+    default_allow_cache_upload`, nothing is uploaded. Cleans the project, so it
+    runs last."""
+    grpc = "127.0.0.1:{}".format(free_port())
+    http = "127.0.0.1:{}".format(free_port())
+    cache_dir = tempfile.mkdtemp(prefix="bazel-remote-")
+    log = open(os.path.join(LOG_DIR, "bazel-remote.log"), "w")
+    server = subprocess.Popen([st.bazel_remote, "--dir", cache_dir, "--max_size", "1",
+                               "--grpc_address", grpc, "--http_address", http],
+                              stdout=log, stderr=subprocess.STDOUT)
+
+    def stored():
+        with urllib.request.urlopen("http://{}/status".format(http)) as r:
+            return json.load(r)["NumFiles"]
+
+    def configure(uploads):
+        with open(".buckconfig.local", "w") as f:
+            f.write("[buck2_re_client]\n")
+            for key in ["engine_address", "action_cache_address", "cas_address"]:
+                f.write("  {} = grpc://{}\n".format(key, grpc))
+            f.write("  tls = false\n\n[cabal_buck2]\n  cache = true\n")
+            if uploads:
+                f.write("\n[buck2]\n  default_allow_cache_upload = true\n")
+        # The daemon reads [buck2_re_client] as it starts.
+        buck2("kill")
+
+    try:
+        for _ in range(100):
+            try:
+                stored()
+                break
+            except OSError:
+                expect("bazel-remote is running (see {}/bazel-remote.log)".format(LOG_DIR), server.poll() is None)
+                time.sleep(0.1)
+
+        configure(uploads=False)
+        buck2("clean")
+        build(*CACHE_TARGETS)
+        expect("nothing in the cache after a build without default_allow_cache_upload", stored() == 0)
+
+        configure(uploads=True)
+        buck2("clean")
+        build(*CACHE_TARGETS)
+        expect("results in the cache after a build", stored() > 0)
+
+        buck2("clean")
+        build(*CACHE_TARGETS)
+        expect_set("actions that ran, though the cache has their results",
+                   {"{} {} {}".format(t, c, i or "") for t, c, i, _ in what_ran()}, set())
+        out = buck2("log", "what-ran", "--format", "json").stdout
+        entries = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
+        cached = {IDENTITY.match(e["identity"]).group(2) for e in entries
+                  if IDENTITY.match(e["identity"]) and e["reproducer"].get("executor", "").endswith("Cache")}
+        kinds = {
+            "per-module compile": lambda c: c.startswith("haskell_compile_module_"),
+            "--make compile": lambda c: c.startswith("haskell_compile_") and not c.startswith("haskell_compile_module_"),
+            "module graph": lambda c: c.startswith("haskell_deps_"),
+            "GHC API tool": lambda c: c.startswith("haskell_ghc_api_tool"),
+            "package db": lambda c: c.startswith("haskell_package_"),
+            "link": lambda c: c.startswith("haskell_link"),
+        }
+        expect_set("kinds of action found in the cache",
+                   {k for k, is_kind in kinds.items() if any(is_kind(c) for c in cached)}, set(kinds))
+    finally:
+        if os.path.exists(".buckconfig.local"):
+            os.remove(".buckconfig.local")
+        buck2("kill", ok=False)
+        server.terminate()
+        server.wait()
+        log.close()
+
+
 CHECKS = [
     check_clean_build,
     check_early_db_conf,
@@ -520,21 +610,26 @@ CHECKS = [
     check_header_change,
     check_toolchain_th,
     check_toolchain_index,
+    check_cache,
 ]
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", action="append", help="run only this check (by name, without check_); repeatable")
+    ap.add_argument("--bazel-remote", help="a bazel-remote binary, for check_cache")
     args = ap.parse_args()
     unknown = set(args.only or []) - {check.__name__[len("check_"):] for check in CHECKS}
     if unknown:
         ap.error("no such check: " + " ".join(sorted(unknown)))
-    st = State()
+    st = State(bazel_remote=args.bazel_remote)
     failed = []
     for check in CHECKS:
         name = check.__name__[len("check_"):]
         if args.only and name not in args.only and check is not check_clean_build:
+            continue
+        if check is check_cache and not st.bazel_remote:
+            print("SKIP   {} (no BAZEL_REMOTE)".format(name))
             continue
         start = time.time()
         try:
