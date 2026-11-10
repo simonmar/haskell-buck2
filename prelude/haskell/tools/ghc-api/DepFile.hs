@@ -1,4 +1,5 @@
--- | What the compile tool writes for the rules besides GHC's outputs.
+-- | Writing the files that the compile tool produces besides GHC's own
+-- outputs: a module's .abi file, and its buck2 dep file.
 module DepFile (writeDepFiles) where
 
 import Control.Monad (filterM, forM, unless)

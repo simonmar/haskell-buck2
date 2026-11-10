@@ -36,35 +36,51 @@ load(
     "LinkStyle",
 )
 
-# A module's closure set: the interface files of its closure (see Note
-# [Per-module compilation]), as a transitive set. The module's own files are
-# the set's value, and the closure sets of the modules it imports are its
-# children. A target passes its modules' closure sets on to its dependents
-# (PerModuleClosures), so no target has to list a whole closure.
+# A module's closure set holds the interface files of the module's closure:
+# the module itself, and everything it imports, directly or indirectly, from
+# targets compiled per-module (see Note [Per-module compilation]). It is a
+# transitive set whose value is the module's own files, and whose children
+# are the closure sets of the modules it imports. Each target passes its
+# modules' closure sets on to its dependents (in PerModuleClosures), so no
+# target ever has to list a whole closure itself.
 def _interfaces(files: HaskellModuleFiles):
     return [files.hi, files.abi] + ([files.dyn_hi] if files.dyn_hi != None else [])
 
 _ModuleClosureTSet = transitive_set(args_projections = {"interfaces": _interfaces})
 
-# A target's modules' closure sets, by node (see _nodes).
+# The provider that a per-module target's dynamic output returns: the
+# closure set of each of the target's modules, keyed by node name (see
+# _nodes).
 PerModuleClosures = provider(fields = {"by_module": provider_field(dict)})
 
-# The package db flags of a per-module compile against the given libraries
-# (all its dependencies, direct and transitive), and the inputs they need.
+# The package db flags for a per-module compile, and the inputs that go
+# with them. `libs` are all of the target's dependencies, direct and
+# transitive.
 #
-# A compile never sees a local dependency's library, since libraries are
-# only needed for splices, and splices only run code of prebuilt packages
-# (see Note [Template Haskell modules]):
+# A per-module compile never uses the library file of a dependency that
+# this build makes. Library files are only needed to run splices, and
+# splices may only run code of prebuilt packages (see Note [Template Haskell
+# modules]). So each kind of dependency is given by a different package db:
 #
-# - A dependency compiled per-module is on its early db. That needs no
-#   inputs: the compile declares the interfaces it imports itself.
-# - A dependency built with --make is on its library-less db, and needs its
-#   interface directories.
+# - A dependency compiled per-module: its early db. This adds no inputs,
+#   because each module's compile adds the particular interfaces it imports
+#   itself.
+# - A dependency built with --make: its library-less db, with the library's
+#   interface directories as inputs.
+# - A prebuilt dependency: its normal db, with its interface directories as
+#   inputs. For a module that runs Template Haskell (`runs_th`), its library
+#   files are inputs too, because GHC's interpreter loads them.
 #
-# A prebuilt dependency is on its normal db. A module that runs Template
-# Haskell (`runs_th`) also needs its libraries, which the interpreter loads.
 # `below_make` names the dependencies compiled per-module that some
-# dependency built with --make depends on.
+# dependency built with --make depends on. Their whole interface
+# directories are inputs as well: see Note [Compiling against dependencies
+# module by module]. `import_dirs_tag` tags all the interface inputs, so
+# that a compile's dep file can list the ones it read.
+#
+# As well as the flags, the result has `local_import_dirs`, the interface
+# directories of the --make dependencies with their library names, and
+# `early_names`, the names of the dependencies compiled per-module. The
+# compile tool needs both to find the interfaces that its dep file lists.
 def _package_dbs(libs: list, below_make: dict[str, bool], import_dirs_tag, runs_th: bool):
     packagedb_args = cmd_args()
     packagedb_set = {}
@@ -83,9 +99,11 @@ def _package_dbs(libs: list, below_make: dict[str, bool], import_dirs_tag, runs_
         packagedb_set[lib.early_db if lib.early_db != None else lib.db] = None
         import_dirs = list(lib.import_dirs.values())
         local_import_dirs += [(lib.name, d) for d in import_dirs if not d.is_source]
-        # The interfaces a compile reads go in its dep file, but the
-        # libraries a Template Haskell module loads don't (see Note [Template
-        # Haskell modules]), so those are plain inputs.
+        # The interfaces are tagged, so that a compile's dep file can list
+        # the ones it read. The libraries that a Template Haskell module
+        # loads never appear in the dep file (see Note [Template Haskell
+        # modules]), so they are plain inputs, and any change to one
+        # compiles the module again.
         packagedb_args.add(cmd_args(hidden = [
             lib.stub_dirs,
             import_dirs_tag.tag_artifacts(cmd_args(hidden = import_dirs)),
@@ -97,7 +115,9 @@ def _package_dbs(libs: list, below_make: dict[str, bool], import_dirs_tag, runs_
     packagedb_args.add([cmd_args("-package-db", x) for x in packagedb_set])
     return struct(packagedb_args = packagedb_args, local_import_dirs = local_import_dirs, early_names = early_names)
 
-# The suffix of a boot file's node (its srcs key), and of its outputs.
+# The suffix that marks a boot source or interface (.hs-boot or
+# .hi-boot). A boot file's node name (its key in srcs) is
+# "<module>-boot".
 _BOOT = "-boot"
 
 def _is_boot(node: str) -> bool:
@@ -106,19 +126,25 @@ def _is_boot(node: str) -> bool:
 def _module_of(node: str) -> str:
     return node[:-len(_BOOT)] if _is_boot(node) else node
 
-# A node's file with the given extension, relative to an output
-# directory: Foo/Bar.dyn_hi, or Foo/Bar.dyn_hi-boot for a boot file.
+# The path of a node's output file with the given extension, relative to
+# the output directory. For example, with ext = "dyn_hi", it is
+# Foo/Bar.dyn_hi for the module Foo.Bar, and Foo/Bar.dyn_hi-boot for its
+# boot file.
 def _node_file(node: str, ext: str) -> str:
     return module_name_to_file(_module_of(node), ext + (_BOOT if _is_boot(node) else ""))
 
-# The directory of a target's per-module compile in one way, relative to the
-# target's outputs. The modules' outputs are below it, in per_module_out_dir.
+# The directory, relative to the target's outputs, that holds everything a
+# per-module compile of the target writes for one combination of link style
+# and profiling (static, shared, profiled and so on). The modules' own
+# outputs are in a subdirectory of it (see per_module_out_dir).
 def per_module_dir(link_style: LinkStyle, enable_profiling: bool) -> str:
     return "per-module-" + get_artifact_suffix(link_style, enable_profiling) + "/"
 
-# The directory of the outputs of a target's modules in one way, relative to
-# the target's outputs. Every module's compile has it on its import path,
-# and dependents find it through the target's early package db.
+# The directory, relative to the target's outputs, where the target's
+# modules write their objects and interfaces, for one combination of link
+# style and profiling. Every module's compile has it on its import path, and
+# it is the import directory of the target's early package db, which is how
+# dependents find the interfaces there too.
 #
 # It is named after the target's set of modules. buck2 doesn't delete the
 # outputs of an action that no longer exists, so if a module moved to another
@@ -129,16 +155,23 @@ def per_module_out_dir(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     names = " ".join(sorted([n for n, _ in _nodes(ctx)]))
     return per_module_dir(link_style, enable_profiling) + "out-" + str(hash(names) & 0xffffffff)
 
-# The directory that a node's file (`artifact`, with extension `ext`) is
-# in, less the module's own path: for Foo/Bar.hi, the directory that Foo
-# is in.
+# The directory to give GHC as an import or output directory, worked out
+# from one node's output file in it. `artifact` is the node's file with
+# extension `ext`, and the result is the directory above the module's own
+# path: for the module Foo.Bar, whose interface is <dir>/Foo/Bar.hi, the
+# result is <dir>.
 def _dir_of(artifact, node: str, ext: str) -> cmd_args:
     return cmd_args(artifact, parent = _node_file(node, ext).count("/") + 1)
 
-# From the deps tool's output (see tools/ghc-api/PerModuleDeps.hs): each
-# node's imports among the target's nodes, the (package id, module) pairs it
-# imports from dependencies compiled per-module, and the nodes that may run
-# Template Haskell.
+# Read the module graph that the deps tool wrote (see
+# tools/ghc-api/PerModuleDeps.hs). It returns three things:
+#
+# - imports: for each node, the nodes of this target that it imports.
+# - upstream: for each node, the modules it imports from dependencies
+#   compiled per-module, as (package id, module name) pairs. Imports from
+#   other dependencies are left out, since those aren't tracked module by
+#   module.
+# - th: the nodes that may run Template Haskell.
 def _read_deps(label, deps: dict, nodes: list, module_libs: dict):
     imports = {n: [] for n, _ in nodes}
     upstream = {n: [] for n, _ in nodes}
@@ -155,9 +188,10 @@ def _read_deps(label, deps: dict, nodes: list, module_libs: dict):
             th[n] = True
     return imports, upstream, th
 
-# Each node's transitive imports, direct ones first. `order` is
-# dependency order, so each import's closure is done before its
-# importers' are.
+# For each node, all the nodes of this target that it imports directly or
+# indirectly, with its direct imports first. `order` must be a dependency
+# order (each node after the nodes it imports), so that an import's closure
+# has already been computed when its importers need it.
 def _transitive_closure(order: list[str], imports: dict) -> dict:
     closure = {}
     for n in order:
@@ -168,9 +202,14 @@ def _transitive_closure(order: list[str], imports: dict) -> dict:
         closure[n] = list(c)
     return closure
 
-# The nodes in dependency order, and the nodes in or behind a cycle.
-# Kahn's algorithm: Starlark has no while loop, so we loop over the order
-# as it grows.
+# Sort the nodes into dependency order, so that each node comes after the
+# nodes it imports. It returns the sorted nodes, and the nodes that couldn't
+# be sorted because they are in an import cycle or import something that
+# is.
+#
+# This is Kahn's algorithm. Starlark has no while loop, so instead of a work
+# queue we iterate over `order` while appending to it, so it's linear in the
+# size of the graph.
 def _dependency_order(nodes: list, imports: dict) -> (list[str], list[str]):
     importers = {n: [] for n, _ in nodes}
     waiting = {}
@@ -189,9 +228,11 @@ def _dependency_order(nodes: list, imports: dict) -> (list[str], list[str]):
     done = {n: True for n in order}
     return order, [n for n, _ in nodes if n not in done]
 
-# The nodes of a target's module graph, each with its source: the
-# modules, and their boot files as "<module>-boot". In a srcs dict a boot
-# file has that key already; in a list it has its module's name.
+# The nodes of the target's module graph, as (node name, source) pairs. A
+# module's node name is the module's name, and a boot file's is
+# "<module>-boot". When srcs is a dict, a boot file's key is already
+# "<module>-boot". When it is a list, srcs_to_pairs names a boot file after
+# its module, so "-boot" is added here.
 def _nodes(ctx: AnalysisContext) -> list:
     nodes = []
     for name, src in srcs_to_pairs(ctx.attrs.srcs):
@@ -201,10 +242,15 @@ def _nodes(ctx: AnalysisContext) -> list:
             nodes.append((name if _is_boot(name) else name + _BOOT, src))
     return nodes
 
-# Each node's outputs, all in the output directory (so not at
-# content-based paths: see per_module_out_dir). They're declared here,
-# outside the dynamic output, so that the target can export them, as
-# well as the directories built from them.
+# Declare each node's output files, all in the target's output directory
+# (see per_module_out_dir). They are at fixed paths rather than
+# content-based ones, so that GHC can find a module's interface from the
+# module's name.
+#
+# They are declared here, before the module graph is known, rather than in
+# the dynamic output that registers the compiles. That way the target can
+# give them to its dependents directly (in HaskellModuleFiles), and not only
+# through the objects and hi directories that the dynamic output builds.
 def _declare_module_outputs(ctx: AnalysisContext, out_dir: str, nodes: list, osuf: str, hisuf: str, dynamic_too: bool):
     def declare(n, ext):
         return ctx.actions.declare_output(out_dir + "/" + _node_file(n, ext), has_content_based_path = False)
@@ -217,9 +263,12 @@ def _declare_module_outputs(ctx: AnalysisContext, out_dir: str, nodes: list, osu
         dyn_hi = {n: declare(n, "dyn_hi") for n, _ in nodes} if dynamic_too else {},
     )
 
-# Once the target's module graph is known, this registers a compile action
-# for each node, and makes its modules' closure sets for its dependents
-# (see _ModuleClosureTSet). `s` holds compile_per_module's values.
+# The dynamic output of a per-module compile. It runs once the deps tool has
+# written the module graph. It registers a compile action for each node,
+# builds the target's objects and hi directories from their outputs, and
+# returns each module's closure set for the target's dependents (see
+# _ModuleClosureTSet). `s` carries the values that compile_per_module worked
+# out during analysis.
 def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: ArtifactValue, dep_closures: dict, artifacts: list[Artifact], outputs: list[OutputArtifact]) -> list[Provider]:
     out = {a: o for a, o in zip(artifacts, outputs)}
     nodes = s.nodes
@@ -254,10 +303,16 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         fail("{}: import cycle among {}".format(s.label, ", ".join(left)))
     closure = _transitive_closure(order, imports)
 
-    # Each node's closure set. Also the interfaces that a node's compile may
-    # read from dependencies compiled per-module: the closure sets of the
-    # modules that the node, or anything it imports from this target,
-    # imports from those dependencies.
+    # Make two transitive sets for each node, in dependency order:
+    #
+    # - closure_sets[n] is the node's closure set, for the target's
+    #   dependents. It includes the node's own files.
+    # - upstream_closure_sets[n] holds the interfaces from dependencies
+    #   compiled per-module that the node's compile may read: the closure
+    #   sets of the modules that the node imports from those dependencies,
+    #   or that anything it imports from this target does. It doesn't
+    #   include this target's own interfaces, which are added separately
+    #   below.
     dep_closure_sets = {name: dv.providers[PerModuleClosures].by_module for name, dv in dep_closures.items()}
     closure_sets = {}
     upstream_closure_sets = {}
@@ -268,14 +323,19 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
 
     runs_th = {n: n in th_nodes for n, _ in nodes}
 
-    # In dependency order, since an action's inputs, and the artifacts a
-    # symlinked_dir links, must be outputs of actions already registered.
+    # Register the compiles in dependency order. An action's inputs, and the
+    # artifacts that a symlinked_dir links to, must be outputs of actions
+    # that have already been registered.
     hie_of = {}
     for n in order:
-        # A module finds its imports from this target in the output
-        # directory they all share, and has its closure's files as tagged
-        # inputs. We tried a symlink tree per module, but that took longer
-        # to materialise than the compiles themselves.
+        # The module finds the interfaces it imports from this target in
+        # the target's output directory, which all the target's modules
+        # share, and which is on the module's import path. The interface
+        # files of the module's closure are tagged inputs, so the module
+        # waits for exactly those, and its dep file can list them. (Giving
+        # each module a symlink tree of just its own closure was tried, but
+        # the trees took longer to materialise than the compiles
+        # themselves.)
         closure_files = []
         for d in closure[n]:
             closure_files += [hi_of[d], abi_of[d]]
@@ -284,7 +344,8 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         mod_packages = th_set if runs_th[n] else early_set
         hidirs = mod_packages.local_import_dirs + [(name, d) for name, d in module_lib_dirs.items() if name in mod_packages.early_names]
 
-        # The module's own flags, which come after the target's.
+        # The flags specific to this module: its source and output files.
+        # They go after the flags that all the target's modules share.
         stubdir = actions.declare_output(prefix + "stubs/" + n, dir = True, has_content_based_path = False)
         module_flags = cmd_args("-c", src_of[n], "-o", out[o_of[n]], "-ohi", out[hi_of[n]], "-stubdir", stubdir.as_output())
         mkdirs = [stubdir.as_output()]
@@ -295,13 +356,14 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         if dynamic_too:
             module_flags.add("-dyno", out[dyn_o_of[n]], "-dynohi", out[dyn_hi_of[n]])
         if producing_indices:
-            # The module's .hie file, which GHC writes below -hiedir at the
-            # module's path. The target's index (its hi directory) includes
-            # it, as --make's does.
+            # The module's .hie file. GHC writes it under -hiedir, at a path
+            # made from the module's name. It goes in the target's hi
+            # directory, which is also the target's index, as with --make.
             hie_of[n] = actions.declare_output(prefix + "hie/" + n + "/" + _node_file(n, "hie"), has_content_based_path = False)
             module_flags.add("-hiedir", _dir_of(hie_of[n].as_output(), n, "hie"))
 
-        # The compile tool's request (see Request in tools/ghc-api).
+        # The arguments of the compile tool, which wraps GHC (see Request.hs
+        # in tools/ghc-api for what each one means).
         depfile = actions.declare_output(prefix + "dep/" + n + ".dep", has_content_based_path = False)
         request = cmd_args(
             "--depfile",
@@ -314,14 +376,14 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             _dir_of(out[hi_of[n]], n, hisuf),
             "--hisuf",
             hisuf,
-            "--unit",
-            s.unit,
-            # Paths only, not inputs: the interfaces the module reads are
-            # inputs already (upstream_closure_sets, and the import
-            # directories of --make libraries, with the package dbs). A
-            # dependency compiled per-module is given by the directory of one
-            # of its interfaces, which as an input would make the module wait
-            # for that interface.
+            # Where each dependency's interfaces are, so that the tool can
+            # turn the usages GHC records into dep file entries. These are
+            # paths only, not inputs. The interfaces themselves are inputs
+            # already: through upstream_closure_sets, and, for --make
+            # libraries, through the package db flags. For a dependency
+            # compiled per-module, the path is worked out from one of its
+            # interface files, so as an input it would make the module wait
+            # for that particular interface for no reason.
             [cmd_args(d, format = "--hidir=" + unit + "={}", ignore_artifacts = True) for unit, d in hidirs],
             cmd_args(mkdirs, format = "--mkdir={}"),
             "--",
@@ -350,9 +412,11 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             hi_map[_node_file(n, "dyn_hi")] = dyn_hi_of[n]
     actions.symlinked_dir(out[objects], obj_map, has_content_based_path = False)
     actions.symlinked_dir(out[hi], hi_map, has_content_based_path = False)
-    # Empty: each module writes its stubs (the _stub.h of its foreign
-    # exports) to a directory of its own. A target's stubs directory is only
-    # ever an input, with --make too, so an empty one will do.
+    # The target's stubs directory is left empty. Each module writes its
+    # stub headers (the _stub.h files of its foreign exports) to a directory
+    # of its own instead. Nothing looks inside a target's stubs directory:
+    # with --make too, it is only ever an input of other actions, so an
+    # empty one is enough.
     actions.symlinked_dir(out[stubs], {}, has_content_based_path = False)
     return [PerModuleClosures(by_module = closure_sets)]
 
@@ -367,16 +431,18 @@ _register_modules = dynamic_actions(
     },
 )
 
-# Whether the target is compiled per-module: it has `per_module = True`, and
-# modules to compile (compile() makes the empty outputs of a target without
-# any).
+# Whether the target is compiled per-module: it has per_module = True, and at
+# least one Haskell module. A target without any modules always goes through
+# compile(), which produces the empty outputs that such a target needs.
 def compiles_per_module(ctx: AnalysisContext) -> bool:
     return getattr(ctx.attrs, "per_module", False) and has_modules(ctx)
 
-# Compile the context's sources with one action per module: see Note
-# [Per-module compilation]. Takes compile()'s arguments. native_shared_libs_dir
-# and dynamic_from go unused, since splices run only prebuilt code (see Note
-# [Template Haskell modules]).
+# Compile the target's sources with one action per module (see Note
+# [Per-module compilation]). It takes the same arguments as compile(), so
+# that the two are interchangeable, but ignores native_shared_libs_dir and
+# dynamic_from. Those are only needed for splices that run code of this
+# build's own libraries, which per-module compilation doesn't support (see
+# Note [Template Haskell modules]).
 def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, native_shared_libs_dir: [Artifact, None] = None, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None) -> CompileResultInfo:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     suffix = get_artifact_suffix(link_style, enable_profiling)
@@ -387,14 +453,16 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     # cut-off by dep files].
     tag = ctx.actions.artifact_tag()
 
-    # A module's package flags (see _package_dbs): one set for a module that
-    # runs no Template Haskell, and one for a module that does, which loads
-    # the prebuilt libraries.
+    # Two sets of package flags (see _package_dbs): one for the modules that
+    # run no Template Haskell, and one for the modules that do. The second
+    # also has the prebuilt libraries as inputs, because GHC's interpreter
+    # loads them.
     dep_libs = list(dependency_libs(ctx, link_style, enable_profiling).traverse())
     exposed_package_args = get_exposed_package_args(ctx, link_style, False, enable_profiling)
 
-    # The dependencies compiled per-module that a dependency built with
-    # --make depends on.
+    # The dependencies compiled per-module that some dependency built with
+    # --make depends on, found through the --make libraries' `below` sets
+    # (see Note [Compiling against dependencies module by module]).
     below = ctx.actions.tset(HaskellLibraryInfoTSet, children = [lib.below for lib in dep_libs if lib.below != None])
     below_make = {lib.name: True for lib in below.traverse() if lib.modules != None}
 
@@ -412,11 +480,15 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     module_libs = {lib.name: lib for lib in dep_libs if lib.modules != None}
     this_pkg = pkgname or haskell_library_unit_id(ctx.label)
 
-    # A binary's modules also get a unit named after the target, rather than
-    # GHC's default `main`, which every binary would share.
+    # Every module is compiled with -this-unit-id. A library's unit is the
+    # `pkgname` it is registered under. A binary's is made from the target's
+    # label, rather than GHC's default of `main`, which every binary would
+    # otherwise share.
     cmd_flags, file_flags = ghc_flags(ctx, link_style, enable_profiling, this_pkg, dynamic_too)
-    # The target's other sources (headers a module #includes, say), whose
-    # use GHC doesn't record: plain inputs of every compile, as with --make.
+    # The target's other sources, such as headers that a module #includes.
+    # GHC doesn't record which of these a module used, so they can't go in
+    # the dep file. Instead, every module's compile has all of them as plain
+    # inputs, as the --make compile does.
     other_srcs = [src for _, src in srcs_to_pairs(ctx.attrs.srcs) if not is_haskell_src(src) and not src.short_path.endswith(_BOOT)]
     ghc_args = cmd_args(cmd_flags, file_flags, hidden = other_srcs)
     base_cmd = cmd_args(haskell_toolchain.compiler, ghc_args)
@@ -437,12 +509,15 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     stubs = ctx.actions.declare_output("stubs-" + suffix, dir = True, has_content_based_path = False)
     producing_indices = get_producing_indices(ctx)
 
-    # The module graph, from GHC's own dependency analysis (see
-    # tools/ghc-api/PerModuleDeps.hs): each node's imports, from the target
-    # and from dependencies, and whether it may run Template Haskell. It runs
-    # against the early dbs, so it needs nothing built. The tool gets each
-    # node with its source, and the GHC flags without the compiler, since the
-    # analysis is its own.
+    # Work out the module graph with GHC's own dependency analysis, which the
+    # deps tool runs (see tools/ghc-api/PerModuleDeps.hs). For each node, it
+    # finds the imports, both from this target and from dependencies, and
+    # whether the node may run Template Haskell. It runs against the early
+    # dbs, so it doesn't wait for any dependency compiled per-module. (It
+    # does wait for dependencies built with --make, whose interfaces are
+    # inputs of their package dbs.) The tool is given each node with its
+    # source, and the GHC flags without the compiler itself, because it runs
+    # GHC's analysis in-process.
     deps = ctx.actions.declare_output(prefix + "deps.json")
     ctx.actions.run(
         in_env(env, cmd_args(
@@ -457,9 +532,10 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     )
 
     # The output directory of each dependency compiled per-module, where the
-    # compile tool looks up its interfaces. (Each such dependency has a
-    # module: compile() handles a target with none, and leaves its `modules`
-    # None.)
+    # compile tool looks up its interfaces. It is worked out from the
+    # interface of the dependency's first module. Every such dependency has
+    # at least one module, since a target without any goes through compile()
+    # instead (see compiles_per_module).
     def out_dir_of(lib):
         m, files = list(lib.modules.items())[0]
         return _dir_of(files.hi, m, hisuf)
@@ -476,7 +552,6 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     closures = ctx.actions.dynamic_output_new(_register_modules(
         s = struct(
             label = ctx.label,
-            unit = this_pkg,
             compile_script = ctx.attrs._per_module_compile[RunInfo],
             nodes = nodes,
             src_of = src_of,
@@ -592,7 +667,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # 2. The solution
 #
 # A dependency compiled per-module also has an "early" package db (see the
-# `early` argument of _make_package in haskell.bzl). It is registered before
+# `early_db` field of HaskellLibraryInfo). It is registered before
 # anything is compiled, names no library, and has D's output directory as
 # its import directory, which fills up as D's modules compile. X compiles
 # against D's early db, and depends on just the interface files it needs.
@@ -610,13 +685,20 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #   its dependents (_ModuleClosureTSet). A compile's inputs are a projection
 #   of its imports' closure sets, so no target lists a whole closure.
 #
-# A dependency built with --make breaks that chain. Say D's module Y is
-# compiled per-module, and M, built with --make, imports it. M's interfaces
-# refer to Y's, which GHC reads whenever it reads M's, but no closure lists
-# Y for a module that imports M. So every compile gets the final interface
-# directories of the libraries compiled per-module below a --make one
-# (below_make), as tagged inputs. That doesn't make anything wait longer: a
-# compile already waits for M's interfaces, and M waits for all of D.
+# A dependency built with --make breaks that chain. Say library M is built
+# with --make, and imports module Y of D, which is compiled per-module. When
+# GHC reads one of M's interfaces, it may need Y's too, because M's
+# interfaces refer to things defined in Y. But M has no closure sets, so
+# nothing tells a module that imports M that it needs Y's interface.
+#
+# To cover this, each library built with --make records the libraries it
+# depends on, in the `below` field of HaskellLibraryInfo. A per-module
+# compile collects these, picks out the libraries compiled per-module
+# (below_make), and gives every one of its modules their whole interface
+# directories as tagged inputs. That doesn't make anything wait longer than
+# it already does. Every module of the target already waits for M's
+# interfaces, and M, being built with --make, can't be compiled until all of
+# D has been.
 
 # Note [Early cut-off by dep files]
 #

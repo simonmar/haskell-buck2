@@ -5,10 +5,13 @@ module Imports (importName, importLocated, srcImportName) where
 
 import GHC (GenLocated (..), Located, ModuleName, PkgQual)
 
--- importName: a summary's import, with the package it names, if any.
--- srcImportName: a {-# SOURCE #-} import. Both without the import level
--- that they carry since GHC 9.14. importLocated: an import's module, where
--- the import is.
+-- Accessors for the imports of a module summary. GHC 9.14 added an import
+-- level to each import, which these ignore.
+--
+-- * importName: an import's module name, and the package it names (with
+--   PackageImports), if any.
+-- * importLocated: an import's module name, with its source location.
+-- * srcImportName: the module name of a {-# SOURCE #-} import.
 #if MIN_VERSION_ghc(9,14,0)
 importName :: (a, PkgQual, Located ModuleName) -> (ModuleName, PkgQual)
 importName (_, pkg, L _ mn) = (mn, pkg)
