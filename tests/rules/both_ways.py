@@ -2,8 +2,11 @@
 fixtures both per-module and with --make (see COMPILES), and says how the
 two differ where they should."""
 
+import sys
+
 from harness import (
     COMPILES,
+    Skipped,
     buck2,
     build,
     compiled,
@@ -141,7 +144,10 @@ def check_th_body_change(st):
 
 def check_native_soname_for_splices(st):
     """Splices find a native library whose soname isn't of the form
-    libfoo.so: V.S's runs code that calls libver.so.1."""
+    libfoo.so: V.S's runs code that calls libver.so.1. (Not on macOS, whose
+    libraries have no sonames.)"""
+    if sys.platform == "darwin":
+        raise Skipped("macOS's libraries have no sonames")
     for c in LOCAL_SPLICE_COMPILES:
         expect_output(configured("//th-native-soname:show", c), "compiled {}".format(c), "5")
 

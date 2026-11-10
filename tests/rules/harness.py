@@ -7,14 +7,25 @@ import json
 import os
 import re
 import subprocess
+import sys
 
 MAIN_TARGETS = ["//lib:lib", "//lib-user:lib-user", "//th-gen:th-gen", "//th-prebuilt-splice:th-prebuilt-splice", "//th-make-dep:th-make-dep", "//ffi-import:ffi-import", "//make-between:t", "//boot-cycle:boot-cycle", "//main:main", "//reexport:reexport", "//reexport-user:reexport-user", "//flat-sources:flat-sources"]
 
 LOG_DIR = "buck-logs"
 
+# The link styles of dev mode's compiles and of opt mode's static ones, which
+# name their actions and output directories. On macOS code is always
+# position-independent, so both are static_pic.
+DEV_STYLE = "static_pic" if sys.platform == "darwin" else "shared"
+OPT_STATIC_STYLE = "static_pic" if sys.platform == "darwin" else "static"
+
 
 class CheckFailed(Exception):
     pass
+
+
+class Skipped(Exception):
+    """Raised by a check of what this platform doesn't have."""
 
 
 # --- Running buck2 ---------------------------------------------------------
@@ -126,7 +137,7 @@ def dep_file(target, category, identifier, mode=None):
 def raw_dep_file(package, name, node):
     """The entries of a per-module compile's dep file as its action wrote
     them, by short name."""
-    paths = glob.glob("buck-out/v2/art/root/*/{}/__{}__/__action___*/per-module-shared/dep/{}.dep".format(package, name, node))
+    paths = glob.glob("buck-out/v2/art/root/*/{}/__{}__/__action___*/per-module-{}/dep/{}.dep".format(package, name, DEV_STYLE, node))
     if len(paths) != 1:
         raise CheckFailed("no single dep file of {}:{} {} (found {})".format(package, name, node, paths))
     with open(paths[0]) as f:

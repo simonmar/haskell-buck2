@@ -37,13 +37,14 @@ and that a clean build finds them there. The dev shells and `nix flake
 check` set it.
 
 Each check prints `PASS` or `FAIL` (with the missing and unexpected members
-of the set it compared) or `SKIP` (`check_cache` without `BAZEL_REMOTE`).
-A check of a known bug in the rules (marked with `known_failure` in
-harness.py) prints `XFAIL` when it fails, and `XPASS` when it passes, which
-means the bug is fixed and the mark should go. The script fails on any
-`FAIL` or `XPASS`. Some checks are of what per_module doesn't support, a
-splice that runs local code: they check that the compile fails, saying how
-to build the target instead, and that it compiles with `--make`.
+of the set it compared) or `SKIP` (a check of what the platform doesn't
+have, or `check_cache` without `BAZEL_REMOTE`). A check of a known bug in
+the rules (marked with `known_failure` in harness.py) prints `XFAIL` when it
+fails, and `XPASS` when it passes, which means the bug is fixed and the mark
+should go. The script fails on any `FAIL` or `XPASS`. Some checks are of
+what per_module doesn't support, a splice that runs local code: they check
+that the compile fails, saying how to build the target instead, and that it
+compiles with `--make`.
 
 ## How it works
 

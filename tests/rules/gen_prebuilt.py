@@ -98,7 +98,7 @@ def main():
                         break
             # GHC links its own rts in the way it was asked for.
             if name != "rts":
-                so = "lib{}-ghc{}.so".format(stem, version)
+                so = "lib{}-ghc{}.{}".format(stem, version, "dylib" if sys.platform == "darwin" else "so")
                 for d in dyndirs + libdirs:
                     if os.path.exists(os.path.join(d, so)):
                         shared[so] = rel(os.path.join(d, so))
@@ -130,7 +130,10 @@ def main():
     dynamic = re.search(r'\("GHC Dynamic",\s*"(\w+)"\)', ghc_info).group(1) == "YES"
     cc_version = run("cc", "--version")
     # The tools the toolchains run, by symlinks under toolchain/, as `cabal
-    # buck2` makes them: GHC's, and the C toolchain on the PATH.
+    # buck2` makes them: GHC's, and the C toolchain on the PATH. Each symlink
+    # has its tool's own name, in a directory named after its role, since
+    # some tools act on the name they are run by (macOS's /usr/bin/g++, which
+    # xcrun runs the real tool for by that name, say).
     bin_dir = os.path.dirname(os.path.realpath(ghc))
     os.makedirs(os.path.join(cell, "toolchain"), exist_ok=True)
     toolchain = {
@@ -143,7 +146,7 @@ def main():
         "LINKER": shutil.which("g++") or shutil.which("c++"),
     }
     tools = {
-        **{k: "third-party/haskell/toolchain/" + k.lower() for k in toolchain},
+        **{k: "third-party/haskell/toolchain/{}/{}".format(k.lower(), os.path.basename(v)) for k, v in toolchain.items()},
         "CC_TYPE": "clang" if "clang" in cc_version else "gcc",
         "GHC_VERSION": version,
         # In every compile's environment, so that the action cache tells
@@ -167,7 +170,8 @@ def main():
             f.write("{} = {}\n".format(k, repr(v) if v is not None else "None"))
     link("ghc-bin", os.path.dirname(os.path.realpath(ghc)))
     for k, target in toolchain.items():
-        link(os.path.join("toolchain", k.lower()), target)
+        os.makedirs(os.path.join(cell, "toolchain", k.lower()), exist_ok=True)
+        link(os.path.join("toolchain", k.lower(), os.path.basename(target)), target)
 
 
 if __name__ == "__main__":
