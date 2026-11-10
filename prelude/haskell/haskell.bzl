@@ -452,24 +452,14 @@ def _make_package(
     # package the module is defined in may be one that the dependency re-exports it
     # from, and ghc-pkg has to find it.
     all_hlis: list[HaskellLibraryInfo] = [],
-    # For an early db (below): the link style of the compile whose output
-    # directory its interfaces are written to, when not link_style's (a
-    # "shared" package made with -dynamic-too has them in the static
-    # compile's).
+    # Only used for an early db (see `early`): the link style of the compile
+    # whose output directory the interfaces are written to, if it isn't
+    # link_style. This is needed for the "shared" package of a library
+    # compiled with -dynamic-too. There is no separate shared compile: the
+    # static compile writes the .dyn_hi files, into its own output directory.
     hi_link_style: [LinkStyle, None] = None,
-    # Make the early db of a library compiled per-module instead: the
-    # package without its library, whose import directory is where its
-    # modules' interfaces will be written one by one (see Note [Compiling
-    # against dependencies module by module] in compile_per_module.bzl). It is
-    # registered before anything is compiled, against the dependencies'
-    # early dbs. ghc-pkg refuses a package whose interfaces don't exist yet,
-    # so it is registered with --force. It names no library on purpose: see
-    # Note [Template Haskell modules] in compile_per_module.bzl.
+    # See HaskellLibraryInfo.early_db
     early: bool = False,
-    # Make the library-less db of a library built with --make instead: the
-    # package with its interfaces, but no library, for the per-module
-    # compiles of its dependents (see _package_dbs in
-    # compile_per_module.bzl).
     library_less: bool = False,
 ) -> Artifact:
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
@@ -970,10 +960,18 @@ def _build_haskell_lib(
 
     return (main_output, shared_output)
 
-# The HaskellLibraryInfo fields of a library compiled per-module (see
-# compile_per_module.bzl): its early db, and what its dependents' modules
-# read. For the "shared" package derived from a -dynamic-too compile, the
-# modules' interfaces are the .dyn_hi of the static compile.
+# The HaskellLibraryInfo fields that per-module compiles of a library's
+# dependents use (see library_info.bzl). They are filled in for every
+# library, whether or not it is itself compiled per-module, because any of
+# its dependents might be:
+#
+# - For a library built with --make: its library-less db, and `below`.
+# - For a library compiled per-module: its early db, the files of each of
+#   its modules, and their closure sets.
+#
+# `shared_of_dynamic_too` is for the "shared" package of a library compiled
+# with -dynamic-too. That package has no compile of its own, so its modules'
+# interfaces are the .dyn_hi files that the static compile wrote.
 def _per_module_fields(
         ctx: AnalysisContext,
         link_style: LinkStyle,

@@ -13,7 +13,7 @@
 #     "cabal_buck2": str,                    # the release of cabal-buck2 that wrote this; see version.bzl
 #     "package": {"name": str, "version": str},   # where it lives: see PACKAGES, below
 #     "ghc_options": [str],                   # supplied by the project, not the .cabal file
-#     "per_module": bool,                     # compile each module in its own action (`cabal buck2 --per-module`)
+#     "per_module": bool,                     # experimental: compile each module in its own action (see haskell_library's per_module)
 #     "data": {"dir": str, "files": [str]},   # the package's data-dir and data-files (patterns)
 #     "extra_source_files": [str],            # the package's extra-source-files (patterns)
 #     "components": [

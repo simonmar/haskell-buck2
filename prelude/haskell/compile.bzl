@@ -42,8 +42,7 @@ CompileResultInfo = record(
     hi = field(Artifact),
     stubs = field(Artifact),
     producing_indices = field(bool),
-    # Per-module compilation only: see HaskellLibraryInfo's fields of the
-    # same names.
+    # These two are only set when the target is compiled per-module:
     modules = field(dict[str, HaskellModuleFiles] | None, None),
     closures = field(typing.Any, None),
 )
@@ -324,8 +323,8 @@ exec "$@"
 def data_dirs_env(ctx: AnalysisContext) -> dict[str, Artifact]:
     return {name: dep[DefaultInfo].default_outputs[0] for name, dep in ctx.attrs.data_dirs.items()}
 
-# The environment that GHC runs in: compile_env from the toolchain, and the
-# build tools on PATH.
+# The environment to run GHC in: the toolchain's compile_env variables, and
+# the target's build tools (build_tool_depends) added to PATH.
 def ghc_env(ctx: AnalysisContext, build_tool_dir: str):
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
 
@@ -353,7 +352,6 @@ def ghc_env(ctx: AnalysisContext, build_tool_dir: str):
         args.append(ctx.actions.symlinked_dir(build_tool_dir, build_tool_dirs, has_content_based_path = False))
     return struct(script = script, args = args)
 
-# A command run in a GHC environment.
 def in_env(env, cmd: cmd_args) -> cmd_args:
     if not env.script:
         return cmd

@@ -2,12 +2,13 @@
 -- compile_per_module in compile_per_module.bzl):
 --
 -- > --depfile DEP --abi ABI --module Foo/Bar --outdir OUT --hisuf SUF
--- >   --unit UNIT [--hidir=UNIT=DIR]... [--mkdir=DIR]...
+-- >   [--hidir=UNIT=DIR]... [--mkdir=DIR]...
 -- >   -- ghc SESSION_FLAGS... -- MODULE_FLAGS...
 --
--- The compile is GHC with the session's flags then the module's. The
--- session's flags are those the target's modules share (with the same
--- package dbs); the module's own are its source and outputs.
+-- The tool runs GHC with the session flags followed by the module flags. The
+-- session flags are the same for every module of the target, including the
+-- package dbs. The module flags are the module's own source and output
+-- files.
 module Request (Request (..), parseRequest, withoutRts, unlinkedSplice, spliceHint) where
 
 import Data.List (stripPrefix)
@@ -35,8 +36,6 @@ parseRequest = go (Request "" "" "" "" "" [] [] False "" [] [])
     go r ("--module" : v : rest) = go r{reqModPath = v} rest
     go r ("--outdir" : v : rest) = go r{reqOutDir = v} rest
     go r ("--hisuf" : v : rest) = go r{reqHisuf = v} rest
-    -- Not needed: the interface names the module's unit.
-    go r ("--unit" : _ : rest) = go r rest
     go r ("--" : compiler : rest) =
       let (session, moduleArgs) = break (== "--") rest
        in Right r{reqCompiler = compiler, reqSessionArgs = session, reqModuleArgs = drop 1 moduleArgs, reqBoot = reqAbi r == reqOutDir r </> reqModPath r <.> "abi-boot"}
