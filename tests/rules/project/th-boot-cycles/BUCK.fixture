@@ -1,0 +1,26 @@
+load("//buck2:haskell.bzl", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
+
+# Two modules that run Template Haskell, each with its boot file below the
+# other: Tie.I imports Tie.A, which imports Tie.K {-# SOURCE #-}; Tie.K
+# imports Tie.B, which imports Tie.I {-# SOURCE #-}. Neither splice runs the
+# other's code, so the target builds.
+#
+# Tie.AZ, whose name sorts first, is only behind that cycle. It runs a
+# splice and imports Tie.V, which imports Tie.W's boot file.
+haskell_library(
+    name = "th-boot-cycles",
+    srcs = {
+        "Tie.A": "Tie/A.hs",
+        "Tie.AZ": "Tie/AZ.hs",
+        "Tie.B": "Tie/B.hs",
+        "Tie.I": "Tie/I.hs",
+        "Tie.K": "Tie/K.hs",
+        "Tie.V": "Tie/V.hs",
+        "Tie.W": "Tie/W.hs",
+    },
+    boot_srcs = {"Tie.I": "Tie/I.hs-boot", "Tie.K": "Tie/K.hs-boot", "Tie.W": "Tie/W.hs-boot"},
+    packages = ["base", "template-haskell"],
+    per_module = PER_MODULE,
+    visibility = ["PUBLIC"],
+)

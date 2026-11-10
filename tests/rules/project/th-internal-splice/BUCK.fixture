@@ -1,7 +1,9 @@
-load("//buck2:haskell.bzl", "haskell_library")
+load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
 
-# A splice of P.Use runs P.Gen, of the same library, which per_module
-# doesn't support: P.Use's compile fails.
+# A splice of P.Use runs P.Gen, of the same library. per_module doesn't
+# support that, so compiled per-module, P.Use's compile fails. With --make,
+# it compiles.
 haskell_library(
     name = "th-internal-splice",
     srcs = {
@@ -9,5 +11,15 @@ haskell_library(
         "P.Use": "P/Use.hs",
     },
     packages = ["base", "template-haskell"],
-    per_module = True,
+    per_module = PER_MODULE,
+)
+
+# Prints P.Use's value, which P.Gen's splice made. It builds with --make
+# only, since P.Use doesn't compile per-module.
+haskell_binary(
+    name = "use",
+    srcs = {"Main": "Main.hs"},
+    packages = ["base"],
+    deps = [":th-internal-splice"],
+    per_module = PER_MODULE,
 )

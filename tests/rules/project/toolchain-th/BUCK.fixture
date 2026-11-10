@@ -1,4 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
 
 # A splice in a module without a LANGUAGE pragma: it runs Template Haskell
 # only where the toolchain's flags enable it, as check_toolchain_th has
@@ -7,6 +8,6 @@ haskell_library(
     name = "toolchain-th",
     srcs = {"TF.M": "TF/M.hs"},
     packages = ["base", "template-haskell"],
-    per_module = True,
+    per_module = PER_MODULE,
     visibility = ["PUBLIC"],
 )

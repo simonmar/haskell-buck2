@@ -1,0 +1,39 @@
+load("//buck2:haskell.bzl", "haskell_binary", "haskell_test")
+
+# A build tool of uses-tool, which runs it, as a package's tests often run
+# the package's own executable.
+haskell_binary(
+    name = "tool",
+    srcs = {"Main": "Tool.hs"},
+    packages = ["base"],
+)
+
+haskell_test(
+    name = "uses-tool",
+    srcs = {"Main": "UsesTool.hs"},
+    packages = ["base", "process"],
+    build_tool_depends = [":tool"],
+)
+
+# Reads data/greeting.txt through the variable that data_dirs sets, as a
+# Paths module does.
+haskell_test(
+    name = "reads-data",
+    srcs = {"Main": "ReadsData.hs"},
+    packages = ["base"],
+    data_dirs = {"test_suite_datadir": ":data"},
+)
+
+filegroup(
+    name = "data",
+    srcs = {"greeting.txt": "data/greeting.txt"},
+)
+
+# A test that fails, labelled so that `buck2 test --exclude manual` leaves
+# it out.
+haskell_test(
+    name = "manual",
+    srcs = {"Main": "Fails.hs"},
+    packages = ["base"],
+    labels = ["manual"],
+)

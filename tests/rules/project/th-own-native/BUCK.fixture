@@ -1,0 +1,41 @@
+load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
+
+# Splices that run modules of their own targets, which call C libraries of
+# those targets: a's c-a, b's c-b.
+cxx_library(
+    name = "c-a",
+    srcs = ["a.c"],
+    preferred_linkage = "shared",
+)
+
+cxx_library(
+    name = "c-b",
+    srcs = ["b.c"],
+    preferred_linkage = "shared",
+)
+
+haskell_library(
+    name = "a",
+    srcs = {"A.C": "A/C.hs", "A.S": "A/S.hs"},
+    packages = ["base", "template-haskell"],
+    deps = [":c-a"],
+    per_module = PER_MODULE,
+)
+
+haskell_library(
+    name = "b",
+    srcs = {"B.C": "B/C.hs", "B.S": "B/S.hs"},
+    packages = ["base", "template-haskell"],
+    deps = [":c-b"],
+    per_module = PER_MODULE,
+)
+
+# Prints A.S's and B.S's splices.
+haskell_binary(
+    name = "show",
+    srcs = {"Main": "Show.hs"},
+    packages = ["base"],
+    deps = [":a", ":b"],
+    per_module = PER_MODULE,
+)
