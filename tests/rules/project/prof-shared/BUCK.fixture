@@ -1,0 +1,33 @@
+load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
+
+# A library that is only linked shared, and profiled binaries that link it.
+# GHC has no profiled shared libraries, so the binaries link its profiled
+# archive.
+haskell_library(
+    name = "lib",
+    srcs = {"PS.Lib": "PS/Lib.hs"},
+    packages = ["base"],
+    preferred_linkage = "shared",
+    per_module = PER_MODULE,
+)
+
+haskell_binary(
+    name = "static",
+    srcs = {"Main": "Main.hs"},
+    packages = ["base"],
+    deps = [":lib"],
+    link_style = "static",
+    enable_profiling = True,
+    per_module = PER_MODULE,
+)
+
+haskell_binary(
+    name = "static-pic",
+    srcs = {"Main": "Main.hs"},
+    packages = ["base"],
+    deps = [":lib"],
+    link_style = "static_pic",
+    enable_profiling = True,
+    per_module = PER_MODULE,
+)

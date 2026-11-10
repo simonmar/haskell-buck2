@@ -1,7 +1,17 @@
 # A C library, linked shared, whose function //ffi-import:ffi-import imports.
+# It calls c-base's function, so a splice that runs it loads c-base through
+# it.
 cxx_library(
     name = "c-lib",
     srcs = ["cl.c"],
+    deps = [":c-base"],
+    preferred_linkage = "shared",
+    visibility = ["PUBLIC"],
+)
+
+cxx_library(
+    name = "c-base",
+    srcs = ["cb.c"],
     preferred_linkage = "shared",
     visibility = ["PUBLIC"],
 )

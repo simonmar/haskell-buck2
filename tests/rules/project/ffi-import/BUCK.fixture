@@ -1,4 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
 
 # Imports cl_value from //c-lib:c-lib.
 haskell_library(
@@ -6,6 +7,17 @@ haskell_library(
     srcs = {"FFI.C": "FFI/C.hs"},
     packages = ["base"],
     deps = ["//c-lib:c-lib"],
-    per_module = True,
+    per_module = PER_MODULE,
+    visibility = ["PUBLIC"],
+)
+
+# Re-exports clValue: a splice that runs it through this library reaches
+# //c-lib:c-lib only through //ffi-import:ffi-import.
+haskell_library(
+    name = "ffi-wrap",
+    srcs = {"FFI.W": "FFI/W.hs"},
+    packages = ["base"],
+    deps = [":ffi-import"],
+    per_module = PER_MODULE,
     visibility = ["PUBLIC"],
 )

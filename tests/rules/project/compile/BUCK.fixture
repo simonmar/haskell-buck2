@@ -1,0 +1,14 @@
+# How the fixtures that set `per_module = PER_MODULE` (defs.bzl) are
+# compiled: per-module, the default, or with `--make` when a target is built
+# with the `make` modifier, as in `//lib:lib?//compile:make`. The checks
+# build both ways in one daemon, since the two are different configurations.
+constraint_setting(
+    name = "compile",
+    visibility = ["PUBLIC"],
+)
+
+constraint_value(
+    name = "make",
+    constraint_setting = ":compile",
+    visibility = ["PUBLIC"],
+)

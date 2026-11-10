@@ -1,10 +1,11 @@
 load("//buck2:haskell.bzl", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
 
 # A module that #includes a header of the target's srcs.
 haskell_library(
     name = "header",
     srcs = {"Hdr.M": "Hdr/M.hs", "Hdr/value.h": "Hdr/value.h"},
     packages = ["base"],
-    per_module = True,
+    per_module = PER_MODULE,
     visibility = ["PUBLIC"],
 )

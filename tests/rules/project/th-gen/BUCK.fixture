@@ -1,9 +1,10 @@
 load("//buck2:haskell.bzl", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
 
 haskell_library(
     name = "th-gen",
     srcs = {"TH.Gen": "TH/Gen.hs"},
     packages = ["base", "template-haskell"],
-    per_module = True,
+    per_module = PER_MODULE,
     visibility = ["PUBLIC"],
 )

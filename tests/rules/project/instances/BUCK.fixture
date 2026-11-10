@@ -1,0 +1,34 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# Instances that a module sees only through what it imports, two packages
+# down. I.High imports nothing from I.Mid (`import I.Mid ()`), but I.Mid
+# imports I.Orphan and I.Fam, whose instances are orphans: neither the class
+# nor the type is theirs. An edit to one of those instances must compile
+# I.High again, though I.High doesn't import the module that changed (see
+# check_cutoff_instances).
+haskell_library(
+    name = "low",
+    srcs = {
+        "I.Fam": "I/Fam.hs",
+        "I.Orphan": "I/Orphan.hs",
+        "I.T": "I/T.hs",
+    },
+    packages = ["base"],
+    per_module = True,
+)
+
+haskell_library(
+    name = "mid",
+    srcs = {"I.Mid": "I/Mid.hs"},
+    packages = ["base"],
+    deps = [":low"],
+    per_module = True,
+)
+
+haskell_library(
+    name = "high",
+    srcs = {"I.High": "I/High.hs"},
+    packages = ["base"],
+    deps = [":low", ":mid"],
+    per_module = True,
+)
