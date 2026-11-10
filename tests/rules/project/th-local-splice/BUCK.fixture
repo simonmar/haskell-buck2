@@ -1,7 +1,9 @@
-load("//buck2:haskell.bzl", "haskell_library")
+load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
 
-# C.Splice's splice runs TH.Gen, of //th-gen:th-gen, which per_module doesn't
-# support: its compile fails.
+# C.Splice's splice runs TH.Gen, of //th-gen:th-gen. per_module doesn't
+# support that, so compiled per-module, C.Splice's compile fails. With
+# --make, it compiles.
 haskell_library(
     name = "th-local-splice",
     srcs = {
@@ -11,6 +13,15 @@ haskell_library(
     },
     packages = ["base", "template-haskell"],
     deps = ["//lib:lib", "//th-gen:th-gen"],
-    per_module = True,
+    per_module = PER_MODULE,
     visibility = ["PUBLIC"],
+)
+
+# Prints C.Splice's splice, to see that it follows TH.Gen.
+haskell_binary(
+    name = "show",
+    srcs = {"Main": "Show.hs"},
+    packages = ["base"],
+    deps = [":th-local-splice"],
+    per_module = PER_MODULE,
 )

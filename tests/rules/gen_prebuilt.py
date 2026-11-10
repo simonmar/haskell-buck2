@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import sys
 
-ROOTS = ["base", "template-haskell", "rts"]
+ROOTS = ["base", "template-haskell", "process", "rts"]
 FIELDS = "name,version,id,library-dirs,dynamic-library-dirs,hs-libraries,depends,include-dirs,extra-libraries"
 
 

@@ -1,0 +1,26 @@
+load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
+
+# DD.Paths finds data files through the data_dirs_datadir variable, as a
+# Cabal package's Paths_<pkg> module does.
+haskell_library(
+    name = "paths",
+    srcs = {"DD.Paths": "DD/Paths.hs"},
+    packages = ["base"],
+    per_module = PER_MODULE,
+)
+
+# A splice that runs DD.Paths's code to read a data file, in data_dirs.
+haskell_binary(
+    name = "data-dirs",
+    srcs = {"Main": "Main.hs"},
+    packages = ["base", "template-haskell"],
+    deps = [":paths"],
+    data_dirs = {"data_dirs_datadir": ":data"},
+    per_module = PER_MODULE,
+)
+
+filegroup(
+    name = "data",
+    srcs = {"greeting.txt": "data/greeting.txt"},
+)

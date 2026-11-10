@@ -1,4 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
 
 # Re-exports lib's A.Base, which reexport-user imports through it.
 haskell_library(
@@ -7,6 +8,6 @@ haskell_library(
     packages = ["base"],
     deps = ["//lib:lib"],
     reexported_modules = {"A.Base": ("//lib:lib", "A.Base")},
-    per_module = True,
+    per_module = PER_MODULE,
     visibility = ["PUBLIC"],
 )

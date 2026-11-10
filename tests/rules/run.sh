@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the tests of the per-module rules (see README.md).
+# Runs the tests of the rules (see README.md).
 #
 # usage: tests/rules/run.sh GHC_BIN_DIR [WORK_DIR] [-- CHECK_ARGS...]
 #
