@@ -27,3 +27,11 @@
 # project uses through its buck2/, are BUCK.
 [buildfile]
   name = BUCK.fixture,BUCK
+
+# The checks edit a source and then build at once. The default file watcher
+# learns of the edit from the operating system's file events, and on macOS
+# (FSEvents) those can arrive after the build has started, so that the build
+# misses the edit. The hash crawler hashes the project's files at the start
+# of each command instead, so a build always sees the edits made before it.
+[buck2]
+  file_watcher = fs_hash_crawler
