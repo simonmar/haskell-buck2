@@ -82,7 +82,8 @@ def haskell_haddock_lib(ctx: AnalysisContext, pkgname: str) -> Provider:
                 )
             )
         else:
-            cmd.add(args.args_for_file)
+            cmd.add(cmd_args(args.args_for_file, format = "--optghc={}"))
+            cmd.add(args.srcs)
 
     # Buck2 requires that the output artifacts are always produced, but Haddock only
     # creates them if it needs to, so we need a wrapper script to mkdir the outputs.
@@ -140,7 +141,7 @@ def haskell_haddock_impl(ctx: AnalysisContext) -> list[Provider]:
 
     script = ctx.actions.declare_output("haddock-script", has_content_based_path = False)
     script_args = cmd_args([
-        "#!/bin/sh",
+        "#!/usr/bin/env bash",
         "set -ueo pipefail",
         cmd_args(cmd, delimiter = " ", quote = "shell"),
     ])
