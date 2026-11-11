@@ -491,10 +491,10 @@ def _make_package(
         import_dirs = cmd_args([pkgroot_path(d) for d in hi.values()], delimiter = ", ")
     library_dirs = cmd_args([pkgroot_path(l, parent = 1) for l in lib.values()], delimiter = ", ")
 
-    # Reexports are named by the unit they come from, which GHC finds in the
-    # package databases whether or not the unit is exposed.
+    # Reexports are identified by the unit ID they come from, and are sorted
+    # by module name to match Cabal's behaviour.
     reexports = []
-    for new_name, (origin, original_name) in ctx.attrs.reexported_modules.items():
+    for new_name, (origin, original_name) in sorted(ctx.attrs.reexported_modules.items()):
         if origin == None:
             origin_id = pkgname
         else:
