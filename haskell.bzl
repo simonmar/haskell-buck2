@@ -215,17 +215,11 @@ def haskell_test(name, test_args = [], test_env = {}, cwd = None, labels = [], *
     test_target = ":" + bin
     args = test_args
 
-    # `cabal test` puts a test-suite's build-tool-depends on PATH when it runs
-    # it, not just when it builds it, and tests rely on that.
-    tools = kwargs.get("build_tool_depends", [])
-    if cwd != None or tools:
+    # This doesn't need to put the test's tools on PATH. The binary's RunInfo
+    # already does that for its run_tool_depends.
+    if cwd != None:
         test_target = "//buck2:run_test"
-        args = (
-            [cwd or "."] +
-            ["$(location " + t + ")" for t in tools] +
-            ["--", "$(exe_target :" + bin + ")"] +
-            test_args
-        )
+        args = [cwd, "$(exe_target :" + bin + ")"] + test_args
 
     native.sh_test(
         name = name,

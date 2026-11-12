@@ -15,9 +15,26 @@ from harness import IDENTITY, LOG_DIR, COMPILES, buck2, build, configured, expec
 
 
 def check_test_build_tools(st):
-    """A test runs with its build_tool_depends on PATH, as `cabal test` runs
-    a test-suite: uses-tool runs //test-suite:tool by name."""
-    buck2("test", "//test-suite:uses-tool")
+    """Tests and executables run with their run_tool_depends on PATH.
+    uses-tool and uses-run-tool are tests that run //test-suite:tool by
+    name, and runs-tool is an executable that does the same with
+    `buck2 run`.
+
+    A run tool is built in the configuration of the target that runs it,
+    and a build tool is built for the execution platform. uses-tool lists
+    the tool as both, as a Cabal test-suite does with its
+    build-tool-depends, so the tool is built in two configurations.
+    build-tool-only lists it as a build tool only, so it is only built for
+    the execution platform."""
+    buck2("test", "//test-suite:uses-tool", "//test-suite:uses-run-tool", "//test-suite:build-tool-only")
+    expect_output("//test-suite:runs-tool", "with buck2 run", "ok")
+    for target, configurations, with_own in [("uses-tool", 2, True), ("uses-run-tool", 1, True), ("runs-tool", 1, True), ("build-tool-only", 1, False)]:
+        deps = buck2("cquery", "deps(//test-suite:{})".format(target)).stdout
+        own = re.search(r"^root//test-suite:{} \((\S+)\)$".format(target), deps, re.M).group(1)
+        tool = set(re.findall(r"^root//test-suite:tool \((\S+)\)$", deps, re.M))
+        expect("//test-suite:tool is built in {} configuration(s), {}including //test-suite:{}'s (got: {}; its own: {})".format(
+                   configurations, "" if with_own else "not ", target, sorted(tool), own),
+               len(tool) == configurations and (own in tool) == with_own)
 
 
 def check_data_files(st):
