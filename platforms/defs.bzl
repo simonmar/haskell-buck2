@@ -17,6 +17,9 @@ def _cache_executor_config():
         remote_enabled = False,
         remote_cache_enabled = True,
         allow_cache_uploads = True,
+        # Look up the per-module compiles by their dep files too (see Note
+        # [Early cut-off by dep files] in prelude/haskell/compile_per_module.bzl).
+        remote_dep_file_cache_enabled = True,
     )
 
 def _execution_platform_with_constraints_impl(ctx: AnalysisContext) -> list[Provider]:
