@@ -1362,16 +1362,22 @@ def derive_indexing_tset(actions: AnalysisActions, link_style: LinkStyle, value:
         children = index_children,
     )
 
-# Write a wrapper script that sets the environment variables of the rule's
-# data_dirs and then runs the binary, as `cabal run` does.
+def _run_tools(ctx: AnalysisContext) -> list[Artifact]:
+    return [t[DefaultInfo].default_outputs[0] for t in ctx.attrs.run_tool_depends]
+
+# Write a wrapper script that sets up the binary's environment and then runs
+# it, as `cabal run` does. The script sets the environment variables for the
+# rule's data_dirs, and puts the directories of its run_tool_depends at the
+# front of PATH.
 #
-# The script refers to the data directories and the binary by paths relative
-# to its own location, and turns them into absolute paths when it runs. That
-# way they don't depend on where buck-out is, and they keep working if the
-# binary is started from another directory (a test run by run_in_cwd, say) or
-# changes directory itself.
-def _run_with_data_dirs(ctx: AnalysisContext, binary: Artifact) -> Artifact:
-    script = ctx.actions.declare_output(binary.basename + "-with-data-dirs", has_content_based_path = False)
+# The script refers to the data directories, the tools and the binary by
+# paths relative to its own location, and turns them into absolute paths when
+# it runs. That way they don't depend on where buck-out is, and they keep
+# working if the binary is started from another directory (a test run by
+# run_in_cwd, say) or changes directory itself.
+def _run_wrapper(ctx: AnalysisContext, binary: Artifact) -> Artifact:
+    script = ctx.actions.declare_output(binary.basename + "-run", has_content_based_path = False)
+    tools = _run_tools(ctx)
     ctx.actions.write(
         script,
         cmd_args(
@@ -1381,6 +1387,12 @@ def _run_with_data_dirs(ctx: AnalysisContext, binary: Artifact) -> Artifact:
                 cmd_args("export ", name, '="$here/', dir, '"', delimiter = "")
                 for name, dir in data_dirs_env(ctx).items()
             ],
+            cmd_args(
+                'export PATH="',
+                [cmd_args("$here/", cmd_args(t, parent = 1), ":", delimiter = "") for t in tools],
+                '$PATH"',
+                delimiter = "",
+            ) if tools else [],
             cmd_args('exec "$here/', binary, '" "$@"', delimiter = ""),
             relative_to = (script, 1),
         ),
@@ -1722,11 +1734,15 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     else:
         run = cmd_args(output)
 
-    # With data_dirs, `buck2 run` and tests go through the wrapper script. The
-    # original command and the data directories are hidden inputs, so that
-    # they (and the symlink_dir of shared libraries) are materialized too.
-    if ctx.attrs.data_dirs:
-        run = cmd_args(_run_with_data_dirs(ctx, output), hidden = [run, data_dirs_env(ctx).values()])
+    # With data_dirs or run_tool_depends, `buck2 run` and tests go through
+    # the wrapper script. The original command, the data directories and the
+    # tools are hidden inputs, so that they (and the symlink_dir of shared
+    # libraries) are materialized too.
+    if ctx.attrs.data_dirs or ctx.attrs.run_tool_depends:
+        run = cmd_args(
+            _run_wrapper(ctx, output),
+            hidden = [run, data_dirs_env(ctx).values(), [t.get(RunInfo) or t[DefaultInfo].default_outputs for t in ctx.attrs.run_tool_depends]],
+        )
 
     providers = [
         DefaultInfo(

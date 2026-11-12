@@ -73,6 +73,21 @@ def _build_tool_depends_arg():
         ),
     }
 
+def _run_tool_depends_arg():
+    return {
+        "run_tool_depends": attrs.list(
+            attrs.dep(),
+            default = [],
+            doc = """
+    Executables that the binary needs on PATH when it runs.
+    These are on PATH whenever the binary runs through its
+    RunInfo: with `buck2 run`, as a test, or as a tool of another rule.
+
+    This is used to implement Cabal's missing run-tool-depends field.
+""",
+        ),
+    }
+
 def _exported_linker_flags_arg():
     return {
         "exported_linker_flags": attrs.list(
@@ -111,4 +126,5 @@ haskell_common = struct(
     exported_linker_flags_arg = _exported_linker_flags_arg,
     build_tool_depends_arg = _build_tool_depends_arg,
     data_dirs_arg = _data_dirs_arg,
+    run_tool_depends_arg = _run_tool_depends_arg,
 )

@@ -13,6 +13,35 @@ haskell_test(
     srcs = {"Main": "UsesTool.hs"},
     packages = ["base", "process"],
     build_tool_depends = [":tool"],
+    run_tool_depends = [":tool"],
+)
+
+# The same test, with the tool as a run tool only. It runs in its package's
+# directory, like the test-suites that cabal.bzl generates, so it also
+# checks that the tool is on PATH when the test runs through run_test.sh.
+haskell_test(
+    name = "uses-run-tool",
+    srcs = {"Main": "UsesTool.hs"},
+    packages = ["base", "process"],
+    run_tool_depends = [":tool"],
+    cwd = "test-suite",
+)
+
+# A test with the tool as a build tool only.
+haskell_test(
+    name = "build-tool-only",
+    srcs = {"Main": "Passes.hs"},
+    packages = ["base"],
+    build_tool_depends = [":tool"],
+)
+
+# The same program as an executable. It runs the tool when it is run with
+# `buck2 run`.
+haskell_binary(
+    name = "runs-tool",
+    srcs = {"Main": "UsesTool.hs"},
+    packages = ["base", "process"],
+    run_tool_depends = [":tool"],
 )
 
 # Reads data/greeting.txt through the variable that data_dirs sets, as a

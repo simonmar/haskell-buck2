@@ -32,7 +32,8 @@
 #         "deps": [dep],                      # see below
 #         "reexports": [{"module": str, "original": str, "from": dep}],  # libraries only; no "from" for a module of the library itself
 #         "hidden_modules": [str],            # libraries only: the modules the package doesn't expose (other-modules)
-#         "build_tools": [{"exe": str, "package": str} | {"exe": str, "external": True}],  # package: built by this project
+#         "build_tools": [tool],              # the tools needed to build it
+#         "run_tools": [tool],                # the tools it needs on PATH when it runs (not for libraries)
 #         "c_sources": [str], "cc_options": [str],
 #         "cxx_sources": [str], "cxx_options": [str],
 #         "cmm_sources": [str],
@@ -45,6 +46,9 @@
 #       },
 #     ],
 #   }
+#
+# A tool is {"exe": str, "package": str} for an executable built by this
+# project, or {"exe": str, "external": True} for an installed one.
 #
 # An "autogen" src names a file generated next to the sources, in the
 # package's cabal-buck2/autogen directory. A dep is {"package": str} for a
@@ -537,6 +541,10 @@ def _haskell_kwargs(c, spec, helpers):
     build_tool_depends = _build_tool_depends(c.get("build_tools", []))
     if build_tool_depends:
         kwargs["build_tool_depends"] = build_tool_depends
+
+    run_tool_depends = _build_tool_depends(c.get("run_tools", []))
+    if run_tool_depends:
+        kwargs["run_tool_depends"] = run_tool_depends
     if kind != "test-suite":
         kwargs["visibility"] = ["PUBLIC"]
     return kwargs

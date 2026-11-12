@@ -54,6 +54,7 @@ haskell_binary = prelude_rule(
         | haskell_common.deps_arg()
         | haskell_common.build_tool_depends_arg()
         | haskell_common.data_dirs_arg()
+        | haskell_common.run_tool_depends_arg()
         | {
             "deps_query": attrs.option(attrs.query(), default = None),
             "enable_profiling": attrs.bool(default = False),

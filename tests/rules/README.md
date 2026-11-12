@@ -94,5 +94,6 @@ compiles with `--make`.
 | `//c-lib:c-lib`, `//ffi-import:ffi-import` | a C library, and a library that imports its function |
 | `//th-internal-splice:th-internal-splice`, `//th-internal-splice:use` | a splice that runs a module of its own library, which isn't supported: its compile fails. With `--make` it compiles, and `use` prints the value it made |
 | `//test-suite:uses-tool`, `//test-suite:reads-data`, `//test-suite:manual` | `haskell_test`s: one that runs its build tool (`//test-suite:tool`), one that reads a data file through `data_dirs`, and one that fails, labelled `manual` |
+| `//test-suite:uses-run-tool`, `//test-suite:runs-tool`, `//test-suite:build-tool-only` | `uses-run-tool` (a test) and `runs-tool` (an executable) have `//test-suite:tool` as a run tool only, and `build-tool-only` has it as a build tool only |
 | `//instances:low`, `//instances:mid`, `//instances:high` | `high`'s module sees orphan instances (a class instance, a type family instance) of `low` only through `mid`, so an edit to one of them must compile it again |
 | `//prof-shared:static`, `//prof-shared:static-pic` | profiled binaries, linked `static` and `static_pic`, of a library that is otherwise only linked shared |
