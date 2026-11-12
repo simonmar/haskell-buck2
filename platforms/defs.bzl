@@ -24,6 +24,9 @@ def _executor_config(base: ExecutionPlatformInfo, cache: bool, persistent_worker
         remote_enabled = False,
         remote_cache_enabled = cache,
         allow_cache_uploads = cache,
+        # Look up the per-module compiles by their dep files too (see Note
+        # [Early cut-off by dep files] in prelude/haskell/compile_per_module.bzl).
+        remote_dep_file_cache_enabled = cache,
         use_persistent_workers = persistent_workers,
     )
 
