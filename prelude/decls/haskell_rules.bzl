@@ -64,6 +64,7 @@ haskell_binary = prelude_rule(
             "per_module": attrs.bool(default = False),
             "_per_module_compile": attrs.default_only(attrs.exec_dep(providers = [RunInfo], default = "prelude//haskell/tools:per_module_compile")),
             "_per_module_deps": attrs.default_only(attrs.exec_dep(providers = [RunInfo], default = "prelude//haskell/tools:per_module_deps")),
+            "per_module_worker": attrs.option(attrs.exec_dep(providers = [WorkerInfo]), default = None),  # see haskell_library's per_module_worker
             "linker_flags": attrs.list(attrs.arg(), default = []),
             "platform": attrs.option(attrs.string(), default = None),
         }
@@ -196,6 +197,15 @@ haskell_library = prelude_rule(
             # Tools for per-module compilation
             "_per_module_compile": attrs.default_only(attrs.exec_dep(providers = [RunInfo], default = "prelude//haskell/tools:per_module_compile")),
             "_per_module_deps": attrs.default_only(attrs.exec_dep(providers = [RunInfo], default = "prelude//haskell/tools:per_module_deps")),
+            # The persistent worker that compiles the target's modules, when
+            # the project builds the worker from source. It is a
+            # haskell_per_module_worker() target (see worker.bzl), and all
+            # the per-module targets name the same one. The toolchain can't
+            # name a worker that is built with the toolchain itself (see Note
+            # [The persistent worker] in compile_per_module.bzl), so each
+            # target has to. It is used only when the buckconfig sets
+            # `[haskell] per_module_worker`.
+            "per_module_worker": attrs.option(attrs.exec_dep(providers = [WorkerInfo]), default = None),
             # Libraries that are part of this one, as the C of a Cabal package
             # is part of its library: their objects are in its archive, and
             # linked into its shared library, and what depends on it isn't

@@ -4,9 +4,27 @@
 #
 # - unset, or "none". There is no worker, and each module is compiled by its
 #   own `ghc -c`.
+# - "local", for the worker that the project builds from source, as one of
+#   the packages of its cabal.project (buck2/tools/buck2-ghc-worker). The
+#   toolchain can't name this worker (see Note [The persistent worker] in
+#   prelude/haskell/compile_per_module.bzl), so cabal.bzl names it in each
+#   per-module target that it generates. A hand-written target has to set
+#   per_module_worker itself.
 # - anything else, for a worker program given as a path, or as a name to
 #   look up on $PATH. The toolchain uses this worker for every per-module
 #   target.
+
+# The target that makes the project's own shared worker (see worker.bzl) is
+# named after the worker's executable, with this suffix.
+PER_MODULE_WORKER_SUFFIX = "-shared"
+
+# Where the project builds the worker from source: the package that the rules'
+# tools/buck2-ghc-worker becomes, since the rules are at buck2/. cabal-buck2
+# names the target of a package's executable after the executable, adding
+# "-exe" if the package's library has the same name, as buck2-ghc-worker's
+# does.
+_WORKER_PACKAGE = "buck2/tools/buck2-ghc-worker"
+_WORKER_EXE = "buck2-ghc-worker-exe"
 
 def _configured() -> str:
     return read_root_config("haskell", "per_module_worker", "") or "none"
@@ -15,7 +33,28 @@ def _configured() -> str:
 # no worker.
 def toolchain_per_module_worker() -> str | None:
     configured = _configured()
-    return None if configured == "none" else configured
+    return None if configured in ("none", "local") else configured
+
+# The target that each per-module target names as its worker, when the
+# project builds the worker from source, or else None.
+def project_per_module_worker() -> str | None:
+    if _configured() != "local":
+        return None
+
+    # If the project doesn't build the worker (buck2/tools/buck2-ghc-worker
+    # isn't in its cabal.project), buck2 reports that this target doesn't
+    # exist.
+    return "//{}:{}".format(_WORKER_PACKAGE, _WORKER_EXE + PER_MODULE_WORKER_SUFFIX)
+
+# Whether the BUCK file being loaded is in the worker's own package. That
+# package's targets build the worker, so they can't be compiled in it.
+def in_worker_package() -> bool:
+    return native.package_name() == _WORKER_PACKAGE
+
+# Whether the target called `name`, in the BUCK file being loaded, is the
+# worker's executable.
+def is_worker_target(name: str) -> bool:
+    return in_worker_package() and name == _WORKER_EXE
 
 # Whether the per-module compiles use a worker at all.
 def has_per_module_worker() -> bool:

@@ -28,6 +28,7 @@ ln -s "$repo" "$project/buck2"
 if [ -n "${BUCK2_GHC_WORKER:-}" ]; then
   worker=$(cd "$(dirname "$BUCK2_GHC_WORKER")" && pwd)/$(basename "$BUCK2_GHC_WORKER")
   printf '\n[haskell]\n  per_module_worker = %s\n' "$worker" >> "$project/.buckconfig"
+  ln -s "$worker" "$project/worker-attr/buck2-ghc-worker"
 fi
 
 python3 "$here/gen_prebuilt.py" "$ghc_bin/ghc" "$project/third-party/haskell"

@@ -83,8 +83,17 @@ the cores, as in a chain of libraries that each depend on the one before.
 `per_module_worker` in the `[haskell]` section of the buckconfig says how
 to get the worker:
 
-- a path, or a name on `$PATH`: the worker program, built with the
-  project's GHC (see the worker's README for how to install it).
+- `local`: a worker defined in the project itself, which buck2 builds with
+  the project's GHC. Add it to the packages in `cabal.project`, without its
+  tests (otherwise they become tests of the project), and run `cabal buck2`:
+
+  ```
+  packages: . buck2/tools/buck2-ghc-worker
+
+  package buck2-ghc-worker
+    tests: False
+  ```
+- a path, or a name on `$PATH`: a worker built by some other means.
 - `none`, or unset: no worker.
 
 The same section has options for the worker that the targets share:

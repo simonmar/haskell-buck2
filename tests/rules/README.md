@@ -96,6 +96,7 @@ compiles with `--make`.
 | `//make-between:p`, `//make-between:m`, `//make-between:t` | `t`'s module imports `m`'s, built with `--make`, whose interface refers to `p`'s, compiled per-module |
 | `//flat-sources:flat-sources`, `//make-lib:make-lib` | `flat-sources`'s flat sources (`Lib.hs`), one of which imports `Q.Lib` from `make-lib` (built with `--make`), whose interface path ends in `/Lib.hi` |
 | `//module-move:hi`, `//module-move:lo`, `//module-move:main` | a module that moves from `hi` to `lo`, its dependency |
+| `//worker-attr:worker-attr` | a target that names its own worker (`//worker-attr:w`), built only with `BUCK2_GHC_WORKER` |
 | `//build-tools:shared`, `//build-tools:own` | modules run through preprocessors (`-pgmF`) that are build tools; the project's buckconfig puts `bt-shared` on the worker's `PATH`, but not `bt-own` |
 | `//index:index` | built with `-fwrite-ide-info`, for its index (`index.bxl` prints it) |
 | `//module-name-clash:user` | `X` uses `bar` through `second`'s `Re`, which re-exports it from `second`'s `Utils`; `first` and `user` have a module `Utils` too |

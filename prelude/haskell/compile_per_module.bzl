@@ -263,17 +263,20 @@ def _declare_module_outputs(ctx: AnalysisContext, out_dir: str, nodes: list, osu
         dyn_hi = {n: declare(n, "dyn_hi") for n, _ in nodes} if dynamic_too else {},
     )
 
-# The persistent worker that compiles the target's modules: the toolchain's
-# shared worker (see Note [The persistent worker]). The result is None if
-# there is no worker, or if the target has a build tool that isn't on the
-# worker's PATH (see per_module_worker_build_tools), because then the
-# modules have to be compiled in the target's own environment.
+# The persistent worker that compiles the target's modules (see Note [The
+# persistent worker]). If the target has a per_module_worker attribute, it
+# is the worker that the attribute names. Otherwise it is the toolchain's
+# shared worker. The result is None if there is no worker, or if the target
+# has a build tool that isn't on the worker's PATH (see
+# per_module_worker_build_tools), because then the modules have to be
+# compiled in the target's own environment.
 def _per_module_worker(ctx: AnalysisContext) -> WorkerInfo | None:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     shared_tools = haskell_toolchain.per_module_worker_build_tools
     if any([t.label.raw_target() not in shared_tools for t in ctx.attrs.build_tool_depends]):
         return None
-    return haskell_toolchain.per_module_shared_worker
+    own_worker = getattr(ctx.attrs, "per_module_worker", None)
+    return own_worker[WorkerInfo] if own_worker != None else haskell_toolchain.per_module_shared_worker
 
 # The version of the request that each compile action sends, and of the
 # files that the worker writes back. The worker and the compile tool refuse a
@@ -911,6 +914,12 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # target's environment, would compile them faster. But each of those
 # workers would keep its memory until the end of the build, and there may be
 # dozens of them.
+#
+# A local worker (`per_module_worker = local`) is a haskell_binary that is
+# built with the Haskell toolchain, so the toolchain can't depend on it
+# without a cycle. Instead, each target names the worker in its own
+# per_module_worker attribute, through a target that wraps the binary (see
+# worker.bzl).
 #
 # 5. The import path
 #

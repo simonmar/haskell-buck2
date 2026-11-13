@@ -57,7 +57,10 @@ def check_workers(st):
     The build of //build-tools is a separate buck2 command, so it starts a
     new worker. That matters because the worker keeps what it reads for its
     whole life, which is only safe if it lives for a single command (see
-    Note [Hashing the libraries] in the worker's Session.hs)."""
+    Note [Hashing the libraries] in the worker's Session.hs).
+
+    Finally, a target that names its own worker has its modules compiled in
+    that worker."""
     def executors(entries):
         compiles = [e for e in entries if "haskell_compile_module_" in e["identity"]]
         return [(module_of(e), e["reproducer"].get("executor", "")) for e in compiles], [e for e in compiles if e["reproducer"].get("executor") == "WorkerInit"]
@@ -75,6 +78,14 @@ def check_workers(st):
     expect("one worker (started: {})".format(len(inits)), len(inits) == 1)
     expect_set("how //build-tools's module compiles ran", bt, {("shared:BT.Shared", "Worker"), ("own:BT.Own", "Local")})
     expect("a new worker for a new buck2 command (started: {})".format(len(bt_inits)), len(bt_inits) == 1)
+    # A target that names its own worker, //worker-attr:w, which runs
+    # //worker-attr:buck2-ghc-worker.
+    build("//worker-attr:worker-attr")
+    entries = what_ran_entries()
+    ran, _ = executors(entries)
+    expect_set("how //worker-attr:worker-attr's module compiles ran", {x for _, x in ran} - {"WorkerInit"}, {"Worker"})
+    named = [e for e in entries if e["reproducer"].get("executor") == "WorkerInit" and any(a == "worker-attr/buck2-ghc-worker" or a.endswith("/worker-attr/buck2-ghc-worker") for a in e["reproducer"]["details"].get("command", []))]
+    expect("//worker-attr:worker-attr's compiles started the worker it names (//worker-attr:w)", len(named) == 1)
 
 
 def module_of(entry):
