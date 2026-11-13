@@ -39,7 +39,8 @@ def check_clean_build(st):
     expect_set("modules compiled from clean", compiled_modules(st.actions),
                {"lib:A.Base", "lib:A.Mid", "lib:A.Unused", "lib-user:B.M", "th-gen:TH.Gen", "th-local-splice:C.Splice", "th-local-splice:C.Plain", "th-local-splice:C.Ann", "th-make-dep:MK.Lit", "mkrun:MK.Run", "ffi-import:FFI.C", "p:Chain.P", "t:Chain.T",
                 "th-prebuilt-splice:D.Splice", "boot-cycle:Cyc.A", "boot-cycle:Cyc.B", "boot-cycle:Cyc.B-boot", "reexport:R.R", "reexport-user:U.M", "main:Main", "main:Main.Util", "show:Main",
-                "flat-sources:Lib", "flat-sources:User", "lib-user:B.Lit", "lib-user:B.UsesLit", "lib-user:B.Safe"})
+                "flat-sources:Lib", "flat-sources:User", "lib-user:B.Lit", "lib-user:B.UsesLit", "lib-user:B.Safe"}
+               | ({"eli:E.Gen", "eli:E.Lib", "eli:E.Mk", "eli-reexport:ER.M", "eli-persist:P.Persist"} if st.eli else set()))
 
 
 def check_workers(st):
@@ -254,6 +255,45 @@ def check_unlisted_th_dependency_fails(st):
            "MK.MissAfter" in p.stderr and "template_haskell_depends" in p.stderr)
 
 
+def check_explicit_level_imports(st):
+    """With GHC 9.14 or later, a module's explicit level imports narrow its
+    target's template_haskell_depends. The module's compile gets the final db
+    of each listed local dependency whose modules it imports with `import
+    splice`, and a db that names no library for each of the others. In
+    //eli:eli, which lists th-gen and make-lib:
+
+    - E.Gen (`import splice TH.Gen`) compiles against th-gen's final db.
+    - E.Mk (`import splice Q.Lib`) compiles against the final db of
+      make-lib, which is built with --make.
+    - E.Lib (`import splice Language.Haskell.TH`) gets the final db of no
+      local dependency.
+
+    ER.M imports A.Base with `import splice`, through reexport's re-export of
+    it from lib. It compiles against the final dbs of both lib and reexport,
+    and against a copy of the prebuilt db, since eli-reexport lists no
+    prebuilt package.
+    P.Persist turns implicit stage persistence back on, so it has no
+    explicit level imports. It compiles against the final dbs of all the
+    dependencies that eli-persist lists, like any Template Haskell module.
+
+    //eli:eli-unlisted doesn't list th-gen, so E.Gen's splice import of
+    TH.Gen fails its build, naming the import."""
+    c = find_compile(st.actions, "eli", "E.Gen")
+    expect_set("E.Gen's package dbs", c["dbs"], {"lib:early", "th-gen:final", "make-lib:nolib", "ghc:global"})
+    c = find_compile(st.actions, "eli", "E.Lib")
+    expect_set("E.Lib's package dbs", c["dbs"], {"lib:early", "th-gen:early", "make-lib:nolib", "ghc:global"})
+    c = find_compile(st.actions, "eli", "E.Mk")
+    expect_set("E.Mk's package dbs", c["dbs"], {"lib:early", "th-gen:early", "make-lib:final", "ghc:global"})
+    c = find_compile(st.actions, "eli-reexport", "ER.M")
+    expect_set("ER.M's package dbs", c["dbs"], {"lib:final", "reexport:final", "eli-reexport:th-db"})
+    c = find_compile(st.actions, "eli-persist", "P.Persist")
+    expect_set("P.Persist's package dbs", c["dbs"], {"th-gen:final", "ghc:global"})
+    p = build("//eli:eli-unlisted", keep_going=True)
+    expect("//eli:eli-unlisted fails to build", p.returncode != 0)
+    expect("its failure names E.Gen's splice import of TH.Gen (got:\n{})".format(tail(p.stderr, 15)),
+           "E.Gen's splice import of TH.Gen runs code from" in p.stderr and "but template_haskell_depends doesn't list it" in p.stderr)
+
+
 def check_own_boot(st):
     """A module with a boot file that no import cycle needs (OB.U, which OB.B
     imports {-# SOURCE #-}) depends on the boot file, so GHC checks the module
@@ -347,17 +387,21 @@ def check_cutoff_abi_base(st):
     append("lib/A/Base.hs", "\nbase2 :: Int\nbase2 = 2\n")
     ran = rebuild(st)
     expect_set("modules compiled after a new export of A.Base", ran,
-               {"lib:A.Base", "lib:A.Mid", "th-local-splice:C.Splice", "th-local-splice:C.Ann", "th-prebuilt-splice:D.Splice", "reexport-user:U.M"})
+               {"lib:A.Base", "lib:A.Mid", "th-local-splice:C.Splice", "th-local-splice:C.Ann", "th-prebuilt-splice:D.Splice", "reexport-user:U.M"}
+               | ({"eli:E.Gen", "eli:E.Lib", "eli-reexport:ER.M"} if st.eli else set()))
 
 
 def check_cutoff_abi_mid(st):
     """A new export of A.Mid recompiles A.Mid's importers in other packages:
     B.M, C.Plain, and B.Safe, whose import is a safe one. It doesn't
-    recompile B.M's importers in main, because B.M's ABI is unchanged."""
+    recompile B.M's importers in main, because B.M's ABI is unchanged. With
+    GHC 9.14 or later, it also recompiles ER.M. ER.M's splice runs lib's
+    code, so lib's library is an input of its compile, and the edit makes
+    the library change."""
     replace("lib/A/Mid.hs", "module A.Mid (mid) where", "module A.Mid (mid, mid2) where")
     append("lib/A/Mid.hs", "\nmid2 :: Int\nmid2 = 2\n")
     expect_set("modules compiled after a new export of A.Mid", rebuild(st),
-               {"lib:A.Mid", "lib-user:B.M", "lib-user:B.Safe", "th-local-splice:C.Plain"})
+               {"lib:A.Mid", "lib-user:B.M", "lib-user:B.Safe", "th-local-splice:C.Plain"} | ({"eli-reexport:ER.M"} if st.eli else set()))
 
 
 def restoring(path, check):

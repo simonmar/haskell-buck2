@@ -157,7 +157,7 @@ spliceHint r out
       | otherwise = Nothing
       where
         name = fromMaybe symbol (stripPrefix "_" symbol)
-    advice = ": list the package in the target's template_haskell_depends\n"
+    advice = ": list the package in the target's template_haskell_depends, or, if it is a library of this project and the module uses explicit level imports, import the module whose code the splice runs with `import splice`\n"
 
 -- | The package name of a unit id such as text-2.1.2-AbC: the components
 -- before the version. Nothing if it has no version, as the prefix of a C

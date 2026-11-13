@@ -10,6 +10,9 @@ import subprocess
 import sys
 
 MAIN_TARGETS = ["//lib:lib", "//lib-user:lib-user", "//th-gen:th-gen", "//th-local-splice:th-local-splice", "//th-local-splice:show", "//th-prebuilt-splice:th-prebuilt-splice", "//th-make-dep:th-make-dep", "//th-make-dep:mkrun", "//ffi-import:ffi-import", "//make-between:t", "//boot-cycle:boot-cycle", "//main:main", "//reexport:reexport", "//reexport-user:reexport-user", "//flat-sources:flat-sources"]
+# Targets whose modules use explicit level imports. Only GHC 9.14 and later
+# have them, so the checks only build these targets with those GHCs.
+ELI_TARGETS = ["//eli:eli", "//eli-reexport:eli-reexport", "//eli-persist:eli-persist"]
 
 LOG_DIR = "buck-logs"
 
@@ -189,7 +192,9 @@ SHORT_NAMES = [
     (r"third-party/haskell/ghc-[^/]+(/package\.conf\.d)?$", lambda m: "ghc:global"),
     # A copy of the prebuilt db in which only some packages name their
     # libraries, for a Template Haskell module.
-    (r"buck-out/v2/art/root/(?:[^ ]*/)?__([^/]+)__/[0-9a-f]+/per-module-[^/]+/th-db-[0-9]+$", lambda m: m[1] + ":th-db"),
+    # A module with explicit level imports gets its copy from a dynamic
+    # action, whose outputs are under __action___<n>__ in the target's.
+    (r"buck-out/v2/art/root/(?:[^ ]*/)?__((?!action___)[^/]+)__/(?:__action___[0-9]+__/)?[0-9a-f]+/per-module-[^/]+/th-db(?:-eli)?-[0-9]+$", lambda m: m[1] + ":th-db"),
 ]
 
 
@@ -269,7 +274,7 @@ class State:
         self.bazel_remote = bazel_remote
         self.eli = eli
         self.worker = worker
-        self.targets = MAIN_TARGETS
+        self.targets = MAIN_TARGETS + (ELI_TARGETS if eli else [])
         self.entries = None
         self.actions = None
 

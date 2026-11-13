@@ -56,6 +56,7 @@ from per_module import (
     check_cutoff_comment,
     check_cutoff_instances,
     check_early_db_conf,
+    check_explicit_level_imports,
     check_interfaces_subtarget,
     check_main_file,
     check_local_splices_in_modes,
@@ -90,6 +91,7 @@ CHECKS = [
     check_template_haskell_depends_not_a_dependency,
     check_unlisted_prebuilt_dependency_fails,
     check_local_splices,
+    check_explicit_level_imports,
     check_th_boot_cycles,
     check_own_boot,
     check_main_file,
@@ -147,6 +149,9 @@ def main():
             continue
         if check is check_cache and not st.bazel_remote:
             print("SKIP   {} (no BAZEL_REMOTE)".format(name))
+            continue
+        if check is check_explicit_level_imports and not st.eli:
+            print("SKIP   {} (GHC {})".format(name, args.ghc_version))
             continue
         start = time.time()
         skipped = None

@@ -51,6 +51,9 @@ A target generated from a Cabal package lists all of its dependencies,
 unless the package says which ones its splices run. Its TH modules then wait
 for all of them, which loses much of the cross-package parallelism.
 
+On GHC 9.14, a module that uses `ExplicitLevelImports` narrows its target's
+list further, to the dependencies that its `import splice`s come from.
+
 A splice can't run code of its own target's modules. Such a target fails to
 compile, saying so, and has to be built with `per_module = False`.
 

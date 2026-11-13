@@ -1,0 +1,15 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# This needs GHC 9.14 or later. P.Persist turns on ExplicitLevelImports,
+# but then turns ImplicitStagePersistence back on, so its splice can run
+# TH.Gen, which it imports without `splice`. Its imports then don't say
+# what its splice runs, so it is treated as a module without explicit level
+# imports.
+haskell_library(
+    name = "eli-persist",
+    srcs = {"P.Persist": "P/Persist.hs"},
+    packages = ["base", "template-haskell"],
+    deps = ["//th-gen:th-gen"],
+    template_haskell_depends = ["//th-gen:th-gen"],
+    per_module = True,
+)
