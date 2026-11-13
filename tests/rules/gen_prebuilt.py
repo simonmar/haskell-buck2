@@ -103,8 +103,21 @@ def main():
                     if os.path.exists(os.path.join(d, so)):
                         shared[so] = rel(os.path.join(d, so))
                         break
+        runtime = {}
         if name == "rts":
             ldflags = ["-L" + d for d in libdirs]
+            # A binary that GHC links with the RTS's shared library has to
+            # find it when it runs, from whatever directory it runs in. So
+            # the RTS's shared libraries (one for each way, such as
+            # libHSrts-1.0.2_thr-ghc9.12.4.so) are runtime_shared_libs, which
+            # go in the binary's own symlink tree, as cabal-buck2 makes them.
+            suffix = "-ghc{}.{}".format(version, "dylib" if sys.platform == "darwin" else "so")
+            for d in dyndirs + libdirs:
+                for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+                    for stem in info.get("hs-libraries", []):
+                        rest = f[len("lib" + stem):] if f.startswith("lib" + stem) else None
+                        if rest is not None and (rest == suffix or (rest.startswith("_") and rest.endswith(suffix))):
+                            runtime.setdefault(f, rel(os.path.join(d, f)))
         ldflags += ["-l" + lib for lib in info.get("extra-libraries", [])]
         headers = [rel(d) for d in info.get("include-dirs", []) if os.path.isdir(d)] if name == "rts" else []
         out += [
@@ -117,6 +130,7 @@ def main():
             "    profiled_static_libs = {!r},".format(prof),
             "    pic_profiled_static_libs = {!r},".format(prof),
             "    shared_libs = {!r},".format(shared),
+            "    runtime_shared_libs = {!r},".format(runtime),
             "    cxx_header_dirs = {!r},".format(headers),
             "    exported_linker_flags = {!r},".format(ldflags),
             "    deps = {!r},".format(sorted(":" + name_of[d] for d in info.get("depends", []))),
