@@ -36,10 +36,10 @@ as a remote cache, and checks that the rules' actions upload their results
 and that a clean build finds them there. The dev shells and `nix flake
 check` set it.
 
-With `BUCK2_GHC_WORKER` set to a `buck2-ghc-worker` (from
-`tools/buck2-ghc-worker`) that was built with the same GHC, `run.sh` sets
-`[haskell] per_module_worker` so that the modules are compiled in that
-worker. The same checks apply.
+With `PER_MODULE_WORKER=builtin`, `run.sh` sets `[haskell]
+per_module_worker` so that the modules are compiled in the worker that the
+toolchain builds (`prelude/haskell/tools/worker`). By default, it sets it to
+`none`. The same checks apply.
 `check_workers` also checks that the modules were compiled in the worker,
 apart from those that need their target's environment. `nix flake check`
 runs the tests both with and without the worker.

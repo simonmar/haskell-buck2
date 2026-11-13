@@ -77,7 +77,7 @@ parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
 -- - The trees of the target's sources, on the import path.
 -- - @-fforce-recomp@, so that GHC compiles the module whenever the worker
 --   asks, whatever GHC's recompilation check would say (see Note
---   [Compiling whenever buck2 asks] in tools/buck2-ghc-worker/src/Session.hs).
+--   [Compiling whenever buck2 asks] in prelude/haskell/tools/worker/src/Session.hs).
 -- - Flags that make object code deterministic, where GHC supports them
 --   (see 'objectDeterminism').
 sessionFlags :: Request -> [String]

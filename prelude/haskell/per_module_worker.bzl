@@ -1,25 +1,56 @@
-# The buckconfig setting `[haskell] per_module_worker` chooses the
-# persistent worker (tools/buck2-ghc-worker) that compiles the modules of
-# per-module targets. It can be:
+# The Haskell toolchain's `per_module_worker` says whether the modules of
+# per-module targets are compiled in the persistent worker, and the
+# buckconfig setting `[haskell] per_module_worker` sets it for the standard
+# toolchain (toolchains/defaults.bzl). It can be:
 #
-# - unset, or "none". There is no worker, and each module is compiled by its
-#   own `ghc -c`.
-# - anything else, for a worker program given as a path, or as a name to
-#   look up on $PATH. The toolchain uses this worker for every per-module
-#   target.
+# - "builtin", the default. The toolchain builds the worker from its
+#   sources in prelude/haskell/tools/worker, with the toolchain's own GHC, so
+#   it always matches that GHC.
+# - "none". There is no worker, and each module is compiled by its own
+#   `ghc -c`.
+#
+# A toolchain of a project's own can use a worker built some other way, by
+# setting HaskellToolchainInfo's per_module_shared_worker itself (see
+# per_module_worker_info in prelude/haskell/toolchain.bzl).
 
-def _configured() -> str:
-    return read_root_config("haskell", "per_module_worker", "") or "none"
+load("@prelude//haskell:ghc_api_tool.bzl", "GHC_API_TOOL_PACKAGES", "build_ghc_api_tool")
 
-# The worker program that the toolchain uses, or None if the toolchain has
-# no worker.
-def toolchain_per_module_worker() -> str | None:
-    configured = _configured()
-    return None if configured == "none" else configured
+# The value of the standard toolchain's `per_module_worker`: "builtin" or
+# "none".
+def toolchain_per_module_worker() -> str:
+    return read_root_config("haskell", "per_module_worker", "") or "builtin"
 
 # Whether the per-module compiles use a worker at all.
 def has_per_module_worker() -> bool:
-    return _configured() != "none"
+    return toolchain_per_module_worker() != "none"
+
+# Build the persistent worker with `compiler`, from `srcs`, the directory
+# that prelude//haskell/tools:worker-srcs makes. It uses only packages that
+# come with GHC.
+#
+# The worker is linked dynamically when the GHC is. A worker compiles
+# modules as that GHC would, so it has to load the code of Template Haskell
+# splices the same way, which depends on how it is itself linked (see the
+# notes on Template Haskell in prelude/haskell/haskell.bzl).
+#
+# The RTS options are the worker's defaults. The toolchain overrides -A and
+# -qn with per_module_worker_rts_options. --disable-delayed-os-memory-return
+# makes the RTS give the memory of dropped sessions back to the OS at once.
+# By default the RTS uses MADV_FREE, and the memory stays counted against
+# the process until the kernel needs it. The worker's cabal package
+# (prelude/haskell/tools/worker), which builds it for its tests and
+# benchmark, has the same options: keep the two in step.
+def build_per_module_worker(actions: AnalysisActions, compiler, compile_env: dict[str, str], srcs: Artifact, dynamic: bool) -> Artifact:
+    return build_ghc_api_tool(
+        actions,
+        "buck2-ghc-worker",
+        compiler,
+        compile_env,
+        [cmd_args("-i", srcs, "/worker/src", delimiter = "")],
+        cmd_args(srcs, "/worker/app/Main.hs", delimiter = ""),
+        GHC_API_TOOL_PACKAGES + ["stm", "unix"],
+        ["-threaded", "-rtsopts", "-with-rtsopts=-N -A16m -qn4 --disable-delayed-os-memory-return"] + (["-dynamic"] if dynamic else []),
+    )
 
 # The RTS options of the shared worker, from `[haskell]
 # per_module_worker_rts_options` in the buckconfig.
@@ -41,7 +72,7 @@ def has_per_module_worker() -> bool:
 #   collection time of -I5, and the build took longer.
 #
 # We measured these with the worker's benchmark (its `project` benchmark at
-# -j8, three runs each; see tools/buck2-ghc-worker/DESIGN.md). With 8
+# -j8, three runs each; see prelude/haskell/tools/worker/DESIGN.md). With 8
 # collection threads the build took 20.5-22.1s, of which 2.4-2.5s was
 # collection. With 4 threads it took 22.0-23.7s (3.7-3.9s of collection), and
 # with one thread per capability 21.0-21.4s (3.5-3.6s). A larger allocation
@@ -65,7 +96,7 @@ def per_module_worker_rts_options() -> list[str]:
 # has read, which can be a few hundred MB for a large target, and a new
 # session has to read them all again. So the limit makes little difference
 # to one-shot sessions, and for --make sessions it trades memory for speed.
-# Note [Dropping the idle sessions] in tools/buck2-ghc-worker/src/Worker.hs has
+# Note [Dropping the idle sessions] in prelude/haskell/tools/worker/src/Worker.hs has
 # the benchmark's figures.
 def per_module_worker_sessions() -> str:
     return read_root_config("haskell", "per_module_worker_sessions", "")
@@ -81,7 +112,7 @@ def per_module_worker_sessions() -> str:
 # - one-shot. Every target gets a one-shot session, and the compiles of a
 #   target with hs-boot files fail.
 #
-# See Note [One-shot sessions] in tools/buck2-ghc-worker/src/Session.hs.
+# See Note [One-shot sessions] in prelude/haskell/tools/worker/src/Session.hs.
 def per_module_worker_session_mode() -> str:
     return read_root_config("haskell", "per_module_worker_session_mode", "")
 

@@ -43,10 +43,10 @@ def check_clean_build(st):
 
 def check_workers(st):
     """In the clean build, every module compile ran in the shared persistent
-    worker if the project has one (run.sh with BUCK2_GHC_WORKER), and as a process
-    of its own if not. That includes the compiles of the Template Haskell
-    modules, because their splices load only prebuilt libraries (see Note
-    [The persistent worker]).
+    worker if the project has one (run.sh with PER_MODULE_WORKER=builtin),
+    and as a process of its own if not. That includes the compiles of the
+    Template Haskell modules, because their splices load only prebuilt
+    libraries (see Note [The persistent worker]).
 
     A target with build tools compiles in the worker too, if all its build
     tools are on the worker's PATH. The project's buckconfig puts

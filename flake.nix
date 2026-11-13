@@ -8,7 +8,7 @@
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
       # Keep in step with tested-with in
-      # tools/buck2-ghc-worker/buck2-ghc-worker.cabal and the matrices of
+      # prelude/haskell/tools/worker/buck2-ghc-worker.cabal and the matrices of
       # .github/workflows/buck2-ghc-worker.yml and rules.yml.
       ghcs = [ "ghc967" "ghc984" "ghc9103" "ghc9124" "ghc9141" ];
       # What tests/rules/run.sh needs besides GHC. clang: the C compiler of
@@ -31,11 +31,11 @@
               mkDerivation = args: super.mkDerivation (args // { doCheck = false; doHaddock = false; });
             };
           };
-          # The worker's package. Its src/ links to the modules that it shares
-          # with the rules' compile tool, so the source includes those too.
+          # The worker's package. Some of its modules are links to those of
+          # the rules' GHC-API tools, so the source includes those too.
           workerSrc = clean (lib.fileset.toSource {
             root = ./.;
-            fileset = lib.fileset.unions [ ./tools/buck2-ghc-worker ./prelude/haskell/tools/ghc-api ];
+            fileset = lib.fileset.unions [ ./prelude/haskell/tools/worker ./prelude/haskell/tools/ghc-api ];
           });
           # The tests run the worker that they were built with. Unlike `cabal
           # test`, `Setup test` doesn't put the worker on PATH, so preCheck
@@ -45,8 +45,8 @@
           worker = ghc:
             overrideCabal (old: { preCheck = (old.preCheck or "") + "export BUCK2_GHC_WORKER=$PWD/dist/build/buck2-ghc-worker/buck2-ghc-worker\n"; })
               (appendConfigureFlags [ "--ghc-option=-Werror" ]
-                (enableSharedExecutables (doCheck (doBenchmark (overrideCabal (old: { src = workerSrc; postUnpack = "sourceRoot+=/tools/buck2-ghc-worker"; })
-                  ((packages ghc).callCabal2nix "buck2-ghc-worker" "${workerSrc}/tools/buck2-ghc-worker" { }))))));
+                (enableSharedExecutables (doCheck (doBenchmark (overrideCabal (old: { src = workerSrc; postUnpack = "sourceRoot+=/prelude/haskell/tools/worker"; })
+                  ((packages ghc).callCabal2nix "buck2-ghc-worker" "${workerSrc}/prelude/haskell/tools/worker" { }))))));
           # The tests run inside a file system laid out as on most Linux
           # systems, with /usr/bin/env, which the build sandbox lacks. buck2
           # runs some programs through scripts that start with
@@ -60,10 +60,10 @@
             {
               nativeBuildInputs = testTools pkgs;
               BAZEL_REMOTE = "${pkgs.bazel-remote}/bin/bazel-remote";
-              BUCK2_GHC_WORKER = lib.optionalString withWorker "${worker ghc}/bin/buck2-ghc-worker";
+              PER_MODULE_WORKER = if withWorker then "builtin" else "none";
               src = clean (lib.cleanSourceWith {
                 src = ./.;
-                filter = path: type: !(lib.hasPrefix (toString ./tools) path || lib.hasPrefix (toString ./.github) path);
+                filter = path: type: !(lib.hasPrefix (toString ./.github) path);
               });
             } ''
             export HOME=$TMPDIR

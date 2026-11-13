@@ -1,5 +1,5 @@
 load("@prelude//haskell:toolchain.bzl", "HaskellPlatformInfo", "HaskellToolchainInfo", "per_module_worker_info")
-load("@prelude//haskell:per_module_worker.bzl", "per_module_worker_build_tools", "per_module_worker_rts_options", "per_module_worker_session_mode", "per_module_worker_sessions")
+load("@prelude//haskell:per_module_worker.bzl", "build_per_module_worker", "per_module_worker_build_tools", "per_module_worker_rts_options", "per_module_worker_session_mode", "per_module_worker_sessions")
 
 def _tool(tool):
     if isinstance(tool, Dependency):
@@ -8,7 +8,7 @@ def _tool(tool):
 
 def _haskell_toolchain_impl(ctx):
     compiler = _tool(ctx.attrs.compiler)
-    worker = _tool(ctx.attrs.per_module_worker) if ctx.attrs.per_module_worker != None else None
+    worker = _worker(ctx, compiler)
     sessions = int(ctx.attrs.per_module_worker_sessions) if ctx.attrs.per_module_worker_sessions else None
     session_mode = ctx.attrs.per_module_worker_session_mode or None
     tools = ctx.attrs.per_module_worker_build_tools
@@ -43,6 +43,15 @@ def _haskell_toolchain_impl(ctx):
         HaskellPlatformInfo(name = host_info().arch),
     ]
 
+# The persistent worker that the toolchain builds itself, with its own
+# compiler, from the sources in the prelude, or None (see
+# prelude/haskell/per_module_worker.bzl).
+def _worker(ctx, compiler):
+    if ctx.attrs.per_module_worker == "none":
+        return None
+    srcs = ctx.attrs._per_module_worker_srcs[DefaultInfo].default_outputs[0]
+    return build_per_module_worker(ctx.actions, compiler, ctx.attrs.compile_env, srcs, ctx.attrs.dynamic_ghc)
+
 # A tool is either the name of a program on $PATH, or a target that builds it.
 def _tool_attr(default):
     return attrs.one_of(attrs.exec_dep(providers = [RunInfo]), attrs.string(), default = default)
@@ -64,13 +73,14 @@ haskell_toolchain = rule(
         # --info`: look for the "GHC Dynamic" value.
         "dynamic_ghc": attrs.bool(default = True),
         # See HaskellToolchainInfo.
-        "per_module_worker": attrs.option(attrs.one_of(attrs.exec_dep(providers = [RunInfo]), attrs.string()), default = None),
+        "per_module_worker": attrs.enum(["builtin", "none"], default = "builtin"),
         "per_module_worker_rts_options": attrs.list(attrs.string(), default = per_module_worker_rts_options()),
         # An empty string means that the worker uses its own default, since
         # `attrs.option` can't default to a value.
         "per_module_worker_sessions": attrs.string(default = per_module_worker_sessions()),
         "per_module_worker_session_mode": attrs.string(default = per_module_worker_session_mode()),
         "per_module_worker_build_tools": attrs.list(attrs.exec_dep(), default = per_module_worker_build_tools()),
+        "_per_module_worker_srcs": attrs.dep(default = "prelude//haskell/tools:worker-srcs"),
     },
     is_toolchain_rule = True,
 )
