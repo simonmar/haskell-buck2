@@ -32,6 +32,8 @@ def _haskell_toolchain_impl(ctx):
             per_module_worker_rts_options = ctx.attrs.per_module_worker_rts_options,
             per_module_worker_sessions = sessions,
             per_module_worker_session_mode = session_mode,
+            per_module_deps = ctx.attrs.per_module_deps[RunInfo] if ctx.attrs.per_module_deps else None,
+            per_module_compile = ctx.attrs.per_module_compile[RunInfo] if ctx.attrs.per_module_compile else None,
         ),
         HaskellPlatformInfo(name = host_info().arch),
     ]
@@ -73,6 +75,10 @@ haskell_toolchain = rule(
         "per_module_worker_sessions": attrs.string(default = per_module_worker_sessions()),
         "per_module_worker_session_mode": attrs.string(default = per_module_worker_session_mode()),
         "_per_module_worker_srcs": attrs.dep(default = "prelude//haskell/tools:worker-srcs"),
+        # The tools of the per-module compiles, if the prelude's can't be
+        # used (see per_module_deps in prelude/haskell/toolchain.bzl).
+        "per_module_deps": attrs.option(attrs.exec_dep(providers = [RunInfo]), default = None),
+        "per_module_compile": attrs.option(attrs.exec_dep(providers = [RunInfo]), default = None),
     },
     is_toolchain_rule = True,
 )

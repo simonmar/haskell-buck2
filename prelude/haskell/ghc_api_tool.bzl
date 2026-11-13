@@ -65,6 +65,50 @@ def build_ghc_api_tool(actions: AnalysisActions, name: str, compiler, compile_en
 # The packages the tools use, all of which come with GHC.
 GHC_API_TOOL_PACKAGES = ["base", "bytestring", "containers", "directory", "filepath", "ghc", "ghc-boot", "process"]
 
+# The tools of the per-module compiles, by the name of their Main module. The
+# tools' sources are in prelude//haskell/tools/ghc-api, and each source is
+# also a target of prelude//haskell/tools, named after its path there.
+GHC_API_TOOLS = {
+    "per_module_compile": "PerModuleCompile",
+    "per_module_deps": "PerModuleDeps",
+}
+
+# The modules that the tools share.
+_SHARED_MODULES = ["Contract", "DepFile", "Imports", "Interface", "Libdir", "Request"]
+
+def ghc_api_tool_srcs(tool: str) -> dict[str, str]:
+    """The `srcs` of a haskell_binary() that builds one of GHC_API_TOOLS,
+    keyed by module name.
+
+    A toolchain whose GHC is built from source can't use the tools that
+    haskell_ghc_api_tool() builds, because they are linked with the GHC
+    library of the GHC that builds them. It can build its own instead, as
+    haskell_binary() targets that depend on the GHC library of the GHC that
+    the toolchain runs, and pass them in the toolchain's `per_module_deps`
+    and `per_module_compile`.
+    """
+    def src(module):
+        return "prelude//haskell/tools:ghc-api/{}.hs".format(module)
+    srcs = {module: src(module) for module in _SHARED_MODULES}
+    srcs["Main"] = src(GHC_API_TOOLS[tool])
+    return srcs
+
+def ghc_api_tool_sources() -> list[str]:
+    """The tools' source files, relative to prelude//haskell/tools."""
+    return ["ghc-api/{}.hs".format(module) for module in _SHARED_MODULES + GHC_API_TOOLS.values()]
+
+def check_ghc_api_tool_sources(found: list[str]):
+    """Fails if a source in `found` isn't one of ghc_api_tool_sources().
+
+    The modules are listed here, rather than found with a glob, because a
+    toolchain in another cell can't glob the tools' directory. So the
+    directory's BUCK file passes its own glob here, to make sure that a new
+    module doesn't go unlisted.
+    """
+    missing = [src for src in found if src not in ghc_api_tool_sources()]
+    if missing:
+        fail("add these modules to GHC_API_TOOLS or _SHARED_MODULES in ghc_api_tool.bzl: " + ", ".join(missing))
+
 haskell_ghc_api_tool = rule(
     impl = _haskell_ghc_api_tool_impl,
     attrs = {
