@@ -11,7 +11,7 @@ import tempfile
 import time
 import urllib.request
 
-from harness import IDENTITY, LOG_DIR, COMPILES, buck2, build, configured, expect, expect_output, expect_set, tail, what_ran, write
+from harness import IDENTITY, LOG_DIR, COMPILES, append, buck2, build, compiled_modules, configured, expect, expect_output, expect_set, replace, tail, target_name, what_ran, write
 
 
 def check_test_build_tools(st):
@@ -104,8 +104,13 @@ def check_cache(st):
     """With a remote cache (bazel-remote), configured as `cabal buck2
     --cache` configures it, the rules' actions upload their results, and a
     clean build finds them all there. Without `[buck2]
-    default_allow_cache_upload`, nothing is uploaded. Cleans the project, so it
-    runs last."""
+    default_allow_cache_upload`, nothing is uploaded.
+
+    The per-module compiles' dep files are in the cache too. After a clean
+    and a new export of A.Base, B.M, which imports A.Mid, is found by its dep
+    file. Its dep file lists A.Mid's ABI alone, which the edit leaves the
+    same, though A.Base's interface is an input of its compile. Cleans the
+    project and edits it, so it runs last."""
     grpc = "127.0.0.1:{}".format(free_port())
     http = "127.0.0.1:{}".format(free_port())
     cache_dir = tempfile.mkdtemp(prefix="bazel-remote-")
@@ -166,6 +171,24 @@ def check_cache(st):
         }
         expect_set("kinds of action found in the cache",
                    {k for k, is_kind in kinds.items() if any(is_kind(c) for c in cached)}, set(kinds))
+
+        buck2("clean")
+        # Earlier checks may have edited A.Base's exports already.
+        replace("lib/A/Base.hs", "module A.Base (", "module A.Base (baseCache, ")
+        append("lib/A/Base.hs", "\nbaseCache :: Int\nbaseCache = 3\n")
+        build(*CACHE_TARGETS)
+        expect_set("modules compiled after a new export of A.Base, with the cache",
+                   compiled_modules(what_ran()), {"lib:A.Base", "lib:A.Mid"})
+        out = buck2("log", "what-ran", "--format", "json").stdout
+        by_dep_file = set()
+        for line in out.splitlines():
+            if not line.startswith("{"):
+                continue
+            entry = json.loads(line)
+            m = IDENTITY.match(entry["identity"])
+            if m and entry["reproducer"].get("executor") == "ReDepFileCache":
+                by_dep_file.add(target_name(m.group(1)) + ":" + (m.group(3) or ""))
+        expect("B.M found in the cache by its dep file (found so: {})".format(sorted(by_dep_file)), "lib-user:B.M" in by_dep_file)
     finally:
         if os.path.exists(".buckconfig.local"):
             os.remove(".buckconfig.local")
