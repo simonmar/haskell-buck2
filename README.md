@@ -56,6 +56,9 @@ a local library that isn't listed fails to compile, saying so. (The
 persistent worker doesn't always catch it. See "Known issues" in
 `prelude/haskell/tools/worker/README.md`.)
 
+On GHC 9.14, a module that uses `ExplicitLevelImports` narrows its target's
+list further, to the dependencies that its `import splice`s come through.
+
 A splice can't run code of its own target's modules. Such a target fails to
 compile, saying so, and has to be built with `per_module = False`.
 

@@ -1,0 +1,28 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# This needs GHC 9.14 or later. ER.M imports A.Base with `import splice`.
+# It gets A.Base through //reexport:reexport, which re-exports it from
+# //lib:lib. lib is a dependency of reexport, but not of this target, so
+# the splice needs the libraries of both.
+haskell_library(
+    name = "eli-reexport",
+    srcs = {"ER.M": "ER/M.hs"},
+    packages = ["base", "template-haskell"],
+    deps = ["//reexport:reexport"],
+    splice_depends = ["//reexport:reexport"],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)
+
+# The same ER.M in a target that also depends on //lib:lib and lists
+# //th-gen:th-gen but not lib. The splice import of A.Base comes through
+# lib as well as reexport. lib is in reexport's closure but isn't listed, so
+# ER.M compiles against the target's whole set, th-gen's library included.
+haskell_library(
+    name = "eli-reexport-wide",
+    srcs = {"ER.M": "ER/M.hs"},
+    packages = ["base", "template-haskell"],
+    deps = ["//lib:lib", "//reexport:reexport", "//th-gen:th-gen"],
+    splice_depends = ["//reexport:reexport", "//th-gen:th-gen"],
+    per_module = True,
+)

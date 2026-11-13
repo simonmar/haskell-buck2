@@ -18,14 +18,18 @@
 -- - "external": the modules it imports from other units, as [unit id,
 --   module];
 -- - "th": whether it may run code at compile time: a splice, or an ANN
---   pragma, which GHC also evaluates with its interpreter.
+--   pragma, which GHC also evaluates with its interpreter;
 -- - "th_reason", if "th" is true: why. "flags" if the target's flags turn
 --   on TemplateHaskell or QuasiQuotes, "module" if the module's own pragmas
 --   do, and "ann" if it has an ANN pragma (or something like one in a
---   comment).
+--   comment);
 -- - "programs": the programs that GHC runs for it and finds on PATH, by
 --   name, such as a preprocessor that -F -pgmF names. A program may come
---   from the module's OPTIONS_GHC pragma or from the target's flags.
+--   from the module's OPTIONS_GHC pragma or from the target's flags;
+-- - "splice": the modules it imports at the splice level, if it has explicit
+--   level imports (from GHC 9.14), as [unit id, module], with each unit that
+--   the import comes through (see throughUnits). The member is absent if it
+--   doesn't.
 module Main (main) where
 
 import Control.Monad (forM, unless)
@@ -42,7 +46,7 @@ import Text.Printf (printf)
 
 import GHC
 import GHC.Data.StringBuffer (StringBuffer (..), lexemeToString)
-import GHC.Driver.Env (hsc_dflags, hsc_home_unit)
+import GHC.Driver.Env (hsc_dflags, hsc_home_unit, hsc_units)
 import GHC.Driver.Ppr (showSDoc)
 import GHC.Driver.Config.Parser (initParserOpts)
 import GHC.Driver.Session (defaultFatalMessager, defaultFlushOut, parseDynamicFilePragma, pgm_F, pgm_L, pgm_P, pgm_a, pgm_c, pgm_i, pgm_lc, pgm_lo, xopt)
@@ -51,8 +55,10 @@ import GHC.Iface.Errors (cannotFindModule)
 import qualified GHC.LanguageExtensions as LangExt
 import GHC.Unit.Finder (FindResult (..))
 import GHC.Unit.Home (homeUnitId)
+import GHC.Unit.Info (unitId)
+import GHC.Unit.State (LookupResult (..), ModuleOrigin (..), lookupModuleWithSuggestions)
 import GHC.Unit.Module.ModSummary (isBootSummary)
-import GHC.Unit.Types (unitString)
+import GHC.Unit.Types (unitIdString, unitString)
 import GHC.Utils.Outputable (ppr)
 #if MIN_VERSION_ghc(9,8,0)
 import GHC.Driver.Config.Diagnostic (initIfaceMessageOpts)
@@ -66,7 +72,7 @@ import GHC.Platform (platformArchOS)
 import GHC.Types.SourceError (initSourceErrorContext)
 #endif
 
-import Imports (findImport, importLocated, importName, ordinaryImports, sourceImports)
+import Imports (findImport, importLocated, importName, ordinaryImports, sourceImports, spliceImport, textualImports)
 import Libdir (takeLibdir)
 import Request (withoutRts)
 
@@ -138,12 +144,25 @@ analyse libdir sources flags = defaultErrorHandler defaultFatalMessager defaultF
       -- without the pragma that named it, so those flags would leave it out.
       -- GHC reports any error in the pragmas when it compiles the module.
       sourceFlags <- maybe (pure dflags) (withSourcePragmas logger dflags) (ml_hs_file (ms_location ms))
+      splice <-
+        if not (isBoot ms) && explicitLevelImports opts
+          then fmap (Just . concat) . forM [i | i <- textualImports ms, spliceImport i] $ \i -> do
+            let (mn, pkg) = importName i
+            case home mn pkg of
+              Just _ -> pure [(unitIdString (homeUnitId (hsc_home_unit hsc)), moduleNameString mn)]
+              Nothing -> do
+                found <- findImport hsc i
+                case found of
+                  Found _ m -> pure [(u, moduleNameString mn) | u <- throughUnits hsc mn pkg m]
+                  _ -> notFound hsc (importLocated i) found
+          else pure Nothing
       pure
         ( n
         , nub (mapMaybe (uncurry home . importName) imports ++ mapMaybe (`M.lookup` bootOf) (sourceImports ms) ++ own)
         , external
         , thReason
         , pathPrograms dflags0 sourceFlags
+        , splice
         )
     pure (render nodes)
 
@@ -190,6 +209,33 @@ withSourcePragmas _ dflags src = do
   pure flags
 #endif
 
+-- | The units that an import of the module `m`, found in another unit, comes
+-- through. Those are the units that re-export it (as a Cabal package's
+-- reexported-modules does), and its own unit if that exposes it too. For a
+-- module that nothing re-exports, that is just its own unit.
+throughUnits :: HscEnv -> ModuleName -> PkgQual -> Module -> [String]
+throughUnits hsc mn pkg m = case lookupModuleWithSuggestions (hsc_units hsc) mn pkg of
+  LookupFound _ (_, origin)
+    | not (null (fromExposedReexport origin)) ->
+        map (unitIdString . unitId) (fromExposedReexport origin) ++ [own | fromOrigUnit origin == Just True]
+  _ -> [own]
+  where
+    own = unitString (moduleUnit m)
+
+-- | Whether a module has explicit level imports, so that the levels of its
+-- imports say what its splices may run (see Note [Explicit level imports]
+-- in compile_per_module.bzl). The test is whether implicit stage
+-- persistence is off, rather than whether ExplicitLevelImports is on.
+-- ExplicitLevelImports turns implicit stage persistence off, but a module
+-- may turn it back on, and then its splices can still run code from its
+-- ordinary imports.
+explicitLevelImports :: DynFlags -> Bool
+#if MIN_VERSION_ghc(9,14,0)
+explicitLevelImports opts = not (xopt LangExt.ImplicitStagePersistence opts)
+#else
+explicitLevelImports _ = False
+#endif
+
 -- | Whether the (preprocessed) source has an ANN pragma, whose name, like
 -- any pragma's, may be in any case.
 hasAnn :: String -> Bool
@@ -197,15 +243,16 @@ hasAnn text = or [isAnn (dropWhile isSpace (drop 3 t)) | t <- tails text, "{-#" 
   where
     isAnn s = map toLower (take 3 s) == "ann" && all isSpace (take 1 (drop 3 s))
 
-render :: [(String, [String], [(String, String)], Maybe String, [String])] -> String
+render :: [(String, [String], [(String, String)], Maybe String, [String], Maybe [(String, String)])] -> String
 render nodes = "{" ++ intercalate ",\n" (map node nodes) ++ "}\n"
   where
-    node (n, imports, external, thReason, programs) =
+    node (n, imports, external, thReason, programs, splice) =
       str n ++ ": {"
         ++ intercalate ", "
           ( ["\"imports\": " ++ list (map str imports), "\"external\": " ++ list [list [str u, str m] | (u, m) <- external], "\"th\": " ++ bool (isJust thReason)]
               ++ ["\"th_reason\": " ++ str r | Just r <- [thReason]]
               ++ ["\"programs\": " ++ list (map str programs)]
+              ++ ["\"splice\": " ++ list [list [str u, str m] | (u, m) <- sp] | Just sp <- [splice]]
           )
         ++ "}"
     bool b = if b then "true" else "false"

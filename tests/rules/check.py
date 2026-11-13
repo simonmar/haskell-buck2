@@ -64,6 +64,7 @@ from per_module import (
     check_cutoff_comment,
     check_cutoff_instances,
     check_early_db_conf,
+    check_explicit_level_imports,
     check_interfaces_subtarget,
     check_main_file,
     check_local_splices_in_modes,
@@ -110,6 +111,7 @@ CHECKS = [
     check_splice_global_state,
     check_splice_crash,
     check_local_splices,
+    check_explicit_level_imports,
     check_th_boot_cycles,
     check_own_boot,
     check_main_file,
@@ -160,13 +162,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", action="append", help="run only this check (by name, without check_); repeatable")
     ap.add_argument("--bazel-remote", help="a bazel-remote binary, for check_cache")
+    ap.add_argument("--ghc-version", required=True, help="the version of the GHC under test")
     ap.add_argument("--worker", action="store_true", help="the project compiles in a persistent worker")
     ap.add_argument("--external-interpreter", action="store_true", help="the project compiles with -fexternal-interpreter")
     args = ap.parse_args()
     unknown = set(args.only or []) - {check.__name__[len("check_"):] for check in CHECKS}
     if unknown:
         ap.error("no such check: " + " ".join(sorted(unknown)))
-    st = State(bazel_remote=args.bazel_remote, worker=args.worker, external_interpreter=args.external_interpreter)
+    major, minor = (int(x) for x in args.ghc_version.split(".")[:2])
+    st = State(bazel_remote=args.bazel_remote, eli=(major, minor) >= (9, 14), worker=args.worker, external_interpreter=args.external_interpreter)
     failed = []
     for check in CHECKS:
         name = check.__name__[len("check_"):]
@@ -174,6 +178,9 @@ def main():
             continue
         if check is check_cache and not st.bazel_remote:
             print("SKIP   {} (no BAZEL_REMOTE)".format(name))
+            continue
+        if check is check_explicit_level_imports and not st.eli:
+            print("SKIP   {} (GHC {})".format(name, args.ghc_version))
             continue
         start = time.time()
         skipped = None

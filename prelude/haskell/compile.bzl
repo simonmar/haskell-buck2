@@ -94,7 +94,25 @@ def _package_flag(toolchain: HaskellToolchainInfo) -> str:
 #
 # The closures are included because a
 # library's code needs the libraries it was linked against.
-def th_libraries(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool) -> dict[str, bool]:
+def target_splice_libraries(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool) -> dict[str, bool]:
+    return splice_libraries(ctx.actions, splice_dep_infos(ctx, link_style, enable_profiling))
+
+# The names of the libraries that a splice may load. `infos` are the
+# target's splice dependencies (see splice_dep_infos). A splice may load the
+# base dependencies, and the listed ones, or only those of them named in
+# `names` if it isn't None. It may also load any library that these depend
+# on, directly or indirectly.
+def splice_libraries(actions: AnalysisActions, infos, names: [list[str], None] = None) -> dict[str, bool]:
+    listed = infos.listed.values() if names == None else [infos.listed[n] for n in names]
+    return {l.name: True for l in actions.tset(HaskellLibraryInfoTSet, children = infos.base + listed).traverse()}
+
+# The libraries which may be used by the target's Template Haskell splices
+# (see target_splice_libraries), in two groups:
+#
+# - base: the dependencies that are neither local nor prebuilt Haskell
+#   libraries, which splices can always run.
+# - listed: the dependencies that splice_depends lists, by name.
+def splice_dep_infos(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool):
     deps = attr_deps(ctx) + ctx.attrs.template_deps
     known = {d.label.raw_target(): True for d in deps}
     listed = {}
@@ -104,21 +122,24 @@ def th_libraries(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: 
             fail("{}: splice_depends names {}, which is not a dependency".format(ctx.label.raw_target(), t))
         listed[t] = True
 
-    children = []
+    base = []
+    named = {}
     for d in deps:
         link = d.get(HaskellLinkInfo)
         if link == None:
             continue
+        info = link.prof_info[link_style] if enable_profiling else link.info[link_style]
         provider = d.get(HaskellLibraryProvider)
         lib = (provider.prof_lib if enable_profiling else provider.lib)[link_style] if provider != None else None
-        selectable = lib != None and (lib.early_db != None or lib.is_prebuilt)
-        if not selectable or d.label.raw_target() in listed:
-            children.append(link.prof_info[link_style] if enable_profiling else link.info[link_style])
-    return {l.name: True for l in ctx.actions.tset(HaskellLibraryInfoTSet, children = children).traverse()}
+        if lib == None or (lib.early_db == None and not lib.is_prebuilt):
+            base.append(info)
+        elif d.label.raw_target() in listed:
+            named[lib.name] = info
+    return struct(base = base, listed = named)
 
-# The `th_libraries` argument, names the libraries whose final dbs and libraries
-# the compile uses (see th_libraries()). 
-def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_version: bool, enable_profiling: bool, th_libraries: [dict[str, bool], None] = None) -> PackagesInfo:
+# The `final` argument, names the libraries whose final dbs and libraries
+# the compile uses (see target_splice_libraries()). 
+def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_version: bool, enable_profiling: bool, final: [dict[str, bool], None] = None) -> PackagesInfo:
     # Collect library dependencies. Note that these don't need to be in a
     # particular order.
     libs = dependency_libs(ctx, link_style, enable_profiling)
@@ -129,7 +150,7 @@ def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_v
     packagedb_set = {}
 
     for lib in libs.traverse():
-        if th_libraries != None and lib.early_db != None and lib.name not in th_libraries:
+        if final != None and lib.early_db != None and lib.name not in final:
             # A library compiled per-module has no library-less db of its
             # own. Its early db names the directory of its modules'
             # interfaces, which are inputs one by one.
@@ -287,7 +308,7 @@ def get_producing_indices(ctx: AnalysisContext) -> bool:
     toolchain_flags = ctx.attrs._haskell_toolchain[HaskellToolchainInfo].compiler_flags or []
     return "-fwrite-ide-info" in toolchain_flags + ctx.attrs.compiler_flags
 
-def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname = None, suffix: str = "", dynamic_too: bool = False, th_libraries: [dict[str, bool], None] = None) -> CompileArgsInfo:
+def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname = None, suffix: str = "", dynamic_too: bool = False, final: [dict[str, bool], None] = None) -> CompileArgsInfo:
     compile_cmd, compile_args = ghc_flags(ctx, link_style, enable_profiling, pkgname, dynamic_too)
 
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling, suffix)
@@ -318,7 +339,7 @@ def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: 
         link_style,
         specify_pkg_version = False,
         enable_profiling = enable_profiling,
-        th_libraries = th_libraries,
+        final = final,
     )
 
     compile_args.add(packages_info.exposed_package_args)
@@ -439,13 +460,13 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     compile_cmd = cmd_args(haskell_toolchain.compiler)
 
-    th = th_libraries(ctx, link_style, enable_profiling)
-    args = compile_args(ctx, link_style, enable_profiling, pkgname, dynamic_too = dynamic_too, th_libraries = th)
+    final = target_splice_libraries(ctx, link_style, enable_profiling)
+    args = compile_args(ctx, link_style, enable_profiling, pkgname, dynamic_too = dynamic_too, final = final)
     # The native libraries of the libraries that the splices may load.
     native_dir = native_libs_tree(
         ctx,
         "native-libs-" + get_artifact_suffix(link_style, enable_profiling),
-        [native_libs] + [lib.native_libs for lib in dependency_libs(ctx, link_style, enable_profiling).traverse() if lib.name in th],
+        [native_libs] + [lib.native_libs for lib in dependency_libs(ctx, link_style, enable_profiling).traverse() if lib.name in final],
     )
 
     if not has_modules(ctx):
