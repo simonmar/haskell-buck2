@@ -13,43 +13,65 @@ load("@prelude//haskell:toolchain.bzl", "HaskellToolchainInfo", "compile_env_scr
 
 def _haskell_ghc_api_tool_impl(ctx: AnalysisContext) -> list[Provider]:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
-    # Run GHC with the toolchain's compile_env set, as every GHC command is.
-    env_script = compile_env_script(haskell_toolchain.compile_env)
     srcs = ctx.actions.symlinked_dir("srcs", {src.basename: src for src in ctx.attrs.srcs}, has_content_based_path = False)
+    exe = build_ghc_api_tool(
+        ctx.actions,
+        ctx.attrs.name,
+        haskell_toolchain.compiler,
+        haskell_toolchain.compile_env,
+        [cmd_args(srcs, format = "-i{}")],
+        cmd_args(srcs, ctx.attrs.main, delimiter = "/"),
+        GHC_API_TOOL_PACKAGES,
+        [],
+    )
+    return [DefaultInfo(default_output = exe), RunInfo(args = cmd_args(exe))]
 
-    libdir = ctx.actions.declare_output("libdir")
-    ctx.actions.run(
-        in_compile_env(env_script, [], cmd_args("sh", "-c", 'out="$1"; shift; "$@" --print-libdir > "$out"', "sh", libdir.as_output(), haskell_toolchain.compiler)),
+# Build a program that uses the GHC API, with `compiler`, from the Main
+# module `main` and the modules that the -i flags `includes` find, using only
+# GHC's own `packages`.
+#
+# This is a function rather than just a rule, so that a toolchain can build
+# such a program with its own compiler. It can't do that through a
+# rule without depending on itself.
+def build_ghc_api_tool(actions: AnalysisActions, name: str, compiler, compile_env: dict[str, str], includes: list, main, packages: list[str], flags: list[str]) -> Artifact:
+    # Run GHC with the toolchain's compile_env set, as every GHC command is.
+    env_script = compile_env_script(compile_env)
+    libdir = actions.declare_output(name + "-libdir")
+    actions.run(
+        in_compile_env(env_script, [], cmd_args("sh", "-c", 'out="$1"; shift; "$@" --print-libdir > "$out"', "sh", libdir.as_output(), compiler)),
         category = "haskell_ghc_api_tool_libdir",
+        identifier = name,
     )
 
-    exe = ctx.actions.declare_output(ctx.attrs.name)
-    ctx.actions.run(
+    exe = actions.declare_output(name)
+    actions.run(
         in_compile_env(env_script, [], cmd_args(
             "sh",
             "-c",
             'libdir=$(cat "$1"); shift; exec "$@" -outputdir "$BUCK_SCRATCH_PATH" "-DGHC_LIBDIR=\\"$libdir\\""',
             "sh",
             libdir,
-            haskell_toolchain.compiler,
+            compiler,
             "-v0",
             "-O",
             # Use only GHC's own packages, ignoring any package environment
             # file (one in the project, for example).
             "-package-env=-",
             "-hide-all-packages",
-            [["-package", p] for p in _PACKAGES],
-            cmd_args(srcs, format = "-i{}"),
-            cmd_args(srcs, ctx.attrs.main, delimiter = "/"),
+            [["-package", p] for p in packages],
+            flags,
+            includes,
+            main,
             "-o",
             exe.as_output(),
         )),
         category = "haskell_ghc_api_tool",
+        identifier = name,
     )
-    return [DefaultInfo(default_output = exe), RunInfo(args = cmd_args(exe))]
+    return exe
 
 # The packages the tools use, all of which come with GHC.
-_PACKAGES = ["base", "bytestring", "containers", "directory", "filepath", "ghc", "ghc-boot", "process"]
+GHC_API_TOOL_PACKAGES = ["base", "bytestring", "containers", "directory", "filepath", "ghc", "ghc-boot", "process"]
 
 haskell_ghc_api_tool = rule(
     impl = _haskell_ghc_api_tool_impl,

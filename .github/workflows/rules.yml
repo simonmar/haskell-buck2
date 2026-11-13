@@ -2,8 +2,8 @@
 # rules support, on Linux and macOS, both without the persistent worker and
 # with it. The GHC versions are the same as the worker's (see
 # buck2-ghc-worker.yml). The tests build a small project that uses only GHC's
-# own packages, so they need just GHC, buck2 and a C compiler. cabal and
-# Hackage are only needed to build the worker.
+# own packages, so they need just GHC, buck2 and a C compiler. The worker
+# uses only GHC's packages too, and the toolchain builds it.
 name: rules
 
 # Pushes are only tested on master and the release branches (0.6.0.0, say).
@@ -81,58 +81,11 @@ jobs:
           chmod +x "$RUNNER_TEMP/bazel-remote"
           echo "BAZEL_REMOTE=$RUNNER_TEMP/bazel-remote" >> "$GITHUB_ENV"
 
-      # The worker's dependencies are cached in the same way as in
-      # buck2-ghc-worker.yml, with the same key, so that each workflow can
-      # reuse the other's cache.
-      - name: Generate the worker's build plan
-        if: matrix.worker
-        working-directory: tools/buck2-ghc-worker
-        run: |
-          cabal update
-          cabal build all --dry-run
-
-      - name: Get the runner's OS for the cache key
-        if: matrix.worker
-        id: osver
-        run: |
-          osver=$ImageOS
-          if [ "$RUNNER_OS" = macOS ]; then osver="$osver-sdk$(xcrun --show-sdk-version)"; fi
-          echo "osver=$osver" >> "$GITHUB_OUTPUT"
-
-      - name: Get the cabal store directory
-        if: matrix.worker
-        id: store
-        run: echo "dir=$(cabal path --store-dir)" >> "$GITHUB_OUTPUT"
-
-      - name: Restore the worker's cached dependencies
-        if: matrix.worker
-        uses: actions/cache/restore@v6
-        id: cache
-        with:
-          path: ${{ steps.store.outputs.dir }}
-          key: ${{ steps.osver.outputs.osver }}-ghc-${{ matrix.ghc }}-store-${{ hashFiles('dist-newstyle/cache/plan.json') }}
-          restore-keys: ${{ steps.osver.outputs.osver }}-ghc-${{ matrix.ghc }}-store-
-
-      - name: Build the worker's dependencies
-        if: matrix.worker
-        working-directory: tools/buck2-ghc-worker
-        run: cabal build all --only-dependencies
-
-      - name: Cache the worker's dependencies
-        if: always() && matrix.worker && steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ steps.store.outputs.dir }}
-          key: ${{ steps.cache.outputs.cache-primary-key }}
-
-      - name: Build the worker
-        if: matrix.worker
-        working-directory: tools/buck2-ghc-worker
-        run: |
-          cabal install --installdir="$RUNNER_TEMP/bin" exe:buck2-ghc-worker
-          echo "BUCK2_GHC_WORKER=$RUNNER_TEMP/bin/buck2-ghc-worker" >> "$GITHUB_ENV"
-
+      # With the worker, the toolchain builds it (per_module_worker =
+      # builtin), with the GHC under test.
       - name: Test
+        env:
+          PER_MODULE_WORKER: ${{ matrix.worker && 'builtin' || 'none' }}
         run: tests/rules/run.sh "$(dirname "${{ steps.setup.outputs.ghc-exe }}")" "$RUNNER_TEMP/rules"
 
       - name: Upload the buck2 logs

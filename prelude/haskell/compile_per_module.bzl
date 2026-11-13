@@ -869,7 +869,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # 2. The solution
 #
 # A buck2 persistent worker is a long-running process that buck2 sends
-# actions to. Ours (tools/buck2-ghc-worker) compiles each module as it arrives,
+# actions to. Ours (prelude/haskell/tools/worker) compiles each module as it arrives,
 # concurrently with the others, in a GHC session that keeps the interfaces
 # it has read. It is configured by `[haskell] per_module_worker` (see
 # prelude/haskell/per_module_worker.bzl).
@@ -926,7 +926,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # A worker lives for one build. It drops a target's sessions once all the
 # target's modules are compiled. It also keeps a bounded number of sessions,
 # dropping the least recently used idle ones (see Note [Dropping the idle
-# sessions] in tools/buck2-ghc-worker/src/Worker.hs). It has no concurrency
+# sessions] in prelude/haskell/tools/worker/src/Worker.hs). It has no concurrency
 # limit of its own. buck2's -j already limits the actions that run in workers,
 # along with all the others, and a lower limit for each worker would only hold
 # back a target's modules.

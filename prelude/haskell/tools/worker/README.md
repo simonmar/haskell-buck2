@@ -16,7 +16,7 @@ changed, as it does without the worker.
 DESIGN.md explains why the worker is built this way, and which
 alternatives we tried.
 
-## Building or installing
+## Building
 
 The worker links against the `ghc` library of the GHC that builds it, so it
 has to be built with the same GHC as the project. It uses GHC's API, which
@@ -25,24 +25,29 @@ particular versions. For example, GHC before 9.12 has no
 `-fobject-determinism`, so a module's object may differ from one compile to
 the next, and buck2 then links again more often than it needs to.
 
-The rules only use the worker when `per_module_worker` in the `[haskell]`
-section of the project's buckconfig (`.buckconfig.local`, for example) says
-so. If it is unset, or `none`, each module is compiled by a `ghc -c` of its
-own.
-
-To use it, install it with the project's GHC:
-
-```
-cd buck2/tools/buck2-ghc-worker
-cabal install --program-suffix=-$(ghc --numeric-version) exe:buck2-ghc-worker
-```
-
-and name it in the buckconfig, by its path or by its name on `$PATH`:
+The toolchain builds the worker itself, with the project's GHC, from the
+modules in `src` and `app` (some of which are links to modules of the rules'
+GHC-API tools, in `prelude/haskell/tools/ghc-api`). It uses only the packages
+that come with GHC, so building it is a single `ghc` command, which takes a
+few seconds, and an edit to its sources takes effect in the next build. To
+compile without the worker, with a `ghc -c` for each module, set
+`per_module_worker` in the `[haskell]` section of the project's buckconfig
+(`.buckconfig.local`, for example):
 
 ```
 [haskell]
-  per_module_worker = buck2-ghc-worker-9.10.3
+  per_module_worker = none
 ```
+
+A project's own toolchain can use a worker built some other way, such as a
+profiled build (see `prelude/haskell/per_module_worker.bzl`). It must be
+built with the project's GHC. Nothing checks that, and a worker built with
+another GHC fails in obscure ways.
+
+This directory's cabal package is for the worker's tests and benchmark,
+which `cabal test` and `cabal bench` run. Only those use packages beyond
+GHC's own: `http2`, `http-types` and `network` for their gRPC client, and
+the test frameworks.
 
 A worker built from a different version of the rules refuses their
 requests, with an error that says so.

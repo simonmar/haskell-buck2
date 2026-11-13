@@ -12,10 +12,8 @@ import Data.List (partition, sortOn)
 import qualified Data.Map as M
 import Data.Maybe (isJust)
 import qualified Data.Set as Set
-import Data.Version (showVersion)
 import Foreign.C.Types (CInt (..))
 import System.Environment (lookupEnv)
-import System.Info (fullCompilerVersion)
 import System.IO (hPutStrLn, stderr)
 import System.Process (readProcess)
 import Text.Read (readMaybe)
@@ -39,7 +37,7 @@ import Session
 -- has read until the worker drops it (see Note [Dropping the idle
 -- sessions]).
 data Worker = Worker
-  { wCompiler :: String -- the GHC that the requests name, which must be the version the worker was built with
+  { wCompiler :: String -- the GHC that the requests name
   , wLibdir :: FilePath
   , wSessions :: MVar (M.Map [String] Entry) -- the sessions, keyed by their session flags
   , wMaxSessions :: Int -- how many sessions to keep, counting those in use and those idle (BUCK2_GHC_WORKER_SESSIONS)
@@ -61,15 +59,10 @@ data Entry = Entry
   }
 
 -- | Start the worker for the GHC that the first request names, and run the
--- given action with it. That GHC must be the version that the worker was
--- built with. While the action runs, GHC's signal handlers are installed,
--- so buck2's SIGTERM arrives as a 'Signal' exception.
+-- given action with it. While the action runs, GHC's signal handlers are
+-- installed, so buck2's SIGTERM arrives as a 'Signal' exception.
 withWorker :: Request -> (Worker -> IO a) -> IO a
 withWorker first k = do
-  version <- trim <$> readProcess (reqCompiler first) ["--numeric-version"] ""
-  let built = showVersion fullCompilerVersion
-  when (version /= built) $
-    fail ("buck2-ghc-worker: built with GHC " ++ built ++ ", but the rules' GHC (" ++ reqCompiler first ++ ") is " ++ version ++ ": install the worker with the project's GHC")
   libdir <- trim <$> readProcess (reqCompiler first) ["--print-libdir"] ""
   sessions <- newMVar M.empty
   verbose <- isJust <$> lookupEnv "BUCK2_GHC_WORKER_VERBOSE"
