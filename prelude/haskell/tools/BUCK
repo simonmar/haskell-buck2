@@ -1,4 +1,4 @@
-load("@prelude//haskell:ghc_api_tool.bzl", "haskell_ghc_api_tool")
+load("@prelude//haskell:ghc_api_tool.bzl", "GHC_API_TOOLS", "ghc_api_tool_sources", "haskell_ghc_api_tool")
 load("@prelude//utils:source_listing.bzl", "source_listing")
 
 oncall("build_infra")
@@ -14,20 +14,26 @@ prelude.python_bootstrap_binary(
 )
 
 # The tools of the per-module compiles (see compile_per_module in
-# prelude/haskell/compile_per_module.bzl).
-haskell_ghc_api_tool(
-    name = "per_module_deps",
-    srcs = glob(["ghc-api/*.hs"]),
-    main = "PerModuleDeps.hs",
-    visibility = ["PUBLIC"],
-)
+# prelude/haskell/compile_per_module.bzl), built with the toolchain's GHC.
+[
+    haskell_ghc_api_tool(
+        name = name,
+        srcs = ghc_api_tool_sources(),
+        main = main + ".hs",
+        visibility = ["PUBLIC"],
+    )
+    for name, main in GHC_API_TOOLS.items()
+]
 
-haskell_ghc_api_tool(
-    name = "per_module_compile",
-    srcs = glob(["ghc-api/*.hs"]),
-    main = "PerModuleCompile.hs",
-    visibility = ["PUBLIC"],
-)
+# The tools' sources, for a toolchain that builds the tools itself (see
+# ghc_api_tool_srcs()).
+[
+    prelude.export_file(
+        name = src,
+        visibility = ["PUBLIC"],
+    )
+    for src in ghc_api_tool_sources()
+]
 
 # Type checking target for Python tool scripts
 prelude.python_library(

@@ -521,7 +521,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     deps = ctx.actions.declare_output(prefix + "deps.json")
     ctx.actions.run(
         in_env(env, cmd_args(
-            ctx.attrs._per_module_deps[RunInfo],
+            haskell_toolchain.per_module_deps or ctx.attrs._per_module_deps[RunInfo],
             deps.as_output(),
             [cmd_args(n, src, delimiter = "=") for n, src in nodes],
             "--",
@@ -552,7 +552,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     closures = ctx.actions.dynamic_output_new(_register_modules(
         s = struct(
             label = ctx.label,
-            compile_script = ctx.attrs._per_module_compile[RunInfo],
+            compile_script = haskell_toolchain.per_module_compile or ctx.attrs._per_module_compile[RunInfo],
             nodes = nodes,
             src_of = src_of,
             modules = modules,
