@@ -45,9 +45,9 @@ import GHC.Driver.Session (defaultFatalMessager, defaultFlushOut, parseDynamicFi
 import GHC.Parser.Header (getOptionsFromFile)
 import GHC.Iface.Errors (cannotFindModule)
 import qualified GHC.LanguageExtensions as LangExt
-import GHC.Unit.Finder (FindResult (..), findImportedModule)
+import GHC.Unit.Finder (FindResult (..))
 import GHC.Unit.Home (homeUnitId)
-import GHC.Unit.Module.ModSummary (isBootSummary, ms_imps)
+import GHC.Unit.Module.ModSummary (isBootSummary)
 import GHC.Unit.Types (unitString)
 import GHC.Utils.Outputable (ppr)
 #if MIN_VERSION_ghc(9,8,0)
@@ -58,8 +58,11 @@ import GHC.Iface.Errors.Ppr (missingInterfaceErrorDiagnostic)
 import GHC.Driver.Session (supportedLanguagesAndExtensions)
 import GHC.Platform (platformArchOS)
 #endif
+#if MIN_VERSION_ghc(10,0,0)
+import GHC.Types.SourceError (initSourceErrorContext)
+#endif
 
-import Imports (importLocated, importName, srcImportName)
+import Imports (findImport, importLocated, importName, ordinaryImports, sourceImports)
 import Libdir (takeLibdir)
 import Request (withoutRts)
 
@@ -109,13 +112,11 @@ analyse libdir sources flags = defaultErrorHandler defaultFatalMessager defaultF
           OtherPkg _ -> Nothing
           _ -> M.lookup mn nodeOf
     nodes <- liftIO . forM named $ \(n, ms) -> do
-      -- With the imports of the module's plugins.
-      let imports = ms_imps ms
+      let imports = ordinaryImports ms
           opts = ms_hspp_opts ms
           own = [b | not (isBoot ms), Just b <- [M.lookup (ms_mod_name ms) bootOf]]
       external <- forM [i | i <- imports, let (mn, pkg) = importName i, home mn pkg == Nothing] $ \i -> do
-        let (mn, pkg) = importName i
-        found <- findImportedModule hsc mn pkg
+        found <- findImport hsc i
         case found of
           Found _ m -> pure (unitString (moduleUnit m), moduleNameString (moduleName m))
           _ -> notFound hsc (importLocated i) found
@@ -129,7 +130,7 @@ analyse libdir sources flags = defaultErrorHandler defaultFatalMessager defaultF
       sourceFlags <- maybe (pure dflags) (withSourcePragmas logger dflags) (ml_hs_file (ms_location ms))
       pure
         ( n
-        , nub (mapMaybe (uncurry home . importName) imports ++ mapMaybe (\i -> M.lookup (srcImportName i) bootOf) (ms_srcimps ms) ++ own)
+        , nub (mapMaybe (uncurry home . importName) imports ++ mapMaybe (`M.lookup` bootOf) (sourceImports ms) ++ own)
         , external
         , th
         , pathPrograms dflags0 sourceFlags
@@ -162,7 +163,12 @@ pathPrograms base opts = nub [p opts | p <- programs, p opts /= p base, '/' `not
 -- | The flags, with those of the OPTIONS_GHC pragmas of the source file
 -- added.
 withSourcePragmas :: Logger -> DynFlags -> FilePath -> IO DynFlags
-#if MIN_VERSION_ghc(9,14,0)
+#if MIN_VERSION_ghc(10,0,0)
+withSourcePragmas logger dflags src = do
+  (_, pragmas) <- getOptionsFromFile (initParserOpts dflags) (initSourceErrorContext dflags) (supportedLanguagesAndExtensions (platformArchOS (targetPlatform dflags))) src
+  (flags, _, _) <- parseDynamicFilePragma logger dflags pragmas
+  pure flags
+#elif MIN_VERSION_ghc(9,14,0)
 withSourcePragmas logger dflags src = do
   (_, pragmas) <- getOptionsFromFile (initParserOpts dflags) (supportedLanguagesAndExtensions (platformArchOS (targetPlatform dflags))) src
   (flags, _, _) <- parseDynamicFilePragma logger dflags pragmas
