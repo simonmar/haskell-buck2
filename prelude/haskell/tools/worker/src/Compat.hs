@@ -3,7 +3,7 @@
 -- emptyHome has to do that to give an environment an empty table.
 {-# OPTIONS_GHC -Wno-deprecations #-}
 -- | Wrappers for the parts of the GHC API that differ between the GHC
--- versions that the worker can be built with (9.6 to 9.14). Keeping the CPP
+-- versions that the worker can be built with (9.6 to 10.1). Keeping the CPP
 -- in this module lets the rest of the worker do without it.
 module Compat
   ( analyseTargets
@@ -16,6 +16,13 @@ module Compat
   , addHomes
   , interpreterLock
   , optionsPragmas
+  , useUnitDbs
+  , unitDbsRead
+  , LocationFile (..)
+  , setLocationFile
+  , summariseSource
+  , throwDriverErrors
+  , pkgDbRefPath
   ) where
 
 #if MIN_VERSION_ghc(9,12,0)
@@ -29,6 +36,31 @@ import GHC.Unit.Finder (initFinderCache)
 import GHC.Unit.Finder.Types (FinderCache (..))
 import GHC.Driver.Main (initModDetails)
 import GHC.Unit.Home.ModInfo (HomeModInfo (..), HomeModLinkable)
+import GHC.Unit.Env (UnitEnv (..))
+import GHC.Unit.State (UnitDatabase (..))
+import GHC.Unit.Types (UnitId)
+import GHC.Driver.Errors.Types (DriverMessages, GhcMessage (..))
+import GHC.Driver.Make (summariseFile)
+import GHC.Driver.Env (hsc_home_unit)
+import GHC.Driver.Session (PkgDbRef (..))
+import GHC.Types.SourceError (throwErrors)
+#if MIN_VERSION_ghc(10,0,0)
+import GHC.Data.OsPath (unsafeDecodeUtf)
+import GHC.Driver.Env (hsc_dflags)
+#endif
+import qualified Data.Map as M
+#if MIN_VERSION_ghc(10,1,0)
+import Data.IORef (newIORef)
+#endif
+#if MIN_VERSION_ghc(9,12,0)
+import GHC.Data.OsPath (unsafeEncodeUtf)
+#endif
+#if MIN_VERSION_ghc(10,1,0)
+import GHC.Unit.External.Database (lookupExternalUnitDatabases)
+import GHC.Unit.External.Index (cacheExternalUnitDatabase, readExternalUnitDatabases)
+#else
+import GHC.Unit.Env (HomeUnitEnv (..), ue_currentUnit, ue_unit_dbs, ue_updateHomeUnitEnv)
+#endif
 import GHC.Types.Error (isEmptyMessages)
 import GHC.Data.StringBuffer (StringBuffer)
 import GHC.Parser.Header (getOptions)
@@ -39,6 +71,9 @@ import GHC.Driver.Config.Parser (initParserOpts, supportedLanguagePragmas)
 import GHC.Driver.Env (hscUpdateHPT, hsc_HPT, setModuleGraph)
 import GHC.Unit.Home.PackageTable (addHomeModInfoToHpt, emptyHomePackageTable)
 import Control.Monad (forM)
+#if MIN_VERSION_ghc(10,0,0)
+import GHC.Types.SourceError (initSourceErrorContext)
+#endif
 #else
 import GHC.Driver.Env (hscUpdateHPT, hsc_mod_graph)
 import GHC.Driver.Config.Parser (initParserOpts)
@@ -170,10 +205,102 @@ interpreterLock dflags = if gopt Opt_ExternalInterpreter dflags then Just <$> ne
 -- | Read the flags that the OPTIONS_GHC and LANGUAGE pragmas at the head of
 -- a module's source give, parsing the source with the given flags. The file
 -- name is only used in GHC's messages. (From GHC 9.14, the parser also needs
--- the list of supported extensions.)
+-- the list of supported extensions, and from GHC 10.0 the context in which
+-- to report errors.)
 optionsPragmas :: DynFlags -> StringBuffer -> FilePath -> [String]
-#if MIN_VERSION_ghc(9,14,0)
+#if MIN_VERSION_ghc(10,0,0)
+optionsPragmas dflags buf file = map unLoc (snd (getOptions (initParserOpts dflags) (initSourceErrorContext dflags) (supportedLanguagePragmas dflags) buf file))
+#elif MIN_VERSION_ghc(9,14,0)
 optionsPragmas dflags buf file = map unLoc (snd (getOptions (initParserOpts dflags) (supportedLanguagePragmas dflags) buf file))
 #else
 optionsPragmas dflags buf file = map unLoc (snd (getOptions (initParserOpts dflags) buf file))
 #endif
+
+-- | Give a new session's unit environment the package databases that the
+-- worker has read already. When the session's flags are set, GHC then uses
+-- these instead of reading the databases from disk (see Note [One copy of
+-- each package database] in Session).
+useUnitDbs :: [UnitDatabase UnitId] -> UnitEnv -> IO UnitEnv
+
+-- | The package databases at the given paths that GHC read when the
+-- session's flags were set, if it read all of them.
+unitDbsRead :: [FilePath] -> UnitEnv -> IO (Maybe [UnitDatabase UnitId])
+
+#if MIN_VERSION_ghc(10,1,0)
+-- From GHC 10.1, a unit environment has a cache of the databases that GHC
+-- has read, keyed by path (ue_uic). GHC looks there before it reads a
+-- database. Each session has a cache of its own, so the worker adds the
+-- databases to the session's cache, and looks there for the ones GHC read.
+-- If GHC also read the user's database, it is in the cache too, but the
+-- worker doesn't keep it, because it isn't one of the paths.
+useUnitDbs dbs ue = ue <$ mapM_ (cacheExternalUnitDatabase (ue_uic ue)) dbs
+unitDbsRead paths ue = do
+  cached <- readExternalUnitDatabases (ue_uic ue)
+  pure (mapM (\p -> lookupExternalUnitDatabases (unsafeEncodeUtf p) cached) paths)
+#else
+-- Before GHC 10.1, the current unit's databases are kept in its home unit
+-- environment, and GHC reads them only if there are none there yet. If GHC
+-- also read the user's database, the databases it read don't match the
+-- paths, and none of them are returned.
+useUnitDbs dbs ue = pure (ue_updateHomeUnitEnv (\hue -> hue{homeUnitEnv_unit_dbs = Just dbs}) (ue_currentUnit ue) ue)
+unitDbsRead paths ue = pure $ case ue_unit_dbs ue of
+  Just dbs | map unitDatabasePath dbs == paths -> Just dbs
+  _ -> Nothing
+#endif
+
+-- | The output files of a module's location.
+data LocationFile = HiFile | DynHiFile | ObjFile | DynObjFile | HieFile
+
+-- | Set one of the output files of a module's location. From GHC 9.12, the
+-- location's fields are OsPaths. GHC 10.0 removed the pattern synonym that
+-- let them be set as FilePaths.
+setLocationFile :: LocationFile -> FilePath -> ModLocation -> ModLocation
+#if MIN_VERSION_ghc(9,12,0)
+setLocationFile file path loc = case file of
+  HiFile -> loc{ml_hi_file_ospath = p}
+  DynHiFile -> loc{ml_dyn_hi_file_ospath = p}
+  ObjFile -> loc{ml_obj_file_ospath = p}
+  DynObjFile -> loc{ml_dyn_obj_file_ospath = p}
+  HieFile -> loc{ml_hie_file_ospath = p}
+  where
+    p = unsafeEncodeUtf path
+#else
+setLocationFile file path loc = case file of
+  HiFile -> loc{ml_hi_file = path}
+  DynHiFile -> loc{ml_dyn_hi_file = path}
+  ObjFile -> loc{ml_obj_file = path}
+  DynObjFile -> loc{ml_dyn_obj_file = path}
+  HieFile -> loc{ml_hie_file = path}
+#endif
+
+-- | Summarise a module's source file, as GHC's dependency analysis does,
+-- without any summaries from before. From GHC 10.1, summariseFile keeps its
+-- cache of summaries in an IORef.
+summariseSource :: HscEnv -> FilePath -> IO (Either DriverMessages ModSummary)
+#if MIN_VERSION_ghc(10,1,0)
+summariseSource hsc src = do
+  cache <- newIORef M.empty
+  summariseFile hsc (hsc_home_unit hsc) cache src Nothing Nothing
+#else
+summariseSource hsc src = summariseFile hsc (hsc_home_unit hsc) M.empty src Nothing Nothing
+#endif
+
+-- | Throw the driver's errors as a SourceError. From GHC 10.0, a
+-- SourceError carries the context in which to report its messages.
+throwDriverErrors :: HscEnv -> DriverMessages -> IO a
+#if MIN_VERSION_ghc(10,0,0)
+throwDriverErrors hsc = throwErrors (initSourceErrorContext (hsc_dflags hsc)) . fmap GhcDriverMessage
+#else
+throwDriverErrors _ = throwErrors . fmap GhcDriverMessage
+#endif
+
+-- | The path of the package database that a -package-db flag names, or
+-- Nothing for the global and the user's databases. From GHC 10.0, the path
+-- is an OsPath.
+pkgDbRefPath :: PkgDbRef -> Maybe FilePath
+#if MIN_VERSION_ghc(10,0,0)
+pkgDbRefPath (PkgDbPath p) = Just (unsafeDecodeUtf p)
+#else
+pkgDbRefPath (PkgDbPath p) = Just p
+#endif
+pkgDbRefPath _ = Nothing

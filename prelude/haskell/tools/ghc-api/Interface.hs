@@ -1,11 +1,12 @@
 {-# LANGUAGE CPP #-}
 -- | Reading a module's interface, and what the rules take from it, wherever
--- each GHC version (9.6 to 9.14) keeps it.
+-- each GHC version (9.6 to 10.1) keeps it.
 module Interface
   ( readInterface
   , abiHash
   , usages
   , usageFile
+  , usageLoadedModule
   , directDep
   ) where
 
@@ -25,6 +26,7 @@ import GHC.Unit.Module.ModIface (mi_mod_hash)
 #else
 import GHC.Unit.Module.ModIface (mi_final_exts, mi_mod_hash)
 #endif
+import GHC.Unit.Module (ModuleName)
 import GHC.Utils.Fingerprint (Fingerprint)
 
 -- | Read the interface file, with GHC's libdir.
@@ -54,6 +56,17 @@ usageFile UsageFile{usg_file_path = p} = Just (unpackFS p)
 usageFile UsageFile{usg_file_path = p} = Just p
 #endif
 usageFile _ = Nothing
+
+-- | The module of a usage that records a home module whose code a splice
+-- loaded into the interpreter. GHC 10.0 renamed the constructor of these
+-- usages from UsageHomeModuleInterface to UsageHomeModuleBytecode.
+usageLoadedModule :: Usage -> Maybe ModuleName
+#if MIN_VERSION_ghc(10,0,0)
+usageLoadedModule UsageHomeModuleBytecode{usg_mod_name = m} = Just m
+#else
+usageLoadedModule UsageHomeModuleInterface{usg_mod_name = m} = Just m
+#endif
+usageLoadedModule _ = Nothing
 
 -- | An interface's direct dependency, without the import level it carries
 -- since GHC 9.14.
