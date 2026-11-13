@@ -15,7 +15,7 @@ import GHC.Unit.Types (GenWithIsBoot (..), IsBootInterface (..), unitString)
 import GHC.Utils.Fingerprint (Fingerprint)
 import GHC.Utils.Panic (GhcException (ProgramError), throwGhcExceptionIO)
 
-import Interface (abiHash, directDep, usageFile, usages)
+import Interface (abiHash, directDep, usageFile, usageLoadedModule, usages)
 import Request
 
 -- | Write a compiled module's ABI file and dep file, from its interface. The
@@ -34,7 +34,7 @@ writeDepFiles r iface = do
   -- would never compile again.
   us <- maybe (throwGhcExceptionIO (ProgramError (modName ++ ": its interface records no usages, so its dep file can't say what it read: don't compile it with -fno-write-if-self-recomp"))) pure (usages iface)
   own <- fmap concat . forM us $ \u -> case u of
-    UsageHomeModuleInterface{usg_mod_name = m} -> pure [moduleNameString m]
+    _ | Just m <- usageLoadedModule u -> pure [moduleNameString m]
     _ | Just path <- usageFile u -> do
       ok <- doesFileExist path
       c <- if ok then canonicalizePath path else pure path
@@ -50,7 +50,7 @@ writeDepFiles r iface = do
       ext m = if (m, IsBoot) `elem` direct && (m, NotBoot) `notElem` direct then "abi-boot" else "abi"
   entries <- fmap concat . forM us $ \u -> case u of
     UsageHomeModule{usg_mod_name = m} -> existing [reqOutDir r </> modFile m <.> ext m]
-    UsageHomeModuleInterface{usg_mod_name = m} -> existing [reqOutDir r </> modFile m <.> "abi"]
+    _ | Just m <- usageLoadedModule u -> existing [reqOutDir r </> modFile m <.> "abi"]
     -- Looked up by its unit as well as its name, since a module of another
     -- unit may have the same name.
     UsagePackageModule{usg_mod = m} -> firstExisting (concat [[d </> modFile (moduleName m) <.> "abi", d </> modFile (moduleName m) <.> reqHisuf r] | (unit, d) <- reqHidirs r, unit == unitString (moduleUnit m)])

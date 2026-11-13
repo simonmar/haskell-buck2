@@ -5,7 +5,7 @@
 module Session (GhcSession, gsModules, gsOutDir, gsOneShot, SessionMode (..), Shared, newShared, newSession, endSession, compile, Node, Diagnostic (..), tryNonAsync) where
 
 import Control.Exception (SomeAsyncException, SomeException, finally, fromException, onException, throwIO, try)
-import Control.Monad (foldM, forM, unless, when)
+import Control.Monad (foldM, forM, forM_, unless)
 import Control.Concurrent.MVar
 import Data.Graph (SCC, flattenSCC, stronglyConnComp)
 import Data.IORef
@@ -13,7 +13,7 @@ import Control.Applicative ((<|>))
 import Data.Char (isDigit)
 import Data.List (isPrefixOf, isSuffixOf, stripPrefix)
 import qualified Data.Map as M
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (isJust, maybeToList)
 import qualified Data.Set as Set
 import Data.Unique (hashUnique, newUnique)
 import System.Directory (createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removePathForcibly)
@@ -28,8 +28,6 @@ import GHC.Driver.Env (hscSetFlags, hsc_FC, hsc_NC, hsc_dflags, hsc_home_unit, h
 import GHC.Driver.Env.KnotVars (knotVarsFromModuleEnv)
 import GHC.Types.TypeEnv (emptyTypeEnv)
 import GHC.Unit.Module.Env (mkModuleEnv)
-import GHC.Driver.Errors.Types (GhcMessage (..))
-import GHC.Driver.Make (summariseFile)
 import GHC.Driver.Monad (Ghc (..), Session (..))
 import GHC.Driver.Pipeline (compileOne)
 import qualified GHC.Data.EnumSet as EnumSet
@@ -38,19 +36,18 @@ import GHC.Platform.Ways (Way (..))
 import GHC.Iface.Binary (CheckHiWay (..), TraceBinIFace (..), readBinIface)
 import GHC.Runtime.Interpreter (stopInterp)
 import GHC.Types.Error (MessageClass (..))
-import GHC.Types.SourceError (throwErrors)
 import GHC.Types.SourceFile (HscSource (..))
-import GHC.Unit.Finder (FindResult (..), findImportedModule, findObjectLinkableMaybe, initFinderCache)
+import GHC.Unit.Finder (FindResult (..), findObjectLinkableMaybe, initFinderCache)
 import GHC.Types.Name.Cache (NameCache)
 import GHC.Unit.Finder.Types (FinderCache)
 import GHC.Unit.Home (HomeUnit, homeUnitId, isHomeModule)
 import GHC.Unit.Module.ModSummary (isBootSummary, msHsFilePath)
-import GHC.Unit.Home.ModInfo (HomeModInfo (..), HomeModLinkable, emptyHomeModInfoLinkable, justObjects)
+import GHC.Unit.Home.ModInfo (HomeModInfo (..), HomeModLinkable (..), emptyHomeModInfoLinkable)
 import GHC.Unit.Module.Deps (dep_boot_mods, dep_direct_mods)
 import GHC.Unit.Module.Location (addBootSuffixLocn, addBootSuffixLocnOut)
-import GHC.Unit.Env (HomeUnitEnv (..), UnitEnv (..), ue_currentUnit, ue_findHomeUnitEnv, ue_unit_dbs, ue_updateHomeUnitEnv)
+import GHC.Unit.Env (HomeUnitEnv (..), UnitEnv (..), ue_currentUnit, ue_findHomeUnitEnv, ue_updateHomeUnitEnv)
 import GHC.Unit.External (ExternalUnitCache, initExternalUnitCache)
-import GHC.Unit.State (UnitDatabase (..), UnitState)
+import GHC.Unit.State (UnitDatabase, UnitState)
 import GHC.Unit.Types (GenWithIsBoot (..), UnitId)
 import GHC.Utils.Logger (LogFlags (..))
 import GHC.Utils.Outputable (renderWithContext)
@@ -59,7 +56,7 @@ import GHC.Utils.TmpFs (cleanCurrentModuleTempFiles, cleanTempDirs, cleanTempFil
 
 import Compat
 import DepFile (writeDepFiles)
-import Imports (importName, srcImportName)
+import Imports (findImport, findModuleByName, importName, sourceImports, textualImports)
 import Interface (directDep)
 import Request
 
@@ -197,14 +194,15 @@ setFlags shared session@(Session ref) dflags = do
   let paths = dbPaths dflags
   known <- readMVar (shDbs shared)
   let cached = if isJust pathEnv then Nothing else mapM (`M.lookup` known) paths
-  mapM_ (\c -> modifyIORef' ref (\hsc -> hsc{hsc_unit_env = withUnitDbs c (hsc_unit_env hsc)})) cached
+  forM_ cached $ \c -> do
+    hsc <- readIORef ref
+    ue <- useUnitDbs c (hsc_unit_env hsc)
+    writeIORef ref hsc{hsc_unit_env = ue}
   unGhc (setSessionDynFlags dflags >> pure ()) session
   unless (isJust cached || isJust pathEnv) $ do
-    new <- fromMaybe [] . ue_unit_dbs . hsc_unit_env <$> readIORef ref
-    -- If GHC also read the user's database, the databases it read don't
-    -- match `paths`, and none of them are kept.
-    when (map unitDatabasePath new == paths) $
-      modifyMVar_ (shDbs shared) (\m -> pure (M.union m (M.fromList [(unitDatabasePath db, db) | db <- new])))
+    new <- unitDbsRead paths . hsc_unit_env =<< readIORef ref
+    forM_ new $ \dbs ->
+      modifyMVar_ (shDbs shared) (\m -> pure (M.union m (M.fromList (zip paths dbs))))
 
 -- | Turn the session's environment into one for one-shot compiles (see Note
 -- [One-shot sessions]). It uses the unit state of the first one-shot session
@@ -310,14 +308,7 @@ dbPaths dflags = concatMap path (reverse (foldr flag [UserPkgDb, GlobalPkgDb] (p
     flag NoGlobalPackageDB refs = filter (/= GlobalPkgDb) refs
     flag ClearPackageDBs _ = []
     path GlobalPkgDb = [dropTrailingPathSeparator (globalPackageDatabasePath dflags)]
-    path (PkgDbPath p) = [dropTrailingPathSeparator p]
-    path UserPkgDb = []
-
--- | Give the unit environment's current unit the given package databases.
--- When the session's flags are set, GHC then uses these instead of reading
--- the databases from disk.
-withUnitDbs :: [UnitDatabase UnitId] -> UnitEnv -> UnitEnv
-withUnitDbs c ue = ue_updateHomeUnitEnv (\hue -> hue{homeUnitEnv_unit_dbs = Just c}) (ue_currentUnit ue) ue
+    path ref = map dropTrailingPathSeparator (maybeToList (pkgDbRefPath ref))
 
 -- | Remove the session's temporary files and directories, and stop its
 -- external interpreter if it started one, as GHC does when a session ends.
@@ -353,8 +344,8 @@ compileHeld :: GhcSession -> (Diagnostic -> IO ()) -> Request -> IO Node
 compileHeld s report r = do
   mapM_ (createDirectoryIfMissing True) (reqMkdirs r)
   let hsc0 = gsEnv s
-  ems <- summariseFile hsc0 (hsc_home_unit hsc0) M.empty (reqSource r) Nothing Nothing
-  ms1 <- either (throwErrors . fmap GhcDriverMessage) pure ems
+  ems <- summariseSource hsc0 (reqSource r)
+  ms1 <- either (throwDriverErrors hsc0) pure ems
   -- Before GHC 9.12, summariseFile treats a boot file as an ordinary
   -- module, so we mark the summary as a boot file ourselves.
   let ms0
@@ -368,7 +359,7 @@ compileHeld s report r = do
     _ : dir : _ -> do
       let file = dir </> reqModPath r <.> (if reqBoot r then "hie-boot" else "hie")
       createDirectoryIfMissing True (takeDirectory file)
-      pure ms0{ms_location = (ms_location ms0){ml_hie_file = file}}
+      pure ms0{ms_location = setLocationFile HieFile file (ms_location ms0)}
     _ -> pure ms0
   -- Likewise, use the object and interface files that the request names.
   -- They are where GHC would put them anyway, given the module's name and
@@ -377,16 +368,10 @@ compileHeld s report r = do
   let arg flag = case dropWhile (/= flag) (reqModuleArgs r) of
         _ : v : _ -> Just v
         _ -> Nothing
-      loc = ms_location withHie
+      outputs = [(ObjFile, "-o"), (HiFile, "-ohi"), (DynObjFile, "-dyno"), (DynHiFile, "-dynohi")]
       withOutputs =
         withHie
-          { ms_location =
-              loc
-                { ml_obj_file = fromMaybe (ml_obj_file loc) (arg "-o")
-                , ml_hi_file = fromMaybe (ml_hi_file loc) (arg "-ohi")
-                , ml_dyn_obj_file = fromMaybe (ml_dyn_obj_file loc) (arg "-dyno")
-                , ml_dyn_hi_file = fromMaybe (ml_dyn_hi_file loc) (arg "-dynohi")
-                }
+          { ms_location = foldr (\(file, flag) loc -> maybe loc (\v -> setLocationFile file v loc) (arg flag)) (ms_location withHie) outputs
           }
   let ms = case dropWhile (/= "-stubdir") (reqModuleArgs r) of
         _ : dir : _ -> withOutputs{ms_hspp_opts = (ms_hspp_opts withOutputs){stubDir = Just dir}}
@@ -469,11 +454,10 @@ homeView s r key hsc ms = modifyMVar (gsHomes s) $ \homes0 -> do
       own = ms_mod_name ms
   -- An import that names another package (with PackageImports) isn't an
   -- import of a home module, even if a home module has the same name.
-  imports <- fmap concat . forM (ms_textual_imps ms) $ \imp -> do
-    let (mn, pkg) = importName imp
-    found <- findImportedModule hsc mn pkg
-    pure [mn | Found _ m <- [found], isHomeModule (hsc_home_unit hsc) m]
-  let sources = map srcImportName (ms_srcimps ms)
+  imports <- fmap concat . forM (textualImports ms) $ \imp -> do
+    found <- findImport hsc imp
+    pure [fst (importName imp) | Found _ m <- [found], isHomeModule (hsc_home_unit hsc) m]
+  let sources = sourceImports ms
   ownBoot <- if reqBoot r then pure False else doesFileExist (ml_hi_file (addBootSuffixLocn (ms_location ms)))
   homes1 <- foldM (\h mn -> ifaceOf hsc h (mn, NotBoot)) homes0 imports
   -- Work out which modules the compile sees as boot interfaces, as GHC
@@ -567,13 +551,13 @@ ifaceOf :: HscEnv -> Homes -> Node -> IO Homes
 ifaceOf hsc h n
   | n `M.member` hIfaces h = pure h
   | otherwise = do
-      found <- findImportedModule hsc (fst n) NoPkgQual
+      found <- findModuleByName hsc (fst n)
       case found of
         Found loc0 m -> do
           let loc = if snd n == IsBoot then addBootSuffixLocn loc0 else loc0
           iface <- readIface hsc (ml_hi_file loc)
           obj <- if snd n == IsBoot then pure Nothing else findObjectLinkableMaybe m loc
-          pure h{hIfaces = M.insert n (iface, maybe emptyHomeModInfoLinkable justObjects obj) (hIfaces h)}
+          pure h{hIfaces = M.insert n (iface, emptyHomeModInfoLinkable{homeMod_object = obj}) (hIfaces h)}
         _ -> throwGhcExceptionIO (ProgramError ("buck2-ghc-worker: no interface for home module " ++ moduleNameString (fst n)))
 
 readIface :: HscEnv -> FilePath -> IO ModIface
