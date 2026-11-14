@@ -42,7 +42,7 @@ def _haskell_ghc_api_tool_impl(ctx: AnalysisContext) -> list[Provider]:
             # file (one in the project, for example).
             "-package-env=-",
             "-hide-all-packages",
-            [["-package", p] for p in _PACKAGES],
+            [["-package", p] for p in GHC_API_TOOL_PACKAGES],
             cmd_args(srcs, format = "-i{}"),
             cmd_args(srcs, ctx.attrs.main, delimiter = "/"),
             "-o",
@@ -53,7 +53,39 @@ def _haskell_ghc_api_tool_impl(ctx: AnalysisContext) -> list[Provider]:
     return [DefaultInfo(default_output = exe), RunInfo(args = cmd_args(exe))]
 
 # The packages the tools use, all of which come with GHC.
-_PACKAGES = ["base", "bytestring", "containers", "directory", "filepath", "ghc", "ghc-boot", "process"]
+GHC_API_TOOL_PACKAGES = ["base", "bytestring", "containers", "directory", "filepath", "ghc", "ghc-boot", "process"]
+
+# The tools of the per-module compiles, by the name of their Main module. The
+# tools' sources are in prelude//haskell/tools/ghc-api, and each source is
+# also a target of prelude//haskell/tools, named after its path there.
+GHC_API_TOOLS = {
+    "per_module_compile": "PerModuleCompile",
+    "per_module_deps": "PerModuleDeps",
+}
+
+# The modules that the tools share.
+_SHARED_MODULES = ["DepFile", "Imports", "Interface", "Libdir", "Request"]
+
+def ghc_api_tool_srcs(tool: str) -> dict[str, str]:
+    """The `srcs` of a haskell_binary() that builds one of GHC_API_TOOLS,
+    keyed by module name.
+
+    A toolchain whose GHC is built from source can't use the tools that
+    haskell_ghc_api_tool() builds, because they are linked with the GHC
+    library of the GHC that builds them. It can build its own instead, as
+    haskell_binary() targets that depend on the GHC library of the GHC that
+    the toolchain runs, and pass them in the toolchain's `per_module_deps`
+    and `per_module_compile`.
+    """
+    def src(module):
+        return "prelude//haskell/tools:ghc-api/{}.hs".format(module)
+    srcs = {module: src(module) for module in _SHARED_MODULES}
+    srcs["Main"] = src(GHC_API_TOOLS[tool])
+    return srcs
+
+def ghc_api_tool_sources() -> list[str]:
+    """The tools' source files, relative to prelude//haskell/tools."""
+    return ["ghc-api/{}.hs".format(module) for module in _SHARED_MODULES + GHC_API_TOOLS.values()]
 
 haskell_ghc_api_tool = rule(
     impl = _haskell_ghc_api_tool_impl,

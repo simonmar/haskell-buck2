@@ -47,5 +47,12 @@ HaskellToolchainInfo = provider(
         "ghci_packager": provider_field(typing.Any, default = None),
         "cache_links": provider_field(typing.Any, default = None),
         "script_template_processor": provider_field(typing.Any, default = None),
+        # The tools of the per-module compiles (see compile_per_module in
+        # compile_per_module.bzl), as RunInfo. They must be linked with the
+        # GHC library of the same version as `compiler`. When they are None,
+        # the rules use the tools of prelude//haskell/tools, which are built
+        # with the toolchain's GHC (see haskell_ghc_api_tool()).
+        "per_module_deps": provider_field(typing.Any, default = None),
+        "per_module_compile": provider_field(typing.Any, default = None),
     },
 )

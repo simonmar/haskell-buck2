@@ -20,6 +20,8 @@ def _haskell_toolchain_impl(ctx):
             compile_env = ctx.attrs.compile_env,
             link_env = ctx.attrs.link_env,
             dynamic_ghc = ctx.attrs.dynamic_ghc,
+            per_module_deps = ctx.attrs.per_module_deps[RunInfo] if ctx.attrs.per_module_deps else None,
+            per_module_compile = ctx.attrs.per_module_compile[RunInfo] if ctx.attrs.per_module_compile else None,
         ),
         HaskellPlatformInfo(name = host_info().arch),
     ]
@@ -44,6 +46,10 @@ haskell_toolchain = rule(
         # code needs to be compiled. It can be found by running `ghc
         # --info`: look for the "GHC Dynamic" value.
         "dynamic_ghc": attrs.bool(default = True),
+        # The tools of the per-module compiles, if the prelude's can't be
+        # used (see per_module_deps in prelude/haskell/toolchain.bzl).
+        "per_module_deps": attrs.option(attrs.exec_dep(providers = [RunInfo]), default = None),
+        "per_module_compile": attrs.option(attrs.exec_dep(providers = [RunInfo]), default = None),
     },
     is_toolchain_rule = True,
 )
