@@ -64,7 +64,7 @@ edits low in the module graph, in large targets, or in targets that much
 else depends on, and the least for edits to a small target that nothing
 depends on. On the worker's bench, rebuilds after such edits took 0.7-1.2s
 with `per_module` and the worker, against 2-9s with `--make` per target
-(see `tools/buck2-ghc-worker/DESIGN.md`).
+(see `prelude/haskell/tools/worker/DESIGN.md`).
 
 The main cost of `per_module` is CPU on clean builds. Without the
 persistent worker (below), each module's compile starts a GHC and reads the
@@ -73,19 +73,19 @@ build takes several times as long. Rebuilds pay that cost only for the
 modules they compile, so they are mostly faster than with `--make` even
 without the worker.
 
-The persistent worker in `tools/buck2-ghc-worker` removes most of that cost by
+The persistent worker in `prelude/haskell/tools/worker` removes most of that cost by
 sending the compiles to a long-running process that keeps what it has
 read, so a module's imports are read once rather than once per module.
 With it, clean builds on the bench were as fast as with a `--make` per
 target or faster, and much faster where `--make` per target can't use all
 the cores, as in a chain of libraries that each depend on the one before.
 
-`per_module_worker` in the `[haskell]` section of the buckconfig says how
-to get the worker:
+`per_module_worker` in the `[haskell]` section of the buckconfig says
+whether to use the worker:
 
-- a path, or a name on `$PATH`: the worker program, built with the
-  project's GHC (see the worker's README for how to install it).
-- `none`, or unset: no worker.
+- `builtin`, the default: the toolchain builds the worker with the
+  project's GHC.
+- `none`: no worker.
 
 The same section has options for the worker that the targets share:
 
@@ -141,7 +141,7 @@ on cabal-buck2 or Hackage: `tests/rules/run.sh GHC_BIN_DIR`, with `buck2` on
 `PATH`. See [tests/rules/README.md](tests/rules/README.md).
 
 With Nix, `nix flake check -L` runs those and the persistent worker's tests
-(`tools/buck2-ghc-worker`) with each GHC the worker supports, in parallel, and
+(`prelude/haskell/tools/worker`) with each GHC the worker supports, in parallel, and
 `nix develop .#ghc9141` (say) gives a shell with that GHC and cabal.
 
 `template/` has the `.buckconfig` and `PACKAGE` that `cabal buck2` copies to a

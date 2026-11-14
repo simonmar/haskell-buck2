@@ -29,6 +29,14 @@ haskell_ghc_api_tool(
     visibility = ["PUBLIC"],
 )
 
+# The sources of the persistent worker, which a toolchain builds with its own
+# compiler.
+prelude.filegroup(
+    name = "worker-srcs",
+    srcs = glob(["worker/src/*.hs", "worker/app/Main.hs"]),
+    visibility = ["PUBLIC"],
+)
+
 # Type checking target for Python tool scripts
 prelude.python_library(
     name = "scripts-typing",
