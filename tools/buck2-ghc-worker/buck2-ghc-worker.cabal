@@ -1,0 +1,132 @@
+cabal-version:      3.0
+name:               buck2-ghc-worker
+version:            0.1.0.0
+synopsis:           A buck2 persistent worker that compiles modules in long-lived GHC sessions
+description:
+  buck2 sends the worker a request for each module of each target that is
+  compiled per-module. The worker compiles each module as its request
+  arrives, concurrently with the others, using the function that
+  `ghc --make` uses to compile one module. It keeps a GHC session for each
+  set of flags. A session keeps what it has read, such as interfaces and
+  loaded libraries, as `ghc --make -j` does for one package. From the
+  interface that GHC writes, the worker also writes the module's ABI hash
+  and its buck2 dep file. See README.md for more.
+license:            MIT
+build-type:         Simple
+tested-with:        GHC==9.14.1, GHC==9.12.4, GHC==9.10.3, GHC==9.8.4, GHC==9.6.7
+
+-- The worker's modules, in a library so that the test suites and the
+-- benchmark can use them too. Contract, DepFile, Imports, Interface and
+-- Request are symlinks to modules of the rules' own GHC API tools
+-- (prelude/haskell/tools/ghc-api), so that the worker and those tools share
+-- the same code.
+library
+  exposed-modules:  Compat, Contract, DepFile, Grpc, Imports, Interface, Proto, Request, Session, Worker
+  hs-source-dirs:   src
+  default-language: GHC2021
+  ghc-options:      -Wall
+  build-depends:
+    , base
+    , bytestring
+    , containers
+    , directory
+    , filepath
+    , ghc >= 9.6 && < 9.15
+    , http2 >= 5.3.7
+    , http-types
+    , network
+    , process, unix
+
+executable buck2-ghc-worker
+  main-is:          Main.hs
+  hs-source-dirs:   app
+  default-language: GHC2021
+  -- These RTS options are defaults for a worker run outside the rules. For
+  -- the shared worker, the rules override -A and -qn (see
+  -- per_module_worker_rts_options in prelude/haskell/per_module_worker.bzl).
+  -- --disable-delayed-os-memory-return makes the RTS give the memory of
+  -- dropped sessions (see Worker.hs) back to the OS at once. By default the
+  -- RTS uses MADV_FREE, and the memory stays counted against the process
+  -- until the kernel needs it.
+  ghc-options:      -Wall -threaded -dynamic -rtsopts "-with-rtsopts=-N -A16m -qn4 --disable-delayed-os-memory-return"
+  build-depends:
+    , base
+    , bytestring
+    , ghc
+    , buck2-ghc-worker
+    , unix
+
+-- Compiles a small package through the worker that this package builds.
+test-suite spec
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  hs-source-dirs:   test
+  other-modules:    Client
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded
+  build-tool-depends: buck2-ghc-worker:buck2-ghc-worker
+  build-depends:
+    , base
+    , bytestring
+    , buck2-ghc-worker
+    , directory
+    , filepath
+    , http2 >= 5.3.7
+    , http-types
+    , network
+    , process
+    , tasty >= 1.5.1
+    , tasty-hunit
+    , unix
+
+-- Property tests. Each one generates a history of edits to a package, builds
+-- each version through the worker that this package builds, and compares the
+-- outputs with those of a clean `ghc -c` build. See props/Main.hs.
+test-suite props
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  hs-source-dirs:   props, test
+  other-modules:    Client
+  default-language: GHC2021
+  -- With -N, tasty runs the properties in parallel, one per capability.
+  ghc-options:      -Wall -threaded -rtsopts "-with-rtsopts=-N"
+  build-tool-depends: buck2-ghc-worker:buck2-ghc-worker
+  build-depends:
+    , base
+    , bytestring
+    , containers
+    , directory
+    , filepath
+    , buck2-ghc-worker
+    , hedgehog >= 1.4
+    , http2 >= 5.3.7
+    , http-types
+    , network
+    , process
+    , tasty >= 1.5.1
+    , tasty-hedgehog >= 1.4
+    , unix
+
+-- Builds generated packages through the worker that this package builds,
+-- and in other ways such as `ghc --make`, and reports the time each takes.
+-- See bench/Main.hs.
+benchmark bench
+  type:             exitcode-stdio-1.0
+  main-is:          Main.hs
+  hs-source-dirs:   bench, test
+  other-modules:    Client
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded
+  build-tool-depends: buck2-ghc-worker:buck2-ghc-worker
+  build-depends:
+    , base
+    , bytestring
+    , containers
+    , directory
+    , filepath
+    , buck2-ghc-worker
+    , http2 >= 5.3.7
+    , http-types
+    , network
+    , process
+    , unix

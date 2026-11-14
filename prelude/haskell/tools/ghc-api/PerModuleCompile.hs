@@ -1,7 +1,8 @@
 {-# LANGUAGE CPP #-}
 -- | Compiles one module of a target compiled per-module with `ghc -c`, then
 -- writes the module's .abi file and buck2 dep file from the interface GHC
--- wrote (see Request and DepFile, and compile_per_module in
+-- wrote. It takes the same request as the persistent worker, and writes the
+-- same files (see Request and DepFile, and compile_per_module in
 -- prelude/haskell/compile_per_module.bzl).
 --
 -- GHC_LIBDIR is the libdir of the GHC this program is built with, which has

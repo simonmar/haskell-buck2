@@ -19,6 +19,8 @@ load(
 load(
     "@prelude//haskell:toolchain.bzl",
     "HaskellToolchainInfo",
+    "compile_env_script",
+    "in_compile_env",
 )
 load(
     "@prelude//haskell:util.bzl",
@@ -328,17 +330,7 @@ def data_dirs_env(ctx: AnalysisContext) -> dict[str, Artifact]:
 def ghc_env(ctx: AnalysisContext, build_tool_dir: str):
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
 
-    # compile_env's values are shell-evaluated (via `sh -c`) rather than
-    # passed straight through as literal env values - this lets a value
-    # like "$(clang -print-file-name=libclang_rt.asan-x86_64.so)" get
-    # resolved at actual build-action execution time, matching this
-    # project's existing convention of resolving tools via $PATH at
-    # build-action time rather than baking absolute host paths into .bzl
-    # or BUCK files (see toolchains/BUCK's `compiler`/`packager`).
-    script = "".join([
-        'export {}="{}"; '.format(name, value)
-        for name, value in haskell_toolchain.compile_env.items()
-    ]) if haskell_toolchain.compile_env else ""
+    script = compile_env_script(haskell_toolchain.compile_env) if haskell_toolchain.compile_env else ""
     args = []
 
     # We smuggle the build tools in via an extra argument and make the shell
@@ -353,9 +345,7 @@ def ghc_env(ctx: AnalysisContext, build_tool_dir: str):
     return struct(script = script, args = args)
 
 def in_env(env, cmd: cmd_args) -> cmd_args:
-    if not env.script:
-        return cmd
-    return cmd_args(["sh", "-c", env.script + 'exec "$@"', "sh"] + env.args, cmd)
+    return in_compile_env(env.script, env.args, cmd)
 
 # Whether the target has modules for GHC to compile (e.g. not a target whose
 # code is all C).

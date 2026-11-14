@@ -36,6 +36,14 @@ as a remote cache, and checks that the rules' actions upload their results
 and that a clean build finds them there. The dev shells and `nix flake
 check` set it.
 
+With `BUCK2_GHC_WORKER` set to a `buck2-ghc-worker` (from
+`tools/buck2-ghc-worker`) that was built with the same GHC, `run.sh` sets
+`[haskell] per_module_worker` so that the modules are compiled in that
+worker. The same checks apply.
+`check_workers` also checks that the modules were compiled in the worker,
+apart from those that need their target's environment. `nix flake check`
+runs the tests both with and without the worker.
+
 Each check prints `PASS` or `FAIL` (with the missing and unexpected members
 of the set it compared) or `SKIP` (a check of what the platform doesn't
 have, or `check_cache` without `BAZEL_REMOTE`). A check of a known bug in
@@ -77,6 +85,7 @@ compiles with `--make`.
 | `//th-local-splice:th-local-splice` | a splice of `TH.Gen.gen`, from another local library, which isn't supported: its compile fails |
 | `//th-prebuilt-splice:th-prebuilt-splice` | a splice that runs only `template-haskell` |
 | `//boot-cycle:boot-cycle` | two modules in an import cycle, through an hs-boot file |
+| `//boot-cycle-inline:boot-cycle-inline` | with -O, a module that needs the interface of a module in an import cycle that it reaches only through an unfolding |
 | `//ownboot:ownboot` | a module whose hs-boot file no import cycle needs |
 | `//mainname:server` | a binary whose Main module is in `app/Server.hs`, without a module header |
 | `//rtsflags:rtsflags` | `+RTS ... -RTS` among the compiler flags |
@@ -87,6 +96,7 @@ compiles with `--make`.
 | `//make-between:p`, `//make-between:m`, `//make-between:t` | `t`'s module imports `m`'s, built with `--make`, whose interface refers to `p`'s, compiled per-module |
 | `//flat-sources:flat-sources`, `//make-lib:make-lib` | `flat-sources`'s flat sources (`Lib.hs`), one of which imports `Q.Lib` from `make-lib` (built with `--make`), whose interface path ends in `/Lib.hi` |
 | `//module-move:hi`, `//module-move:lo`, `//module-move:main` | a module that moves from `hi` to `lo`, its dependency |
+| `//build-tools:shared`, `//build-tools:own` | modules run through preprocessors (`-pgmF`) that are build tools; the project's buckconfig puts `bt-shared` on the worker's `PATH`, but not `bt-own` |
 | `//index:index` | built with `-fwrite-ide-info`, for its index (`index.bxl` prints it) |
 | `//module-name-clash:user` | `X` uses `bar` through `second`'s `Re`, which re-exports it from `second`'s `Utils`; `first` and `user` have a module `Utils` too |
 | `//header:header` | a module that `#include`s a header in the target's `srcs` (`Hdr/value.h`) |

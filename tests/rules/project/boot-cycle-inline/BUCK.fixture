@@ -1,0 +1,34 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# Loop.A and Loop.B are in an import cycle. Loop.A imports Loop.B's boot
+# file, and Loop.B imports Loop.A.
+#
+# Loop.A's `inlined` has an INLINE pragma, and uses Loop.B's `b`. So with
+# -O, the interface of Loop.Via, which uses `inlined`, mentions Loop.B.
+# Loop.User imports Loop.Via, so it needs Loop.B's interface, although it
+# imports neither Loop.A nor Loop.B. When Loop.User is compiled with
+# `ghc -c`, the interface it gets is Loop.B's boot interface.
+#
+# Loop.User also imports Loop.Src, which imports Loop.A's boot file, so
+# Loop.User sees Loop.A's boot interface too. That boot interface imports
+# nothing.
+#
+# Loop.B has a splice that sleeps, so that Loop.User is compiled before
+# Loop.B.
+haskell_library(
+    name = "boot-cycle-inline",
+    srcs = {
+        "Loop.A": "Loop/A.hs",
+        "Loop.B": "Loop/B.hs",
+        "Loop.Src": "Loop/Src.hs",
+        "Loop.User": "Loop/User.hs",
+        "Loop.Via": "Loop/Via.hs",
+    },
+    boot_srcs = {
+        "Loop.A": "Loop/A.hs-boot",
+        "Loop.B": "Loop/B.hs-boot",
+    },
+    compiler_flags = ["-O"],
+    packages = ["base", "template-haskell"],
+    per_module = True,
+)

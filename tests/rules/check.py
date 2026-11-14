@@ -48,6 +48,7 @@ from other_rules import (
 from per_module import (
     check_binary_unit,
     check_boot,
+    check_boot_cycle_inline,
     check_clean_build,
     check_cross_package_dep_file,
     check_cutoff_abi_base,
@@ -64,10 +65,12 @@ from per_module import (
     check_plain_module_uses_early_dbs,
     check_th_modules_dbs,
     check_unrelated_modules,
+    check_workers,
 )
 
 CHECKS = [
     check_clean_build,
+    check_workers,
     check_make_build,
     check_early_db_conf,
     check_cross_package_dep_file,
@@ -81,6 +84,7 @@ CHECKS = [
     check_main_file,
     check_rts_flags,
     check_boot,
+    check_boot_cycle_inline,
     check_index,
     check_cutoff_comment,
     check_interfaces_subtarget,
@@ -114,11 +118,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", action="append", help="run only this check (by name, without check_); repeatable")
     ap.add_argument("--bazel-remote", help="a bazel-remote binary, for check_cache")
+    ap.add_argument("--worker", action="store_true", help="the project compiles in a persistent worker")
     args = ap.parse_args()
     unknown = set(args.only or []) - {check.__name__[len("check_"):] for check in CHECKS}
     if unknown:
         ap.error("no such check: " + " ".join(sorted(unknown)))
-    st = State(bazel_remote=args.bazel_remote)
+    st = State(bazel_remote=args.bazel_remote, worker=args.worker)
     failed = []
     for check in CHECKS:
         name = check.__name__[len("check_"):]

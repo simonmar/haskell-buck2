@@ -7,6 +7,7 @@ import re
 
 from harness import (
     DEV_STYLE,
+    IDENTITY,
     OPT_STATIC_STYLE,
     append,
     buck2,
@@ -21,6 +22,7 @@ from harness import (
     tail,
     target_name,
     what_ran,
+    what_ran_entries,
 )
 
 
@@ -31,11 +33,54 @@ def check_clean_build(st):
     of boot-cycle; B.Lit, a literate source."""
     buck2("clean")
     build(*st.targets)
-    st.actions = what_ran()
+    st.entries = what_ran_entries()
+    st.actions = what_ran(st.entries)
     expect_set("modules compiled from clean", compiled_modules(st.actions),
                {"lib:A.Base", "lib:A.Mid", "lib:A.Unused", "lib-user:B.M", "th-gen:TH.Gen", "th-make-dep:MK.Lit", "ffi-import:FFI.C", "p:Chain.P", "t:Chain.T",
                 "th-prebuilt-splice:D.Splice", "boot-cycle:Cyc.A", "boot-cycle:Cyc.B", "boot-cycle:Cyc.B-boot", "reexport:R.R", "reexport-user:U.M", "main:Main", "main:Main.Util",
                 "flat-sources:Lib", "flat-sources:User", "lib-user:B.Lit", "lib-user:B.UsesLit", "lib-user:B.Safe"})
+
+
+def check_workers(st):
+    """In the clean build, every module compile ran in the shared persistent
+    worker if the project has one (run.sh with BUCK2_GHC_WORKER), and as a process
+    of its own if not. That includes the compiles of the Template Haskell
+    modules, because their splices load only prebuilt libraries (see Note
+    [The persistent worker]).
+
+    A target with build tools compiles in the worker too, if all its build
+    tools are on the worker's PATH. The project's buckconfig puts
+    //build-tools:bt-shared there (per_module_worker_build_tools), so
+    //build-tools:shared's module compiles in the worker, and
+    //build-tools:own's module compiles without it.
+
+    The build of //build-tools is a separate buck2 command, so it starts a
+    new worker. That matters because the worker keeps what it reads for its
+    whole life, which is only safe if it lives for a single command (see
+    Note [Hashing the libraries] in the worker's Session.hs)."""
+    def executors(entries):
+        compiles = [e for e in entries if "haskell_compile_module_" in e["identity"]]
+        return [(module_of(e), e["reproducer"].get("executor", "")) for e in compiles], [e for e in compiles if e["reproducer"].get("executor") == "WorkerInit"]
+
+    ran, inits = executors(st.entries)
+    build("//build-tools:shared", "//build-tools:own")
+    bt, bt_inits = executors(what_ran_entries())
+    bt = set(bt) - {(m, "WorkerInit") for m, _ in bt}
+    if not st.worker:
+        expect_set("how the module compiles ran", {x for _, x in ran} - {"WorkerInit"}, {"Local"})
+        expect_set("how //build-tools's module compiles ran", bt, {("shared:BT.Shared", "Local"), ("own:BT.Own", "Local")})
+        return
+    expect_set("the modules compiled without the worker", {m for m, x in ran if x == "Local"}, set())
+    expect_set("how the other module compiles ran", {x for _, x in ran} - {"Local", "WorkerInit"}, {"Worker"})
+    expect("one worker (started: {})".format(len(inits)), len(inits) == 1)
+    expect_set("how //build-tools's module compiles ran", bt, {("shared:BT.Shared", "Worker"), ("own:BT.Own", "Local")})
+    expect("a new worker for a new buck2 command (started: {})".format(len(bt_inits)), len(bt_inits) == 1)
+
+
+def module_of(entry):
+    """The module of a what-ran entry, as "target-name:Module"."""
+    m = IDENTITY.match(entry["identity"])
+    return target_name(m.group(1)) + ":" + m.group(3)
 
 
 def check_early_db_conf(st):
@@ -163,6 +208,18 @@ def check_boot(st):
     append("boot-cycle/Cyc/A.hs", "\n-- an edit\n")
     build("//boot-cycle:boot-cycle")
     expect_set("Cyc.A's dep file, compiled again", raw_dep_file("boot-cycle", "boot-cycle", "Cyc.A"), {"boot-cycle:Cyc.B.abi-boot"})
+
+
+def check_boot_cycle_inline(st):
+    """//boot-cycle-inline builds, with the worker as well as without it.
+    With -O, Loop.User needs the interface of Loop.B, which is in an import
+    cycle, although Loop.User reaches Loop.B only through the unfoldings in
+    Loop.Via's interface. Loop.B is slow to compile (see the fixture), so
+    Loop.User compiles first, while only Loop.B's boot interface exists.
+    `ghc -c` uses the boot interface then, and the worker has to do the
+    same."""
+    p = build("//boot-cycle-inline:boot-cycle-inline", keep_going=True)
+    expect("//boot-cycle-inline:boot-cycle-inline builds (got:\n{})".format(tail(p.stderr, 15)), p.returncode == 0)
 
 
 def rebuild(st):

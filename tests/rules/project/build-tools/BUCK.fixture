@@ -1,0 +1,33 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# Two preprocessors (run with -pgmF), which the libraries below use as
+# build tools. The project's buckconfig puts bt-shared on the shared
+# worker's PATH (per_module_worker_build_tools), but not bt-own. Each
+# preprocessor ignores its input and writes a fixed module.
+sh_binary(
+    name = "bt-shared",
+    main = "bt-shared",
+    # Public, because the toolchain depends on it.
+    visibility = ["PUBLIC"],
+)
+
+sh_binary(
+    name = "bt-own",
+    main = "bt-own",
+)
+
+haskell_library(
+    name = "shared",
+    srcs = {"BT.Shared": "BT/Shared.hs"},
+    packages = ["base"],
+    build_tool_depends = [":bt-shared"],
+    per_module = True,
+)
+
+haskell_library(
+    name = "own",
+    srcs = {"BT.Own": "BT/Own.hs"},
+    packages = ["base"],
+    build_tool_depends = [":bt-own"],
+    per_module = True,
+)

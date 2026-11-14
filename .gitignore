@@ -12,3 +12,7 @@ cabal.project.local
 /example/buck2
 __pycache__/
 *.pyc
+
+# Links that `nix build` makes
+/result
+/result-*
