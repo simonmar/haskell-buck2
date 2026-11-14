@@ -68,11 +68,14 @@ HaskellToolchainInfo = provider(
         "dynamic_ghc": provider_field(bool, default = True),
         # The persistent worker (tools/buck2-ghc-worker) that compiles the
         # modules of per-module targets, as a WorkerInfo made by
-        # per_module_worker_info. It is None if the toolchain has no worker.
-        # See Note [The persistent worker] in compile_per_module.bzl.
+        # per_module_worker_info. It is None if the toolchain has no worker. A
+        # target can name a different worker in its per_module_worker
+        # attribute. See Note [The persistent worker] in
+        # compile_per_module.bzl.
         "per_module_shared_worker": provider_field(typing.Any, default = None),
         # The worker's settings: its RTS options, the most sessions it keeps,
-        # and its session mode.
+        # and its session mode. A worker that the project builds from source
+        # uses them too (see haskell_per_module_worker).
         "per_module_worker_rts_options": provider_field(list[str], default = []),
         "per_module_worker_sessions": provider_field(int | None, default = None),
         "per_module_worker_session_mode": provider_field(str | None, default = None),

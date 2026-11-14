@@ -92,12 +92,14 @@
 # a tools.bzl from an earlier release fails here, on a symbol that says what
 # it is about, and an incompatible one is reported just below.
 load("@third-party-haskell//:tools.bzl", TOOLS_CABAL_BUCK2_VERSION = "CABAL_BUCK2_VERSION")
+load("@prelude//haskell:per_module_worker.bzl", "PER_MODULE_WORKER_SUFFIX", "in_worker_package", "is_worker_target", "project_per_module_worker")
 load("//buck2:version.bzl", "CABAL_BUCK2_VERSION")
 load("//buck2:cmm.bzl", "cmm_library")
 load("//buck2:cxx.bzl", "cxx_binary", "cxx_library")
 load("//buck2:headers.bzl", "headers_of")
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library", "haskell_test")
 load("//buck2:variant.bzl", "variant")
+load("//buck2:worker.bzl", "haskell_per_module_worker")
 load("//cabal-buck2:packages.bzl", "DATA_PACKAGES", "DEFAULTS", "OVERRIDES", "PACKAGES")
 load("@prelude//paths.bzl", "paths")
 load("@prelude//third-party:pkgconfig.bzl", "external_pkgconfig_library")
@@ -629,8 +631,25 @@ def cabal_targets(spec, defaults = {}, overrides = {}, transform = None, rules =
             kwargs = transform(kind, c, kwargs)
             if kwargs == None:
                 continue
+        # When the buckconfig sets `[haskell] per_module_worker = local` (see
+        # buck2/prelude/haskell/per_module_worker.bzl), each per-module target
+        # is given the project's own worker, unless it names a worker already.
+        # This comes after the defaults, the overrides and the transform, so
+        # that it applies wherever the target's per_module came from. The
+        # targets in the worker's own package are left alone, because they
+        # build the worker.
+        if kwargs.get("per_module", False) and "per_module_worker" not in kwargs and project_per_module_worker() != None and not in_worker_package():
+            kwargs["per_module_worker"] = project_per_module_worker()
         _check_provided(spec, c, kwargs.get("srcs", {}))
         rules.get(kind, _DEFAULT_RULES[kind])(**kwargs)
+        # If this executable is the worker itself, also make the target that
+        # the per-module targets name as their worker (see worker.bzl).
+        if kind == "executable" and is_worker_target(kwargs["name"]):
+            haskell_per_module_worker(
+                name = kwargs["name"] + PER_MODULE_WORKER_SUFFIX,
+                worker = ":" + kwargs["name"],
+                visibility = ["PUBLIC"],
+            )
     _data_files(spec, pkg_dir)
     _extra_source_files(spec)
 

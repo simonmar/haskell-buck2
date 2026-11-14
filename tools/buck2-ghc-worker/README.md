@@ -30,7 +30,28 @@ section of the project's buckconfig (`.buckconfig.local`, for example) says
 so. If it is unset, or `none`, each module is compiled by a `ghc -c` of its
 own.
 
-To use it, install it with the project's GHC:
+The simplest way to bring in the worker is to make it a package of the
+project, in `cabal.project`. Leave out its tests, which would otherwise
+become tests of the project:
+
+```
+packages: . buck2/tools/buck2-ghc-worker
+
+package buck2-ghc-worker
+  tests: False
+```
+
+`cabal buck2` then generates a target for it like any other package. With
+this in the buckconfig, buck2 builds the worker with the project's GHC
+before the first per-module compile:
+
+```
+[haskell]
+  per_module_worker = local
+```
+
+Alternatively, to keep the worker out of the project's build plan, install
+it yourself with the project's GHC:
 
 ```
 cd buck2/tools/buck2-ghc-worker
