@@ -22,6 +22,15 @@
             inherit src;
             filter = path: type: !(lib.hasPrefix "dist-" (baseNameOf path) || baseNameOf path == "buck-out");
           };
+          # The tests run inside a file system laid out as on most Linux
+          # systems, with /usr/bin/env, which the build sandbox lacks. buck2
+          # runs some programs through scripts that start with
+          # `#!/usr/bin/env bash`, such as the launcher of an sh_binary.
+          fhs = pkgs.buildFHSEnv {
+            name = "rules-tests-fhs";
+            targetPkgs = p: [ p.coreutils p.bash ];
+            runScript = "bash";
+          };
           rules = ghc: pkgs.runCommandCC "rules-tests-${ghc}"
             {
               nativeBuildInputs = testTools pkgs;
@@ -39,7 +48,7 @@
             chmod -R u+w repo
             cd repo
             patchShebangs tests
-            tests/rules/run.sh ${pkgs.haskell.compiler.${ghc}}/bin $TMPDIR/work
+            ${fhs}/bin/rules-tests-fhs tests/rules/run.sh ${pkgs.haskell.compiler.${ghc}}/bin $TMPDIR/work
             touch $out
           '';
         in
