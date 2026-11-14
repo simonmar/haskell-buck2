@@ -34,6 +34,7 @@
 #         "hidden_modules": [str],            # libraries only: the modules the package doesn't expose (other-modules)
 #         "build_tools": [tool],              # the tools needed to build it
 #         "run_tools": [tool],                # the tools it needs on PATH when it runs (not for libraries)
+#         "template_haskell_depends": [dep],  # the libraries whose code its splices run, if known (see haskell_library's template_haskell_depends); otherwise all of its deps
 #         "c_sources": [str], "cc_options": [str],
 #         "cxx_sources": [str], "cxx_options": [str],
 #         "cmm_sources": [str],
@@ -545,6 +546,12 @@ def _haskell_kwargs(c, spec, helpers):
     run_tool_depends = _build_tool_depends(c.get("run_tools", []))
     if run_tool_depends:
         kwargs["run_tool_depends"] = run_tool_depends
+
+    # Cabal lets a component's splices run code from any of its
+    # build-depends. So without the spec's list, which may be empty, every
+    # dependency is listed.
+    th_deps = c["template_haskell_depends"] if "template_haskell_depends" in c else c.get("deps", [])
+    kwargs["template_haskell_depends"] = [_dep_label(d) for d in th_deps]
     if kind != "test-suite":
         kwargs["visibility"] = ["PUBLIC"]
     return kwargs

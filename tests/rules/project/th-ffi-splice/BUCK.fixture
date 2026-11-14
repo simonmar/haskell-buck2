@@ -11,6 +11,7 @@ haskell_library(
     },
     packages = ["base", "template-haskell"],
     deps = ["//ffi-import:ffi-import", "//ffi-import:ffi-wrap"],
+    template_haskell_depends = ["//ffi-import:ffi-import", "//ffi-import:ffi-wrap"],
     per_module = PER_MODULE,
     visibility = ["PUBLIC"],
 )

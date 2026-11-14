@@ -46,19 +46,21 @@ runs the tests both with and without the worker.
 
 Each check prints `PASS` or `FAIL` (with the missing and unexpected members
 of the set it compared) or `SKIP` (a check of what the platform doesn't
-have, or `check_cache` without `BAZEL_REMOTE`). A check of a known bug in
-the rules (marked with `known_failure` in harness.py) prints `XFAIL` when it
-fails, and `XPASS` when it passes, which means the bug is fixed and the mark
-should go. The script fails on any `FAIL` or `XPASS`. Some checks are of
-what per_module doesn't support, a splice that runs local code: they check
-that the compile fails, saying how to build the target instead, and that it
-compiles with `--make`.
+have, or `check_cache` without `BAZEL_REMOTE`). A check of a known bug in the rules (marked with
+`known_failure` in harness.py) prints `XFAIL` when it fails, and `XPASS`
+when it passes, which means the bug is fixed and the mark should go. The
+script fails on any `FAIL` or `XPASS`. Some checks are of what per_module
+doesn't support, a splice that runs its own target's code, or of a mistake
+in `template_haskell_depends`: they check that the compile fails, saying what to do
+instead.
 
 ## How it works
 
 - `gen_prebuilt.py` writes the `third-party-haskell` cell: a
   `haskell_prebuilt_library()` per package of GHC's that the fixtures use,
-  and the `tools.bzl` that the rest of the support code loads.
+  and the `tools.bzl` that the rest of the support code loads. The
+  packages' db is a copy of GHC's in which `text`'s id is written on the
+  line after `id:`, as `ghc-pkg` writes a long id.
 - `check.py` runs the checks in order, in one buck2 daemon (buck2 keeps dep
   files in the daemon's memory, so the early cut-off checks need it to
   live). `harness.py` has what they share.
@@ -82,8 +84,10 @@ compiles with `--make`.
 | `//lib:lib` | `A.Base`; `A.Mid`, which imports it; `A.Unused` |
 | `//lib-user:lib-user` | `B.M`, which imports `A.Mid` only; `B.Lit`, a literate source, whose instance `B.UsesLit` uses; `B.Safe`, a Safe module importing `A.Mid` |
 | `//th-gen:th-gen` | `TH.Gen.gen`, a `Q Exp` |
-| `//th-local-splice:th-local-splice` | a splice of `TH.Gen.gen`, from another local library, which isn't supported: its compile fails |
-| `//th-prebuilt-splice:th-prebuilt-splice` | a splice that runs only `template-haskell` |
+| `//th-local-splice:th-local-splice` | `template_haskell_depends = ["//th-gen:th-gen"]`: `C.Splice`, a splice of `gen`; `C.Plain`, a module without Template Haskell; `C.Ann`, an `ANN` pragma |
+| `//th-local-splice:show` | prints `C.Splice`'s value, which comes from `gen` |
+| `//data-dirs:data-dirs` | a splice that runs `//data-dirs:paths`'s code, which reads a data file through the variable that `data_dirs` sets |
+| `//th-prebuilt-splice:th-prebuilt-splice` | `template_haskell_depends = []`: a splice that runs only `template-haskell`; `th-prebuilt-unlisted` and `th-prebuilt-listed`, a splice that runs `text`'s code, without and with `text` in `template_haskell_depends` |
 | `//boot-cycle:boot-cycle` | two modules in an import cycle, through an hs-boot file |
 | `//boot-cycle-inline:boot-cycle-inline` | with -O, a module that needs the interface of a module in an import cycle that it reaches only through an unfolding |
 | `//ownboot:ownboot` | a module whose hs-boot file no import cycle needs |
@@ -92,7 +96,7 @@ compiles with `--make`.
 | `//main:main` | a binary depending on `lib-user`; `main-shared`, the same linked shared |
 | `//unrelated-failure:w` | imports a module of `//unrelated-failure:s`, whose other module doesn't compile |
 | `//reexport:reexport`, `//reexport-user:reexport-user` | `reexport` re-exports `A.Base`; `reexport-user` imports `A.Base` through it |
-| `//th-make-dep:th-make-dep`, `//th-make-dep:mkrun` | Template Haskell modules depending on `//make-lib:make-lib`, built with `--make`: `MK.Lit`'s splice runs only `template-haskell`, `MK.Run`'s runs `make-lib`'s code, which isn't supported: its compile fails |
+| `//th-make-dep:th-make-dep`, `//th-make-dep:mkrun`, `//th-make-dep:mkmiss` | Template Haskell modules depending on `//make-lib:make-lib`, built with `--make`: `MK.Lit`'s splice runs only `template-haskell`, and its `template_haskell_depends` leaves `make-lib` out; `MK.Run`'s runs `make-lib`'s code, which it lists; `MK.Miss`'s does too, without listing it, so its compile fails |
 | `//make-between:p`, `//make-between:m`, `//make-between:t` | `t`'s module imports `m`'s, built with `--make`, whose interface refers to `p`'s, compiled per-module |
 | `//flat-sources:flat-sources`, `//make-lib:make-lib` | `flat-sources`'s flat sources (`Lib.hs`), one of which imports `Q.Lib` from `make-lib` (built with `--make`), whose interface path ends in `/Lib.hi` |
 | `//module-move:hi`, `//module-move:lo`, `//module-move:main` | a module that moves from `hi` to `lo`, its dependency |
@@ -101,7 +105,8 @@ compiles with `--make`.
 | `//module-name-clash:user` | `X` uses `bar` through `second`'s `Re`, which re-exports it from `second`'s `Utils`; `first` and `user` have a module `Utils` too |
 | `//header:header` | a module that `#include`s a header in the target's `srcs` (`Hdr/value.h`) |
 | `//toolchain-th:toolchain-th` | a splice without a LANGUAGE pragma, for Template Haskell enabled by the toolchain's flags |
-| `//c-lib:c-lib`, `//ffi-import:ffi-import` | a C library, and a library that imports its function |
+| `//c-lib:c-lib`, `//ffi-import:ffi-import`, `//th-ffi-splice:th-ffi-splice` | a C library, a library that imports its function, and a splice that calls it; `//th-ffi-splice:show` prints the splice |
+| `//th-native-soname:show` | prints a splice that runs code calling a C library whose soname is `libver.so.1` |
 | `//th-internal-splice:th-internal-splice`, `//th-internal-splice:use` | a splice that runs a module of its own library, which isn't supported: its compile fails. With `--make` it compiles, and `use` prints the value it made |
 | `//test-suite:uses-tool`, `//test-suite:reads-data`, `//test-suite:manual` | `haskell_test`s: one that runs its build tool (`//test-suite:tool`), one that reads a data file through `data_dirs`, and one that fails, labelled `manual` |
 | `//test-suite:uses-run-tool`, `//test-suite:runs-tool`, `//test-suite:build-tool-only` | `uses-run-tool` (a test) and `runs-tool` (an executable) have `//test-suite:tool` as a run tool only, and `build-tool-only` has it as a build tool only |

@@ -23,6 +23,7 @@ haskell_library(
     srcs = {"V.S": "V/S.hs"},
     packages = ["base", "template-haskell"],
     deps = [":ffi-ver"],
+    template_haskell_depends = [":ffi-ver"],
     per_module = PER_MODULE,
 )
 

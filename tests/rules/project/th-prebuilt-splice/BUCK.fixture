@@ -1,12 +1,40 @@
 load("//buck2:haskell.bzl", "haskell_library")
 load("//compile:defs.bzl", "PER_MODULE")
 
-# Depends on th-gen, but its splice runs only template-haskell's code.
+# D.Splice's target depends on //th-gen:th-gen, but the splice runs only
+# template-haskell's code. template_haskell_depends = [] says so, so D.Splice
+# compiles against the early dbs of its local dependencies, without their
+# libraries.
 haskell_library(
     name = "th-prebuilt-splice",
     srcs = {"D.Splice": "D/Splice.hs"},
     packages = ["base", "template-haskell"],
     deps = ["//lib:lib", "//th-gen:th-gen"],
+    template_haskell_depends = [],
     per_module = PER_MODULE,
     visibility = ["PUBLIC"],
+)
+
+# D.Text's splice runs code of text, a prebuilt package outside
+# template-haskell's closure. It isn't one of the packages that GHC's external
+# interpreter is itself linked with either, which a splice can always run.
+# th-prebuilt-unlisted leaves text out of template_haskell_depends, so the
+# splice can't load its library and the compile fails. th-prebuilt-listed lists
+# it, so the compile succeeds. th-prebuilt-listed also depends on process,
+# which it doesn't list, so its compile gets a copy of the prebuilt db in
+# which only some packages name their libraries.
+haskell_library(
+    name = "th-prebuilt-unlisted",
+    srcs = {"D.Text": "D/Text.hs"},
+    packages = ["base", "template-haskell", "text"],
+    template_haskell_depends = [],
+    per_module = True,
+)
+
+haskell_library(
+    name = "th-prebuilt-listed",
+    srcs = {"D.Text": "D/Text.hs"},
+    packages = ["base", "process", "template-haskell", "text"],
+    template_haskell_depends = ["@third-party-haskell//:text"],
+    per_module = True,
 )

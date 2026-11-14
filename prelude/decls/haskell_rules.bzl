@@ -64,6 +64,7 @@ haskell_binary = prelude_rule(
             "per_module": attrs.bool(default = False),
             "_per_module_compile": attrs.default_only(attrs.exec_dep(providers = [RunInfo], default = "prelude//haskell/tools:per_module_compile")),
             "_per_module_deps": attrs.default_only(attrs.exec_dep(providers = [RunInfo], default = "prelude//haskell/tools:per_module_deps")),
+            "template_haskell_depends": attrs.list(attrs.dep(), default = []),  # see haskell_library's template_haskell_depends
             "linker_flags": attrs.list(attrs.arg(), default = []),
             "platform": attrs.option(attrs.string(), default = None),
         }
@@ -196,6 +197,19 @@ haskell_library = prelude_rule(
             # Tools for per-module compilation
             "_per_module_compile": attrs.default_only(attrs.exec_dep(providers = [RunInfo], default = "prelude//haskell/tools:per_module_compile")),
             "_per_module_deps": attrs.default_only(attrs.exec_dep(providers = [RunInfo], default = "prelude//haskell/tools:per_module_deps")),
+            # With per_module, the dependencies whose code the target's
+            # Template Haskell splices and ANN pragmas run: local ones
+            # (compiled per-module or built with --make) and prebuilt ones.
+            # Listing a dependency makes its library, and those of its own
+            # dependencies, available to the splices. template-haskell's
+            # are always available, and so are those of the packages that
+            # GHC's external interpreter is itself linked with (base,
+            # containers, bytestring and other packages that come with
+            # GHC). The Template Haskell modules then wait
+            # only for these libraries, and GHC's interpreter loads only
+            # these. With the default, empty list, splices can run no
+            # dependency's code.
+            "template_haskell_depends": attrs.list(attrs.dep(), default = []),
             # Libraries that are part of this one, as the C of a Cabal package
             # is part of its library: their objects are in its archive, and
             # linked into its shared library, and what depends on it isn't

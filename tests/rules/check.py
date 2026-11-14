@@ -58,12 +58,19 @@ from per_module import (
     check_early_db_conf,
     check_interfaces_subtarget,
     check_main_file,
+    check_local_splices_in_modes,
     check_module_name_clash,
+    check_native_libraries_in_conf,
+    check_native_library_change_recompiles,
     check_opt_shared_consumer,
     check_opt_static,
     check_own_boot,
     check_plain_module_uses_early_dbs,
+    check_th_body_change_recompiles,
+    check_template_haskell_depends_not_a_dependency,
     check_th_modules_dbs,
+    check_unlisted_prebuilt_dependency_fails,
+    check_unlisted_th_dependency_fails,
     check_unrelated_modules,
     check_workers,
 )
@@ -73,11 +80,15 @@ CHECKS = [
     check_workers,
     check_make_build,
     check_early_db_conf,
+    check_native_libraries_in_conf,
     check_cross_package_dep_file,
     check_module_name_clash,
     check_plain_module_uses_early_dbs,
     check_binary_unit,
     check_th_modules_dbs,
+    check_unlisted_th_dependency_fails,
+    check_template_haskell_depends_not_a_dependency,
+    check_unlisted_prebuilt_dependency_fails,
     check_local_splices,
     check_th_boot_cycles,
     check_own_boot,
@@ -90,10 +101,13 @@ CHECKS = [
     check_interfaces_subtarget,
     check_cutoff_abi_base,
     check_cutoff_abi_mid,
+    check_th_body_change_recompiles,
+    check_native_library_change_recompiles,
     check_cutoff_instances,
     check_unrelated_modules,
     check_opt_static,
     check_th_modes,
+    check_local_splices_in_modes,
     check_opt_shared_consumer,
     check_module_moved,
     check_header_change,
@@ -118,12 +132,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", action="append", help="run only this check (by name, without check_); repeatable")
     ap.add_argument("--bazel-remote", help="a bazel-remote binary, for check_cache")
+    ap.add_argument("--ghc-version", required=True)
     ap.add_argument("--worker", action="store_true", help="the project compiles in a persistent worker")
     args = ap.parse_args()
     unknown = set(args.only or []) - {check.__name__[len("check_"):] for check in CHECKS}
     if unknown:
         ap.error("no such check: " + " ".join(sorted(unknown)))
-    st = State(bazel_remote=args.bazel_remote, worker=args.worker)
+    major, minor = (int(x) for x in args.ghc_version.split(".")[:2])
+    st = State(bazel_remote=args.bazel_remote, eli=(major, minor) >= (9, 14), worker=args.worker)
     failed = []
     for check in CHECKS:
         name = check.__name__[len("check_"):]

@@ -6,4 +6,4 @@
 module Contract (contract) where
 
 contract :: String
-contract = "1"
+contract = "2"

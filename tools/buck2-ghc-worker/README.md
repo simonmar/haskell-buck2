@@ -89,6 +89,19 @@ time of its mutator and of its collections when it ends.
 
 ## Known issues
 
+The rules run splices in an external interpreter
+(`-fexternal-interpreter`), one for each session, so that the libraries
+that the splices load stay out of the worker's process (see Note [Template
+Haskell modules] in `compile_per_module.bzl`). The splices of one session
+still share a library's global state, as they would in a `--make` compile.
+Before GHC 9.12, GHC doesn't lock the interpreter, so the compiles of a
+session that run splices take turns. A target's Template Haskell modules
+then compile one at a time in the worker.
+
+The worker keeps what it reads for as long as it runs. That is only safe
+because buck2 starts a new worker for each command, which the rules' tests
+check.
+
 A few of GHC's flags set state for the whole process, not just for one
 compile. Note [Flags of the whole process] in `src/Session.hs` lists them.
 The worker refuses a target whose flags include one of them, so such a

@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 
-MAIN_TARGETS = ["//lib:lib", "//lib-user:lib-user", "//th-gen:th-gen", "//th-prebuilt-splice:th-prebuilt-splice", "//th-make-dep:th-make-dep", "//ffi-import:ffi-import", "//make-between:t", "//boot-cycle:boot-cycle", "//main:main", "//reexport:reexport", "//reexport-user:reexport-user", "//flat-sources:flat-sources"]
+MAIN_TARGETS = ["//lib:lib", "//lib-user:lib-user", "//th-gen:th-gen", "//th-local-splice:th-local-splice", "//th-local-splice:show", "//th-prebuilt-splice:th-prebuilt-splice", "//th-make-dep:th-make-dep", "//th-make-dep:mkrun", "//ffi-import:ffi-import", "//make-between:t", "//boot-cycle:boot-cycle", "//main:main", "//reexport:reexport", "//reexport-user:reexport-user", "//flat-sources:flat-sources"]
 
 LOG_DIR = "buck-logs"
 
@@ -26,6 +26,7 @@ class CheckFailed(Exception):
 
 class Skipped(Exception):
     """Raised by a check of what this platform doesn't have."""
+
 
 
 # --- Running buck2 ---------------------------------------------------------
@@ -107,6 +108,12 @@ def what_ran(entries=None):
     return actions
 
 
+def module_of(entry):
+    """The module of a what-ran entry, as "target-name:Module"."""
+    m = IDENTITY.match(entry["identity"])
+    return target_name(m.group(1)) + ":" + m.group(3)
+
+
 def compiled_modules(actions):
     """The per-module compiles that ran, as "target-name:Module"."""
     return {target_name(t) + ":" + i for t, c, i, _ in actions if c.startswith("haskell_compile_module_")}
@@ -180,6 +187,9 @@ SHORT_NAMES = [
     (OWN + r"hi-[^/]+$", lambda m: m[1] + ":hi"),
     (OWN + r"lib-[^/]+/.*$", lambda m: m[1] + ":lib"),
     (r"third-party/haskell/ghc-[^/]+(/package\.conf\.d)?$", lambda m: "ghc:global"),
+    # A copy of the prebuilt db in which only some packages name their
+    # libraries, for a Template Haskell module.
+    (r"buck-out/v2/art/root/(?:[^ ]*/)?__([^/]+)__/[0-9a-f]+/per-module-[^/]+/th-db-[0-9]+$", lambda m: m[1] + ":th-db"),
 ]
 
 
@@ -255,8 +265,9 @@ def write(path, text):
 # --- What the checks share -------------------------------------------------------
 
 class State:
-    def __init__(self, bazel_remote=None, worker=False):
+    def __init__(self, bazel_remote=None, eli=False, worker=False):
         self.bazel_remote = bazel_remote
+        self.eli = eli
         self.worker = worker
         self.targets = MAIN_TARGETS
         self.entries = None

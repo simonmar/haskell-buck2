@@ -87,6 +87,7 @@ def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_v
                 # libs of dependencies might be needed at compile time if
                 # we're using Template Haskell:
                 lib.libs,
+                lib.native_libs_dir if lib.native_libs_dir != None else [],
             ]
         )
 
