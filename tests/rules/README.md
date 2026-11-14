@@ -46,7 +46,8 @@ runs the tests both with and without the worker.
 
 Each check prints `PASS` or `FAIL` (with the missing and unexpected members
 of the set it compared) or `SKIP` (a check of what the platform doesn't
-have, or `check_cache` without `BAZEL_REMOTE`). A check of a known bug in the rules (marked with
+have, `check_cache` without `BAZEL_REMOTE`, or the explicit level imports
+check before GHC 9.14). A check of a known bug in the rules (marked with
 `known_failure` in harness.py) prints `XFAIL` when it fails, and `XPASS`
 when it passes, which means the bug is fixed and the mark should go. The
 script fails on any `FAIL` or `XPASS`. Some checks are of what per_module
@@ -88,6 +89,9 @@ instead.
 | `//th-local-splice:show` | prints `C.Splice`'s value, which comes from `gen` |
 | `//data-dirs:data-dirs` | a splice that runs `//data-dirs:paths`'s code, which reads a data file through the variable that `data_dirs` sets |
 | `//th-prebuilt-splice:th-prebuilt-splice` | `template_haskell_depends = []`: a splice that runs only `template-haskell`; `th-prebuilt-unlisted` and `th-prebuilt-listed`, a splice that runs `text`'s code, without and with `text` in `template_haskell_depends` |
+| `//eli:eli`, `//eli:eli-unlisted` | GHC 9.14: `import splice TH.Gen`, and `import splice Language.Haskell.TH`, in a target that lists `th-gen` in `template_haskell_depends`, and `import splice TH.Gen` in one that doesn't |
+| `//eli-reexport:eli-reexport` | GHC 9.14: `import splice A.Base`, which `//reexport:reexport` re-exports |
+| `//eli-persist:eli-persist` | GHC 9.14: a splice that runs `TH.Gen`, imported without `splice`, in a module with `ExplicitLevelImports` and then `ImplicitStagePersistence` |
 | `//boot-cycle:boot-cycle` | two modules in an import cycle, through an hs-boot file |
 | `//boot-cycle-inline:boot-cycle-inline` | with -O, a module that needs the interface of a module in an import cycle that it reaches only through an unfolding |
 | `//ownboot:ownboot` | a module whose hs-boot file no import cycle needs |

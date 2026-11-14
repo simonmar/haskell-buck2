@@ -1,0 +1,31 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# Modules with explicit level imports, which need GHC 9.14 or later. A module's
+# `import splice` lines narrow the libraries that template_haskell_depends
+# lists to those its own splices run. E.Gen's splice runs TH.Gen, of a library
+# compiled per-module, E.Mk's runs Q.Lib, of a library built with --make, and
+# E.Lib's runs only template-haskell's code.
+haskell_library(
+    name = "eli",
+    srcs = {
+        "E.Gen": "E/Gen.hs",
+        "E.Lib": "E/Lib.hs",
+        "E.Mk": "E/Mk.hs",
+    },
+    packages = ["base", "template-haskell"],
+    deps = ["//lib:lib", "//make-lib:make-lib", "//th-gen:th-gen"],
+    template_haskell_depends = ["//make-lib:make-lib", "//th-gen:th-gen"],
+    per_module = True,
+    visibility = ["PUBLIC"],
+)
+
+# E.Gen imports TH.Gen at the splice level, but this target doesn't list
+# th-gen in template_haskell_depends, so the build fails.
+haskell_library(
+    name = "eli-unlisted",
+    srcs = {"E.Gen": "E/Gen.hs"},
+    packages = ["base", "template-haskell"],
+    deps = ["//lib:lib", "//th-gen:th-gen"],
+    template_haskell_depends = [],
+    per_module = True,
+)

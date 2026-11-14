@@ -28,11 +28,13 @@ from harness import (
 def check_make_build(st):
     """The fixtures build with --make too. Each fixture that sets PER_MODULE
     is compiled by one --make action, and the others as they always are:
-    make-between's p and t per-module, make-lib and m with --make."""
+    make-between's p and t and the explicit level imports fixtures
+    per-module, make-lib and m with --make."""
     build(*[configured(t, "make") for t in st.targets])
     expect_set("compiles of the fixtures with --make", compiled(what_ran()),
                {"lib", "lib-user", "th-gen", "th-local-splice", "show", "th-prebuilt-splice", "th-make-dep", "mkrun",
-                "ffi-import", "boot-cycle", "main", "reexport", "reexport-user", "flat-sources", "make-lib", "m", "p:Chain.P", "t:Chain.T"})
+                "ffi-import", "boot-cycle", "main", "reexport", "reexport-user", "flat-sources", "make-lib", "m", "p:Chain.P", "t:Chain.T"}
+               | ({"eli:E.Gen", "eli:E.Lib", "eli:E.Mk", "eli-reexport:ER.M", "eli-persist:P.Persist"} if st.eli else set()))
 
 
 # How the checks of splices that run their own target's code compile their
