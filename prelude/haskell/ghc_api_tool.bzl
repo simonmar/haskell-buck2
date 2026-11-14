@@ -8,8 +8,8 @@ load("@prelude//haskell:toolchain.bzl", "HaskellToolchainInfo")
 # be a cyclic dependency, hence this rather horrible hand-crafted
 # rule.
 #
-# The program is passed GHC's libdir at compile time via the CPP macro
-# GHC_LIBDIR.
+# The rules pass the program GHC's libdir when they run it (see Libdir in
+# tools/ghc-api).
 
 def _haskell_ghc_api_tool_impl(ctx: AnalysisContext) -> list[Provider]:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
@@ -21,20 +21,13 @@ def _haskell_ghc_api_tool_impl(ctx: AnalysisContext) -> list[Provider]:
         return cmd_args("sh", "-c", env_script + 'exec "$@"', "sh", cmd) if env_script else cmd
     srcs = ctx.actions.symlinked_dir("srcs", {src.basename: src for src in ctx.attrs.srcs}, has_content_based_path = False)
 
-    libdir = ctx.actions.declare_output("libdir")
-    ctx.actions.run(
-        in_compile_env(cmd_args("sh", "-c", 'out="$1"; shift; "$@" --print-libdir > "$out"', "sh", libdir.as_output(), haskell_toolchain.compiler)),
-        category = "haskell_ghc_api_tool_libdir",
-    )
-
     exe = ctx.actions.declare_output(ctx.attrs.name)
     ctx.actions.run(
         in_compile_env(cmd_args(
             "sh",
             "-c",
-            'libdir=$(cat "$1"); shift; exec "$@" -outputdir "$BUCK_SCRATCH_PATH" "-DGHC_LIBDIR=\\"$libdir\\""',
+            'exec "$@" -outputdir "$BUCK_SCRATCH_PATH"',
             "sh",
-            libdir,
             haskell_toolchain.compiler,
             "-v0",
             "-O",
