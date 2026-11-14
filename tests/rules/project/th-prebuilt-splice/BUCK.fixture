@@ -38,3 +38,15 @@ haskell_library(
     template_haskell_depends = ["@third-party-haskell//:text"],
     per_module = True,
 )
+
+# D.UseOwn's splice runs D.Own, a module of its own target, whose code calls
+# text. GHC loads the target's own modules as a library of its own, so the
+# missing code shows up as that library's undefined symbol, and the error
+# still names text.
+haskell_library(
+    name = "th-prebuilt-own-unlisted",
+    srcs = {"D.Own": "D/Own.hs", "D.UseOwn": "D/UseOwn.hs"},
+    packages = ["base", "template-haskell", "text"],
+    template_haskell_depends = [],
+    per_module = True,
+)

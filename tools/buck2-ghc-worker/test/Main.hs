@@ -134,8 +134,9 @@ idleDrop w ghc = do
   stopped <- poll 300 (null <$> interpreters dir)
   assertBool "a dropped session's external interpreter has stopped" stopped
   -- -DAFTER_THE_DROP gives this request flags of its own, so it gets a new
-  -- session.
-  writeFile (dir </> "src/T/Q.hs") "{-# LANGUAGE TemplateHaskell #-}\nmodule T.Q where\nimport Language.Haskell.TH.Syntax (lift)\nq :: Int\nq = $(lift (4 :: Int))\n"
+  -- session. Its splice loads an object that none of the dropped sessions
+  -- loaded (T.H's), which the worker must not mistake for one of theirs.
+  writeFile (dir </> "src/T/Q.hs") "{-# LANGUAGE TemplateHaskell #-}\nmodule T.Q where\nimport T.H (h)\nimport Language.Haskell.TH.Syntax (lift)\nq :: Int\nq = $(lift h)\n"
   (qCode, qErr) <- sendOwn w (req "T.Q" "T/Q"){extraFlags = ["-dynamic", "-package", "template-haskell", "-DAFTER_THE_DROP"]}
   assertBool ("a splice compiles in a session made after others that ran splices were dropped: " ++ qErr) (qCode == 0)
 
@@ -247,6 +248,7 @@ data Req = Req
   , reqContract :: String
   , extraFlags :: [String]
   , compiler :: Maybe String -- a GHC to name instead of the test's
+  , links :: [String] -- the modules with boot files that its splices may link, as the rules name them
   }
 
 -- | The arguments of a request for a module of the package in the given
@@ -258,7 +260,7 @@ argv pkg ghc r =
   [ "--request", "--contract", reqContract r
   , "--depfile", pkg </> "dep" </> node r <.> "dep", "--abi", abi, "--module", modPath r, "--source", src
   , "--outdir", out, "--hisuf", "hi"
-  ] ++ ["--boot" | boot r]
+  ] ++ ["--boot" | boot r] ++ ["--link=" ++ m | m <- links r]
   ++ ["--srcroot=" ++ pkg </> "src", "--mkdir=" ++ pkg </> "stubs" </> node r]
   ++ ["--", fromMaybe ghc (compiler r), "-hide-all-packages", "-package", "base", "-package-db", pkg </> "db", "-package", "p"] ++ extraFlags r
   ++ ["--", "-c", src, "-o", o, "-ohi", hi, "-stubdir", pkg </> "stubs" </> node r, "-i" ++ out]
@@ -271,7 +273,7 @@ argv pkg ghc r =
     abi = out </> modPath r <.> ("abi" ++ suffix)
 
 req :: String -> String -> Req
-req n m = Req n m False contract [] Nothing
+req n m = Req n m False contract [] Nothing []
 
 -- | Make a package (see makePackage) in a new temporary directory, named
 -- after the given string, and return the directory.
@@ -418,18 +420,16 @@ scenarios send dir ghc = do
   compiled (req "T.B" "T/B"){extraFlags = ["-DOTHER_FLAGS"]}
   lists (req "T.B" "T/B") ["out/T/C.abi", "out/T/D.abi"]
 
-  -- A splice may not run code of its own target's modules (see Note
-  -- [Template Haskell modules] in compile_per_module.bzl). T.H's splice
-  -- runs T.G. T.H is compiled in a different session from T.G, so GHC
-  -- loads T.G's object from the output directory, and the splice would
-  -- work. The worker must still fail the compile, with a message that
-  -- explains the restriction.
+  -- T.H's splice runs T.G, a module of the same target. T.H compiles in a
+  -- session of its own, so GHC loads T.G's object, which the session read
+  -- from disk, and T.H's dep file lists that object. (GHC is dynamically
+  -- linked, so it loads dynamic objects.)
   let th = ["-dynamic", "-package", "template-haskell"]
   writeFile (dir </> "src/T/G.hs") "{-# LANGUAGE TemplateHaskellQuotes #-}\nmodule T.G (g) where\nimport Language.Haskell.TH (Exp, Q)\ng :: Q Exp\ng = [| 3 :: Int |]\n"
   writeFile (dir </> "src/T/H.hs") "{-# LANGUAGE TemplateHaskell #-}\nmodule T.H (h) where\nimport T.G (g)\nh :: Int\nh = $(g)\n"
   compiled (req "T.G" "T/G"){extraFlags = th}
-  (hCode, hErr) <- send (req "T.H" "T/H"){extraFlags = th ++ ["-DOTHER_FLAGS"]}
-  assertBool ("T.H, whose splice runs T.G, fails to compile, saying so: " ++ hErr) (hCode /= 0 && "this target's own modules" `isInfixOf` hErr)
+  compiled (req "T.H" "T/H"){extraFlags = th ++ ["-DOTHER_FLAGS"]}
+  lists (req "T.H" "T/H") ["out/T/G.abi", "out/T/G.o"]
   -- The target has its own module named Data.Bool, which is never
   -- compiled. T.I imports Data.Bool qualified with "base", and must get
   -- base's module, not the target's.
@@ -487,8 +487,9 @@ scenarios send dir ghc = do
 
 -- | A target with an import cycle through a boot file (see cyclePackage)
 -- compiles in the order buck2 would send it. The dep files of the modules
--- that read the boot file list its ABI file (T/C.abi-boot). The target
--- compiles again after an edit to the boot file.
+-- that read the boot file list its ABI file (T/C.abi-boot). Then a splice
+-- runs a module of the cycle. Finally, the target compiles again after an
+-- edit to the boot file.
 cycles :: TestWorker -> String -> IO ()
 cycles w ghc = do
   pkg <- cyclePackage w ghc
@@ -502,6 +503,26 @@ cycles w ghc = do
   lists (req "T.D" "T/D") ["out/T/C.abi-boot"]
   lists (req "T.C" "T/C") ["out/T/D.abi", "out/T/C.abi-boot"]
   lists (req "T.B" "T/B") ["out/T/C.abi", "out/T/D.abi"]
+
+  -- A splice that runs a module of a boot cycle, in a session that didn't
+  -- compile the cycle. T.D imports T.C {-# SOURCE #-}, so linking T.D needs
+  -- T.C's object, and the session must have read T.C whole, not just its
+  -- boot interface. We compile the cycle with -dynamic first, so that the
+  -- splice can load it.
+  --
+  -- This doesn't work before GHC 9.12, whose linker leaves T.C out, in the
+  -- worker's sessions as with `ghc -c` (see the README's known issues).
+  -- FIXME: GHC's own --make mode does link T.C, and we don't yet understand
+  -- how.
+#if MIN_VERSION_GLASGOW_HASKELL(9,12,0,0)
+  let th = ["-dynamic", "-package", "template-haskell"]
+  compiled (req "T.C-boot" "T/C"){boot = True, extraFlags = th}
+  compiled (req "T.D" "T/D"){extraFlags = th}
+  compiled (req "T.C" "T/C"){extraFlags = th}
+  writeFile (dir </> "src/T/N.hs") "{-# LANGUAGE TemplateHaskell #-}\nmodule T.N where\nimport T.D (D (..), dSize)\nimport Language.Haskell.TH.Syntax (lift)\nn :: Int\nn = $(lift (dSize (D [])))\n"
+  compiled (req "T.N" "T/N"){extraFlags = th ++ ["-DLINKING_A_CYCLE"], links = ["T.C"]}
+  lists (req "T.N" "T/N") ["out/T/D.o", "out/T/C.o"]
+#endif
 
   -- Edit the boot file, then compile it and every module that reads it,
   -- in order.
@@ -544,9 +565,12 @@ autoModes w ghc = do
 firstSplices :: Send -> FilePath -> IO ()
 firstSplices send dir = do
   let th = ["-dynamic", "-package", "template-haskell"]
+  writeFile (dir </> "src/T/G.hs") "{-# LANGUAGE TemplateHaskellQuotes #-}\nmodule T.G (g) where\nimport Language.Haskell.TH (Exp, Q)\ng :: Q Exp\ng = [| 3 :: Int |]\n"
+  (gCode, gErr) <- send (req "T.G" "T/G"){extraFlags = th}
+  assertBool ("T.G compiles: " ++ gErr) (gCode == 0)
   results <- forM [("T.K", "T.L", "-DSPLICE_ONE"), ("T.L", "T.K", "-DSPLICE_TWO")] $ \(m, other, flag) -> do
     let path = map (\c -> if c == '.' then '/' else c) m
-    writeFile (dir </> "src" </> path <.> "hs") ("{-# LANGUAGE TemplateHaskell #-}\nmodule " ++ m ++ " where\nimport Control.Concurrent (threadDelay)\nimport Language.Haskell.TH (integerL, litE, runIO)\nimport System.Directory (doesFileExist)\nk :: Int\nk = $(runIO (writeFile " ++ show (m ++ "-started") ++ " \"\" >> let go = doesFileExist " ++ show (other ++ "-started") ++ " >>= \\ok -> if ok then pure () else threadDelay 10000 >> go in go) >> litE (integerL 3))\n")
+    writeFile (dir </> "src" </> path <.> "hs") ("{-# LANGUAGE TemplateHaskell #-}\nmodule " ++ m ++ " where\nimport Control.Concurrent (threadDelay)\nimport Language.Haskell.TH.Syntax (runIO)\nimport System.Directory (doesFileExist)\nimport T.G (g)\nk :: Int\nk = $(runIO (writeFile " ++ show (m ++ "-started") ++ " \"\" >> let go = doesFileExist " ++ show (other ++ "-started") ++ " >>= \\ok -> if ok then pure () else threadDelay 10000 >> go in go) >> g)\n")
     v <- newEmptyMVar
     _ <- forkIO ((send (req m path){extraFlags = th ++ ["-package", "directory", flag]} >>= putMVar v) `finally` tryPutMVar v (1, "the compile failed"))
     pure (m, v)
@@ -821,12 +845,13 @@ orphan when' dir worker ghc = do
   assertBool "the worker opened a socket" opened
   let th = ["-dynamic", "-package", "template-haskell"]
   when (when' /= Idle) $ do
-    writeFile (dir </> "src/T/H.hs") "{-# LANGUAGE TemplateHaskell #-}\nmodule T.H (h) where\nimport Language.Haskell.TH (integerL, litE)\nh :: Int\nh = $(litE (integerL 3))\n"
-    forM_ [(req "T.H" "T/H"){extraFlags = th ++ ["-DSPLICING"]}] $ \r -> do
+    writeFile (dir </> "src/T/G.hs") "{-# LANGUAGE TemplateHaskellQuotes #-}\nmodule T.G (g) where\nimport Language.Haskell.TH (Exp, Q)\ng :: Q Exp\ng = [| 3 :: Int |]\n"
+    writeFile (dir </> "src/T/H.hs") "{-# LANGUAGE TemplateHaskell #-}\nmodule T.H (h) where\nimport T.G (g)\nh :: Int\nh = $(g)\n"
+    forM_ [(req "T.G" "T/G"){extraFlags = th}, (req "T.H" "T/H"){extraFlags = th ++ ["-DSPLICING"]}] $ \r -> do
       (code, err) <- grpc sock (argv "" ghc r)
       assertBool ("before its parent goes, " ++ node r ++ " compiles: " ++ err) (code == 0)
   when (when' == DuringASplice) $ do
-    writeFile (dir </> "src/T/Z.hs") "{-# LANGUAGE TemplateHaskell #-}\nmodule T.Z where\nimport Control.Concurrent (threadDelay)\nimport Control.Monad (forever)\nimport Language.Haskell.TH.Syntax (lift, runIO)\nz :: Int\nz = $(runIO (writeFile \"z-started\" \"\" >> forever (threadDelay 100000)) >> lift (1 :: Int))\n"
+    writeFile (dir </> "src/T/Z.hs") "{-# LANGUAGE TemplateHaskell #-}\nmodule T.Z where\nimport Control.Concurrent (threadDelay)\nimport Control.Monad (forever)\nimport Language.Haskell.TH.Syntax (lift, runIO)\nimport T.H (h)\nz :: Int\nz = $(runIO (writeFile \"z-started\" \"\" >> forever (threadDelay 100000)) >> lift h)\n"
     void . forkIO . void $ grpc sock (argv "" ghc (req "T.Z" "T/Z"){extraFlags = th ++ ["-DNEVER_DONE"]}) `catch` \(_ :: SomeException) -> pure (0, "")
     started <- poll 300 (doesFileExist (dir </> "z-started"))
     assertBool "the compile that never ends starts" started

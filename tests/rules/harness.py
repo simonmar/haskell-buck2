@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 
-MAIN_TARGETS = ["//lib:lib", "//lib-user:lib-user", "//th-gen:th-gen", "//th-local-splice:th-local-splice", "//th-local-splice:show", "//th-prebuilt-splice:th-prebuilt-splice", "//th-make-dep:th-make-dep", "//th-make-dep:mkrun", "//ffi-import:ffi-import", "//make-between:t", "//boot-cycle:boot-cycle", "//main:main", "//reexport:reexport", "//reexport-user:reexport-user", "//flat-sources:flat-sources"]
+MAIN_TARGETS = ["//lib:lib", "//lib-user:lib-user", "//th-gen:th-gen", "//th-local-splice:th-local-splice", "//th-local-splice:show", "//th-prebuilt-splice:th-prebuilt-splice", "//th-make-dep:th-make-dep", "//th-make-dep:mkrun", "//ffi-import:ffi-import", "//make-between:t", "//boot-cycle:boot-cycle", "//main:main", "//reexport:reexport", "//reexport-user:reexport-user", "//th-boot-cycles:th-boot-cycles", "//flat-sources:flat-sources"]
 
 LOG_DIR = "buck-logs"
 
@@ -206,16 +206,22 @@ def short(path):
 
 def parse_compile(cmd):
     """The parts of a per-module compile's request that the rules decide,
-    such as the package dbs and the interface directories. The request is
-    the same whether it goes to the worker or to the compile tool."""
+    such as the package dbs, the interface directories, and the modules that
+    a splice may link past their boot files. The request is the same whether
+    it goes to the worker or to the compile tool."""
     args = cmd[cmd.index("--request"):]
     sep = args.index("--")
     script, rest = args[:sep], args[sep + 1:]
     session = rest[:rest.index("--")]
-    hidirs = {short(a[len("--hidir="):].split("=", 1)[1]) for a in script if a.startswith("--hidir=")}
+    hidirs, links = set(), set()
+    for a in script:
+        if a.startswith("--hidir="):
+            hidirs.add(short(a[len("--hidir="):].split("=", 1)[1]))
+        elif a.startswith("--link="):
+            links.add(a[len("--link="):])
     dbs = {short(session[n + 1]) for n, a in enumerate(session) if a == "-package-db"}
     units = [session[n + 1] for n, a in enumerate(session) if a == "-this-unit-id"]
-    return {"dbs": dbs, "hidirs": hidirs, "unit": units[-1] if units else None}
+    return {"dbs": dbs, "hidirs": hidirs, "links": links, "unit": units[-1] if units else None}
 
 
 def find_compile(actions, target, module):

@@ -314,6 +314,30 @@ def _transitive_closure(order: list[str], imports: dict) -> dict:
         closure[n] = list(c)
     return closure
 
+# The closure of a module that runs Template Haskell, plus the whole
+# modules behind the boot files in it, their closures, and so on. A splice
+# may link those modules: see Note [Template Haskell modules].
+def _linked_closure(node: str, closure: dict) -> list[str]:
+    linked = {d: True for d in closure[node]}
+    todo = [d for d in closure[node] if _is_boot(d)]
+
+    # Starlark has no while loop. Each round takes one boot file off, and
+    # there are no more boot files than nodes.
+    for _ in range(len(closure) + 1):
+        if not todo:
+            break
+        whole = todo.pop()[:-len(_BOOT)]
+
+        # We can't wait for a module that imports this one. GHC couldn't
+        # link it for this module's splices either.
+        if whole == node or whole in linked or node in closure[whole]:
+            continue
+        for d in [whole] + closure[whole]:
+            if d not in linked and d != node:
+                linked[d] = True
+                if _is_boot(d):
+                    todo.append(d)
+    return list(linked)
 # Sort the nodes into dependency order, so that each node comes after the
 # nodes it imports. It returns the sorted nodes, and the nodes that couldn't
 # be sorted because they are in an import cycle or import something that
@@ -442,6 +466,60 @@ def _declare_module_outputs(ctx: AnalysisContext, out_dir: str, nodes: list, osu
         dyn_hi = {n: declare(n, "dyn_hi") for n, _ in nodes} if dynamic_too else {},
     )
 
+# Work out the order in which to register the nodes' compile actions, and
+# return it together with `reads`, after breaking any cycle in `reads`. An
+# action can only take as inputs the outputs of actions that are already
+# registered, so each node has to come after the nodes whose outputs its
+# compile reads.
+#
+# The imports themselves have no cycle, because GHC's dependency analysis
+# and _dependency_order check that. So a cycle here is made of modules that
+# run Template Haskell, each waiting for another whole module that its
+# splice may link. We break the cycle at the first such module by name.
+# That module stops waiting for the modules that aren't ordered yet, apart
+# from those in its closure, so its splices can't link them. `ghc --make`
+# couldn't link them either, because it too has to compile one module of
+# the cycle first. The module only fails to compile if a splice actually
+# runs their code.
+#
+# A module that is only behind a cycle, rather than on one, keeps its waits.
+def _registration_order(label, nodes: list, imports: dict, closure: dict, reads: dict) -> (list[str], dict):
+    reads = dict(reads)
+
+    # Each round breaks one module's waits, so there are no more rounds
+    # than nodes.
+    for _ in range(len(nodes) + 1):
+        waits = {n: imports[n] + [d for d in reads[n] if d not in imports[n]] for n, _ in nodes}
+        order, left = _dependency_order(nodes, waits)
+        if not left:
+            return order, reads
+        on_cycle = [n for n in sorted(left) if _reaches([d for d in reads[n] if d in left and d not in closure[n]], n, waits, left)]
+        if not on_cycle:
+            break
+        n = on_cycle[0]
+        reads[n] = [d for d in reads[n] if d in closure[n] or d not in left]
+    fail("{}: import cycle among {}".format(label, ", ".join(left)))
+
+# Whether `target` can be reached from any of `starts` by following
+# `edges`, passing only through nodes in `within`.
+def _reaches(starts: list[str], target: str, edges: dict, within: list[str]) -> bool:
+    allowed = {n: True for n in within}
+    seen = {}
+    todo = list(starts)
+    for _ in range(len(allowed) + 1):
+        if not todo:
+            break
+        frontier = []
+        for n in todo:
+            if n == target:
+                return True
+            if n in seen or n not in allowed:
+                continue
+            seen[n] = True
+            frontier += edges[n]
+        todo = frontier
+    return False
+
 # The persistent worker that compiles the target's modules: the toolchain's
 # shared worker (see Note [The persistent worker]). The result is None if
 # there is no worker, or if the target has a build tool that isn't on the
@@ -460,7 +538,7 @@ def _per_module_worker(ctx: AnalysisContext) -> WorkerInfo | None:
 # of the rules reports the mismatch rather than misreading the request. When
 # either the request or the worker's outputs change, bump this and the
 # version in tools/ghc-api/Contract.hs.
-_WORKER_CONTRACT = "2"
+_WORKER_CONTRACT = "3"
 
 # The dynamic output of a per-module compile. It runs once the deps tool has
 # written the module graph. It registers a compile action for each node,
@@ -525,13 +603,19 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         upstream_closure_sets[n] = actions.tset(_ModuleClosureTSet, children = [upstream_closure_sets[i] for i in imports[n]] + ups)
         closure_sets[n] = actions.tset(_ModuleClosureTSet, value = modules[n], children = [closure_sets[i] for i in imports[n]] + ups)
 
+    # What each node's compile reads: its closure, and for a module that
+    # runs Template Haskell, also the whole modules behind the boot files
+    # in it (see _linked_closure). The actions are registered in an order
+    # that follows this (see _registration_order).
     runs_th = {n: n in th_nodes for n, _ in nodes}
+    reads = {n: _linked_closure(n, closure) if runs_th[n] else closure[n] for n, _ in nodes}
+    registration_order, reads = _registration_order(s.label, nodes, imports, closure, reads)
 
-    # Register the compiles in dependency order. An action's inputs, and the
-    # artifacts that a symlinked_dir links to, must be outputs of actions
-    # that have already been registered.
+    # Register the compiles in registration_order, since the artifacts that a
+    # symlinked_dir links to must be outputs of actions that have already
+    # been registered.
     hie_of = {}
-    for n in order:
+    for n in registration_order:
         # The module finds the interfaces it imports from this target in
         # the target's output directory, which all the target's modules
         # share, and which is on the module's import path. The interface
@@ -541,10 +625,13 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         # the trees took longer to materialise than the compiles
         # themselves.)
         closure_files = []
-        for d in closure[n]:
+        for d in reads[n]:
             closure_files += [hi_of[d], abi_of[d]]
             if dynamic_too:
                 closure_files.append(dyn_hi_of[d])
+            if runs_th[n]:
+                # The objects a splice may load.
+                closure_files.append(o_of[d])
         mod_packages = target_th if runs_th[n] else early_set
         hidirs = mod_packages.local_import_dirs + [(name, d) for name, d in module_lib_dirs.items() if name in mod_packages.early_names]
 
@@ -589,6 +676,11 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             "--hisuf",
             hisuf,
             "--boot" if _is_boot(n) else [],
+            # The modules behind boot files that its splices may link, which
+            # it waits for. The worker gives the compile their whole
+            # interfaces (see Note [Each compile's home modules] in
+            # tools/buck2-ghc-worker/src/Session.hs).
+            ["--link=" + _module_of(d) for d in reads[n] if _is_boot(d) and _module_of(d) in reads[n]] if runs_th[n] else [],
             # Where each dependency's interfaces are, so that the tool can
             # turn the usages GHC records into dep file entries. These are
             # paths only, not inputs. The interfaces themselves are inputs
@@ -661,11 +753,10 @@ def compiles_per_module(ctx: AnalysisContext) -> bool:
 # [Per-module compilation]). It takes the same arguments as compile(), so
 # that the two are interchangeable, but ignores native_shared_libs_dir and
 # dynamic_from. A splice finds the native libraries it loads through the
-# package dbs instead (see _native_ghci_libs in haskell.bzl). dynamic_from
-# is only needed for splices that run code of their own target, which
-# per-module compilation doesn't support (see Note [Template Haskell
-# modules]).
-def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, native_shared_libs_dir: [Artifact, None] = None, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None) -> CompileResultInfo:
+# package dbs instead (see _native_ghci_libs in haskell.bzl), and loads the
+# target's objects of the compile's own way rather than dynamic_from's (see
+# Note [Template Haskell modules]).
+def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, native_shared_libs_dir: [Artifact, None] = None, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None, ghci_native = None) -> CompileResultInfo:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     suffix = get_artifact_suffix(link_style, enable_profiling)
     osuf, hisuf = output_extensions(link_style, enable_profiling)
@@ -688,6 +779,13 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     below = ctx.actions.tset(HaskellLibraryInfoTSet, children = [lib.below for lib in dep_libs if lib.below != None])
     below_make = {lib.name: True for lib in below.traverse() if lib.modules != None}
 
+    # The target's own native libraries, for splices that run its own
+    # modules' code. GHC's interpreter loads the libraries on its command
+    # line, in order, when it starts (see Note [Template Haskell modules]).
+    own_native = cmd_args()
+    if ghci_native != None and ghci_native.dir != None:
+        own_native = cmd_args(cmd_args(ghci_native.dir, format = "-L{}"), ["-l" + n for n in ghci_native.names])
+
     # `actions` makes the copies of the prebuilt db that the flags need.
     def packages(final, actions, runs_th = True, db_name = prefix + "th-db"):
         def strict_db(db, ids):
@@ -698,7 +796,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             # A module that runs splices runs them in an external
             # interpreter, which is a process of its own (see Note [Template
             # Haskell modules]).
-            args = cmd_args(exposed_package_args, dbs.packagedb_args, ["-fexternal-interpreter"] if runs_th else []),
+            args = cmd_args(exposed_package_args, dbs.packagedb_args, [own_native, "-fexternal-interpreter"] if runs_th else []),
             local_import_dirs = dbs.local_import_dirs,
             early_names = dbs.early_names,
         )
@@ -876,7 +974,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #   registers the nodes' actions.
 # - Closure: everything a module imports, directly or indirectly, from the
 #   targets compiled per-module. A compile needs the interfaces of its whole
-#   closure, since GHC reads them for instances and type families.
+#   closure, since GHC reads them for instances and type families. A
+#   Template Haskell module needs their objects too.
 #   Dependencies that are prebuilt or built with `ghc --make` aren't part of
 #   closures: a compile gets their modules whole, through their normal
 #   package dbs.
@@ -978,7 +1077,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # 2. The solution
 #
 # buck2 decides this for each action, from a dep file. Every file a module's
-# compile might read from other compiles, the interfaces, is a tagged input.
+# compile might read from other compiles is a tagged input: the interfaces,
+# and for a Template Haskell module the objects of the target's own modules.
 # (Its own source is an ordinary input, so editing it always compiles it
 # again.) After the compile, the action lists the tagged inputs it actually
 # read. On the next build, buck2 runs the action again only if one of those
@@ -991,9 +1091,10 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #   interface's ABI hash. Each action writes one next to its interface, from
 #   the interface itself (DepFile in tools/ghc-api, which the compile tool
 #   and the persistent worker share).
-# - Each file a Template Haskell splice read, which GHC records as a
-#   dependent file (addDependentFile). (The libraries the splices loaded are
-#   plain inputs instead: see Note [Template Haskell modules].)
+# - Each object of the target's own modules that a Template Haskell splice
+#   loaded, which GHC records as a dependent file. (The dependencies'
+#   _libraries_ are plain inputs instead: see Note [Template Haskell
+#   modules].)
 #
 # 3. buck2 decides, not GHC
 #
@@ -1101,6 +1202,12 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # to find a dependency that is already loaded by its install name
 # (@rpath/libfoo.dylib). We haven't tried that.
 #
+# A splice that runs the target's own modules may call the target's own
+# native libraries, which are in no package db. So the target's Template
+# Haskell compiles pass them to GHC with -L and -l. GHC's interpreter loads
+# them when it starts, after the packages on the command line, none of
+# which can depend on them.
+#
 # The road not taken: a tree of the dependencies' shared libraries on each
 # Template Haskell compile's LD_LIBRARY_PATH. That needs nothing in the
 # package dbs and copes with any soname. But the persistent worker can't
@@ -1138,16 +1245,44 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # Template Haskell modules, which share a session, compile one at a time in
 # the worker.
 #
-# 6. Code of the target's own modules
+# 6. Splices that run the target's own modules
 #
-# A splice can't run code of the target's own modules. GHC would load their
-# objects from the output directory, so they would have to be inputs of the
-# compile, along with the modules behind any boot files among them. A
-# target whose splices need that is built with per_module = False instead.
-# The compile fails if a splice loaded one of the target's objects (see
-# DepFile in tools/ghc-api).
+# A splice can run code of the target's own modules, which GHC's interpreter
+# loads from their objects in the output directory. So a Template Haskell
+# module's compile has the objects of its closure as tagged inputs, and its
+# dep file lists those a splice loaded (see Note [Early cut-off by dep
+# files]).
 #
-# 7. Finding the Template Haskell modules
+# The interpreter has the compile's way (see section 5), so it loads the
+# objects the compile itself makes: .dyn_o in a shared compile, .o in a
+# static one (even with -dynamic-too), .p_o in a profiled one. No other
+# compile of the target is needed, as one would be for GHC's internal
+# interpreter, which loads dynamic objects only.
+#
+# 7. Modules behind boot files
+#
+# Say the Template Haskell module T imports A, and A imports B with
+# {-# SOURCE #-}. T's closure has A and B's boot file, but not B itself,
+# which may not be compiled yet. If a splice in T runs A's code, it may
+# reach B's code, and then GHC has to link B. One-shot GHC loads B's object
+# from the output directory. GHC in --make mode, as in the persistent
+# worker, looks B up as a whole module in its home package table. The
+# worker puts the modules that the request names with --link there.
+#
+# So a Template Haskell module also depends on the whole modules behind the
+# boot files in its closure, and on their closures (see _linked_closure).
+# Otherwise it could be compiled before B, and then fail to link it.
+#
+# That only works if B doesn't import T, directly or indirectly. If it
+# does, T can't wait for B. It compiles without B, as with `ghc --make`,
+# and its splices fail only if they reach B's code (see
+# _registration_order).
+#
+# Before GHC 9.12, GHC fails to link some of the cases that should work.
+# With 9.14.1, only the persistent worker links them. The rules don't try
+# to work around that.
+#
+# 8. Finding the Template Haskell modules
 #
 # Which modules run Template Haskell has to be decided before anything is
 # compiled. The deps tool asks GHC which extensions each module has, from its

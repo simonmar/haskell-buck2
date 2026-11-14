@@ -3,11 +3,13 @@ load("//compile:defs.bzl", "PER_MODULE")
 
 # Two modules that run Template Haskell, each with its boot file below the
 # other: Tie.I imports Tie.A, which imports Tie.K {-# SOURCE #-}; Tie.K
-# imports Tie.B, which imports Tie.I {-# SOURCE #-}. Neither splice runs the
-# other's code, so the target builds.
+# imports Tie.B, which imports Tie.I {-# SOURCE #-}. Each one's splice may
+# link the other module, so each would wait for the other. Neither splice
+# runs the other's code, so the target builds.
 #
 # Tie.AZ, whose name sorts first, is only behind that cycle. It runs a
-# splice and imports Tie.V, which imports Tie.W's boot file.
+# splice and imports Tie.V, which imports Tie.W's boot file. So it waits
+# for Tie.W, which its splice may link, whatever the tie-break.
 haskell_library(
     name = "th-boot-cycles",
     srcs = {
