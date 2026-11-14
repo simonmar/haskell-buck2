@@ -1,12 +1,11 @@
-{-# LANGUAGE CPP #-}
 -- | Compiles one module of a target compiled per-module with `ghc -c`, then
 -- writes the module's .abi file and buck2 dep file from the interface GHC
 -- wrote (see Request and DepFile, and compile_per_module in
 -- prelude/haskell/compile_per_module.bzl).
 --
--- GHC_LIBDIR is the libdir of the GHC this program is built with, which has
--- to be the GHC that compiles the modules: only that GHC can read their
--- interfaces.
+-- The first argument is --libdir=DIR, the libdir of the GHC that compiles
+-- the modules (see Libdir). This program must be built with the same version
+-- of GHC: only that version can read the modules' interfaces.
 module Main (main) where
 
 import Control.Exception (SomeException, displayException, fromException, handle, throwIO)
@@ -23,11 +22,13 @@ import GHC.Utils.Panic (GhcException (..))
 
 import DepFile (writeDepFiles)
 import Interface (readInterface)
+import Libdir (takeLibdir)
 import Request
 
 main :: IO ()
 main = handle failed $ do
-  r <- either (\err -> hPutStrLn stderr ("per_module_compile: " ++ err) >> exitWith (ExitFailure 2)) pure . parseRequest =<< getArgs
+  (libdir, args) <- takeLibdir "per_module_compile" =<< getArgs
+  r <- either (\err -> hPutStrLn stderr ("per_module_compile: " ++ err) >> exitWith (ExitFailure 2)) pure (parseRequest args)
   mapM_ (createDirectoryIfMissing True) (reqMkdirs r)
   -- With -fforce-recomp: buck2 decides when the module compiles, not GHC
   -- (see Note [Early cut-off by dep files] in compile_per_module.bzl).
@@ -38,7 +39,7 @@ main = handle failed $ do
     when unlinked $ hPutStr stderr (spliceHint r)
     exitWith (ExitFailure code)
   case dropWhile (/= "-ohi") (reqModuleArgs r) of
-    _ : hi : _ -> readInterface GHC_LIBDIR hi >>= writeDepFiles r
+    _ : hi : _ -> readInterface libdir hi >>= writeDepFiles r
     _ -> hPutStrLn stderr "per_module_compile: the request names no interface file (-ohi)" >> exitWith (ExitFailure 2)
 
 -- | Copy GHC's diagnostics to stderr as they come, bytes unchanged, and say

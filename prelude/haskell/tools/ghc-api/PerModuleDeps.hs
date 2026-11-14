@@ -3,13 +3,13 @@
 -- dependency analysis of its sources (see compile_per_module in
 -- prelude/haskell/compile_per_module.bzl).
 --
--- > per_module_deps OUT NODE=SOURCE... -- GHC_FLAGS...
+-- > per_module_deps --libdir=DIR OUT NODE=SOURCE... -- GHC_FLAGS...
 --
 -- Each NODE=SOURCE is one of the target's nodes, as the rules name it, and
 -- its source: a module, or a boot file as "Mod-boot". The GHC flags are the
 -- target's, without the compiler: the analysis is this program's own, with
--- the GHC it was built with (GHC_LIBDIR, see haskell_ghc_api_tool), which is
--- the same one.
+-- the GHC code that it is linked with, which is the same version as the GHC
+-- that compiles the target. DIR is that GHC's libdir (see Libdir).
 --
 -- OUT is a JSON object with a member for each node. Each has:
 --
@@ -51,21 +51,22 @@ import GHC.Iface.Errors.Ppr (missingInterfaceErrorDiagnostic)
 #endif
 
 import Imports (importLocated, importName, srcImportName)
+import Libdir (takeLibdir)
 import Request (withoutRts)
 
 main :: IO ()
 main = do
-  args <- getArgs
+  (libdir, args) <- takeLibdir "per_module_deps" =<< getArgs
   case break (== "--") args of
-    (out : nodes, _ : flags) | Just sources <- mapM node nodes -> writeFile out =<< analyse sources (withoutRts flags)
-    _ -> hPutStrLn stderr "usage: per_module_deps OUT NODE=SOURCE... -- GHC_FLAGS..." >> exitWith (ExitFailure 2)
+    (out : nodes, _ : flags) | Just sources <- mapM node nodes -> writeFile out =<< analyse libdir sources (withoutRts flags)
+    _ -> hPutStrLn stderr "usage: per_module_deps --libdir=DIR OUT NODE=SOURCE... -- GHC_FLAGS..." >> exitWith (ExitFailure 2)
   where
     node arg = case break (== '=') arg of
       (n, '=' : src) -> Just (n, src)
       _ -> Nothing
 
-analyse :: [(String, FilePath)] -> [String] -> IO String
-analyse sources flags = defaultErrorHandler defaultFatalMessager defaultFlushOut $ runGhc (Just GHC_LIBDIR) $
+analyse :: FilePath -> [(String, FilePath)] -> [String] -> IO String
+analyse libdir sources flags = defaultErrorHandler defaultFatalMessager defaultFlushOut $ runGhc (Just libdir) $
   handleSourceError (\e -> printException e >> liftIO (exitWith (ExitFailure 1))) $ do
     dflags0 <- getSessionDynFlags
     logger <- getLogger

@@ -269,7 +269,7 @@ def _declare_module_outputs(ctx: AnalysisContext, out_dir: str, nodes: list, osu
 # returns each module's closure set for the target's dependents (see
 # _ModuleClosureTSet). `s` carries the values that compile_per_module worked
 # out during analysis.
-def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: ArtifactValue, dep_closures: dict, artifacts: list[Artifact], outputs: list[OutputArtifact]) -> list[Provider]:
+def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: ArtifactValue, libdir: ArtifactValue, dep_closures: dict, artifacts: list[Artifact], outputs: list[OutputArtifact]) -> list[Provider]:
     out = {a: o for a, o in zip(artifacts, outputs)}
     nodes = s.nodes
     src_of = s.src_of
@@ -393,7 +393,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             module_flags,
         )
         actions.run(
-            in_env(env, cmd_args(compile_script, request)),
+            in_env(env, cmd_args(compile_script, "--libdir=" + libdir.read_string().strip(), request)),
             category = "haskell_compile_module_" + suffix.replace("-", "_"),
             identifier = n,
             dep_files = {"hs": tag},
@@ -426,6 +426,7 @@ _register_modules = dynamic_actions(
         "artifacts": dynattrs.value(list[Artifact]),
         "dep_closures": dynattrs.dict(str, dynattrs.dynamic_value()),
         "deps": dynattrs.artifact_value(),
+        "libdir": dynattrs.artifact_value(),
         "outputs": dynattrs.list(dynattrs.output()),
         "s": dynattrs.value(typing.Any),
     },
@@ -509,6 +510,15 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     stubs = ctx.actions.declare_output("stubs-" + suffix, dir = True, has_content_based_path = False)
     producing_indices = get_producing_indices(ctx)
 
+    # The libdir of the GHC that compiles the target, which the tools need to
+    # run GHC's code (see Libdir in tools/ghc-api). It comes from the
+    # toolchain's compiler command
+    libdir = ctx.actions.declare_output(prefix + "libdir")
+    ctx.actions.run(
+        in_env(env, cmd_args("sh", "-c", 'out="$1"; shift; "$@" --print-libdir > "$out"', "sh", libdir.as_output(), haskell_toolchain.compiler)),
+        category = "haskell_libdir_" + suffix.replace("-", "_"),
+    )
+
     # Work out the module graph with GHC's own dependency analysis, which the
     # deps tool runs (see tools/ghc-api/PerModuleDeps.hs). For each node, it
     # finds the imports, both from this target and from dependencies, and
@@ -521,12 +531,20 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     deps = ctx.actions.declare_output(prefix + "deps.json")
     ctx.actions.run(
         in_env(env, cmd_args(
+            "sh",
+            "-c",
+            'tool="$1"; libdir=$(cat "$2"); shift 2; exec "$tool" "--libdir=$libdir" "$@"',
+            "sh",
             ctx.attrs._per_module_deps[RunInfo],
+            libdir,
             deps.as_output(),
             [cmd_args(n, src, delimiter = "=") for n, src in nodes],
             "--",
             ghc_args,
             early_set.args,
+            # The compiler command may carry files that the libdir is made
+            # of, so we add a dependency on it
+            hidden = haskell_toolchain.compiler,
         )),
         category = "haskell_deps_" + suffix.replace("-", "_"),
     )
@@ -579,6 +597,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             env = env,
         ),
         deps = deps,
+        libdir = libdir,
         dep_closures = {lib.name: lib.closures for lib in module_libs.values()},
         artifacts = all_outputs,
         outputs = [a.as_output() for a in all_outputs],
