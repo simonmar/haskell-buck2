@@ -8,10 +8,12 @@ load(
     "dependency_libs",
     "get_exposed_package_args",
     "get_producing_indices",
+    "build_tools",
     "ghc_env",
     "ghc_flags",
     "has_modules",
     "in_env",
+    "tools_env",
 )
 load(
     "@prelude//haskell:library_info.bzl",
@@ -164,7 +166,7 @@ def _dir_of(artifact, node: str, ext: str) -> cmd_args:
     return cmd_args(artifact, parent = _node_file(node, ext).count("/") + 1)
 
 # Read the module graph that the deps tool wrote (see
-# tools/ghc-api/PerModuleDeps.hs). It returns three things:
+# tools/ghc-api/PerModuleDeps.hs). It returns four things:
 #
 # - imports: for each node, the nodes of this target that it imports.
 # - upstream: for each node, the modules it imports from dependencies
@@ -172,10 +174,13 @@ def _dir_of(artifact, node: str, ext: str) -> cmd_args:
 #   other dependencies are left out, since those aren't tracked module by
 #   module.
 # - th: the nodes that may run Template Haskell.
+# - programs: for each node, the programs that GHC runs for it and finds on
+#   PATH, by name, such as a preprocessor that -F -pgmF names.
 def _read_deps(label, deps: dict, nodes: list, module_libs: dict):
     imports = {n: [] for n, _ in nodes}
     upstream = {n: [] for n, _ in nodes}
     th = {}
+    programs = {n: [] for n, _ in nodes}
     for n, d in deps.items():
         if n not in imports:
             fail("{}: GHC's dependency analysis found {}, but srcs has no such module (or boot file)".format(label, n))
@@ -186,7 +191,8 @@ def _read_deps(label, deps: dict, nodes: list, module_libs: dict):
                 upstream[n].append((pkg, mod))
         if d["th"]:
             th[n] = True
-    return imports, upstream, th
+        programs[n] = d["programs"]
+    return imports, upstream, th, programs
 
 # For each node, all the nodes of this target that it imports directly or
 # indirectly, with its direct imports first. `order` must be a dependency
@@ -263,18 +269,6 @@ def _declare_module_outputs(ctx: AnalysisContext, out_dir: str, nodes: list, osu
         dyn_hi = {n: declare(n, "dyn_hi") for n, _ in nodes} if dynamic_too else {},
     )
 
-# The persistent worker that compiles the target's modules: the toolchain's
-# shared worker (see Note [The persistent worker]). The result is None if
-# there is no worker, or if the target has a build tool that isn't on the
-# worker's PATH (see per_module_worker_build_tools), because then the
-# modules have to be compiled in the target's own environment.
-def _per_module_worker(ctx: AnalysisContext) -> WorkerInfo | None:
-    haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
-    shared_tools = haskell_toolchain.per_module_worker_build_tools
-    if any([t.label.raw_target() not in shared_tools for t in ctx.attrs.build_tool_depends]):
-        return None
-    return haskell_toolchain.per_module_shared_worker
-
 # The version of the request that each compile action sends, and of the
 # files that the worker writes back. The worker and the compile tool refuse a
 # request of any other version, so that a worker built from another version
@@ -315,11 +309,11 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     producing_indices = s.producing_indices
     src_tree = s.src_tree
     base_cmd = s.base_cmd
-    env = s.env
     worker_info = s.worker_info
+    tools = s.tools
     compile_script = s.compile_script
 
-    imports, upstream, th_nodes = _read_deps(s.label, deps.read_json(), nodes, module_libs)
+    imports, upstream, th_nodes, program_nodes = _read_deps(s.label, deps.read_json(), nodes, module_libs)
     order, left = _dependency_order(nodes, imports)
     if left:
         fail("{}: import cycle among {}".format(s.label, ", ".join(left)))
@@ -344,6 +338,16 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         closure_sets[n] = actions.tset(_ModuleClosureTSet, value = modules[n], children = [closure_sets[i] for i in imports[n]] + ups)
 
     runs_th = {n: n in th_nodes for n, _ in nodes}
+
+    # The environment of each set of build tools that some module may run,
+    # made once for each set (see module_tools below).
+    tools_envs = {}
+
+    def env_with(names):
+        key = ",".join(sorted(names))
+        if key not in tools_envs:
+            tools_envs[key] = tools_env(actions, s.compile_env, {t: tools[t] for t in names}, prefix + "build-tools/" + str(len(tools_envs)))
+        return tools_envs[key]
 
     # Register the compiles in dependency order. An action's inputs, and the
     # artifacts that a symlinked_dir links to, must be outputs of actions
@@ -426,9 +430,17 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         # buck2 sends the request to the worker instead, and runs the compile
         # tool only when it runs the action somewhere the worker isn't, such
         # as on a remote executor.
-        script = in_env(env, cmd_args(compile_script))
+        # The build tools that the module may run, which are the only ones
+        # its compile has on PATH, and so the only ones it depends on. GHC
+        # may run a build tool for the module, such as a preprocessor that
+        # -F -pgmF names. A splice may run any of them, so a module that runs
+        # Template Haskell gets them all. The module compiles in the worker
+        # only if it has no tools, since the worker can't put a compile's
+        # tools on PATH (see Note [The persistent worker]).
+        module_tools = list(tools) if runs_th[n] else [p for p in program_nodes[n] if p in tools]
+        script = in_env(env_with(module_tools), cmd_args(compile_script))
         category = "haskell_compile_module_" + suffix.replace("-", "_")
-        if worker_info != None:
+        if worker_info != None and not module_tools:
             actions.run(request, exe = WorkerRunInfo(worker = worker_info, exe = script), category = category, identifier = n, dep_files = {"hs": tag})
         else:
             actions.run(cmd_args(script, request), category = category, identifier = n, dep_files = {"hs": tag})
@@ -530,7 +542,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     base_cmd = cmd_args(haskell_toolchain.compiler, ghc_args)
     env = ghc_env(ctx, prefix + "build-tool-depends")
 
-    worker_info = _per_module_worker(ctx)
+    # The toolchain's shared worker (see Note [The persistent worker]), or
+    # None if it has none.
+    worker_info = haskell_toolchain.per_module_shared_worker
 
     nodes = _nodes(ctx)
     src_of = {n: src for n, src in nodes}
@@ -632,8 +646,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             producing_indices = producing_indices,
             src_tree = src_tree,
             base_cmd = base_cmd,
-            env = env,
             worker_info = worker_info,
+            tools = build_tools(ctx),
+            compile_env = haskell_toolchain.compile_env,
         ),
         deps = deps,
         dep_closures = {lib.name: lib.closures for lib in module_libs.values()},
@@ -899,16 +914,32 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #
 # The worker is a single process, so it can't give each request its own
 # environment variables or PATH. That means the shared worker can only
-# compile modules that need nothing from their target's environment. Those
-# are the modules of targets whose build tools are all on the worker's PATH
-# (see per_module_worker_build_tools in prelude/haskell/per_module_worker.bzl).
-# Splices don't need the target's environment either, because they load
-# only prebuilt libraries, which find their own dependencies (see Note
-# [Template Haskell modules]).
+# compile modules that need nothing from their target's environment.
 #
-# The other modules are compiled without a worker, each by its own
-# `ghc -c`. Giving each such target a worker of its own, running in the
-# target's environment, would compile them faster. But each of those
+# What a module may need from that environment is its target's build tools,
+# which a compile without the worker finds on PATH. Most modules never run
+# one. For example, a target that uses alex has a module generated from a
+# .x file, but alex runs in an action of its own, before the compile. A
+# module runs a build tool in one of two ways:
+#
+# - GHC runs a program for it that GHC finds on PATH. An example is a
+#   preprocessor that the module's OPTIONS_GHC pragma names with -F -pgmF,
+#   such as hspec-discover. The target's flags can name one too, for all of
+#   its modules. The deps tool reports these programs by name, and the
+#   module's tools are the target's build tools of those names.
+# - A splice of the module runs a program. Nothing can tell which programs
+#   a splice runs, so a module that runs Template Haskell is taken to need
+#   all its target's build tools.
+#
+# A module's compile has only its own tools on PATH, and so a change to a
+# build tool recompiles only the modules that may run it. Splices don't need
+# anything else from the target's environment, because they load only
+# prebuilt libraries, which find their own dependencies (see Note [Template
+# Haskell modules]).
+#
+# A module with any tools is compiled without a worker, by its own `ghc -c`.
+# Giving each such target a worker of its own, running in the target's
+# environment, would compile them faster. But each of those
 # workers would keep its memory until the end of the build, and there may be
 # dozens of them.
 #

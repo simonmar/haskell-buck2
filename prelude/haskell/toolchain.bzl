@@ -36,23 +36,19 @@ def in_compile_env(script: str, args: list, cmd: cmd_args) -> cmd_args:
     return cmd_args(["sh", "-c", script + 'exec "$@"', "sh"] + args, cmd)
 
 # Make the WorkerInfo for a per-module worker program, `worker`. The worker
-# runs with the toolchain's compile_env set, and with the shared build tools
-# in `tools_dir`, if there are any, on its PATH. The other arguments are the
+# runs with the toolchain's compile_env set. The other arguments are the
 # worker's settings, which per_module_worker_rts_options,
 # per_module_worker_sessions and per_module_worker_session_mode in
 # prelude/haskell/per_module_worker.bzl describe.
-def per_module_worker_info(worker, compile_env: dict[str, str], rts_options: list[str], sessions: int | None, session_mode: str | None, tools_dir: Artifact | None) -> WorkerInfo:
+def per_module_worker_info(worker, compile_env: dict[str, str], rts_options: list[str], sessions: int | None, session_mode: str | None) -> WorkerInfo:
     cmd = cmd_args(worker, ["+RTS"] + rts_options + ["-RTS"] if rts_options else [])
-    script = compile_env_script(compile_env)
-    if tools_dir != None:
-        script += 'export PATH="$PATH:$1"; shift; '
     env = {}
     if sessions != None:
         env["BUCK2_GHC_WORKER_SESSIONS"] = str(sessions)
     if session_mode != None:
         env["BUCK2_GHC_WORKER_SESSION_MODE"] = session_mode
     return WorkerInfo(
-        exe = in_compile_env(script, [tools_dir] if tools_dir != None else [], cmd),
+        exe = in_compile_env(compile_env_script(compile_env), [], cmd),
         env = env,
     )
 
@@ -76,10 +72,6 @@ HaskellToolchainInfo = provider(
         "per_module_worker_rts_options": provider_field(list[str], default = []),
         "per_module_worker_sessions": provider_field(int | None, default = None),
         "per_module_worker_session_mode": provider_field(str | None, default = None),
-        # The build tools that are on the worker's PATH, as target labels,
-        # and a directory that holds them.
-        "per_module_worker_build_tools": provider_field(list, default = []),
-        "per_module_worker_build_tools_dir": provider_field(typing.Any, default = None),
         "linker": provider_field(typing.Any, default = None),
         "linker_flags": provider_field(typing.Any, default = None),
         "haddock": provider_field(typing.Any, default = None),

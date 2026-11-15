@@ -1,33 +1,39 @@
 load("//buck2:haskell.bzl", "haskell_library")
 
-# Two preprocessors (run with -pgmF), which the libraries below use as
-# build tools. The project's buckconfig puts bt-shared on the shared
-# worker's PATH (per_module_worker_build_tools), but not bt-own. Each
-# preprocessor ignores its input and writes a fixed module.
-sh_binary(
-    name = "bt-shared",
-    main = "bt-shared",
-    # Public, because the toolchain depends on it.
-    visibility = ["PUBLIC"],
-)
-
+# Preprocessors (run with -pgmF), which the libraries below use as build
+# tools. bt-own ignores its input and writes a fixed module. bt-copy copies
+# its input unchanged.
 sh_binary(
     name = "bt-own",
     main = "bt-own",
 )
 
+sh_binary(
+    name = "bt-copy",
+    main = "bt-copy",
+)
+
+# Only BT.Own runs bt-own, from its OPTIONS_GHC pragma. BT.OwnPlain runs no
+# program. BT.OwnSplice runs Template Haskell, whose splices could run any
+# program on PATH.
 haskell_library(
-    name = "shared",
-    srcs = {"BT.Shared": "BT/Shared.hs"},
-    packages = ["base"],
-    build_tool_depends = [":bt-shared"],
+    name = "own",
+    srcs = {
+        "BT.Own": "BT/Own.hs",
+        "BT.OwnPlain": "BT/OwnPlain.hs",
+        "BT.OwnSplice": "BT/OwnSplice.hs",
+    },
+    packages = ["base", "template-haskell"],
+    build_tool_depends = [":bt-own"],
     per_module = True,
 )
 
+# Every module runs bt-copy, because the target's own flags say so.
 haskell_library(
-    name = "own",
-    srcs = {"BT.Own": "BT/Own.hs"},
+    name = "flags",
+    srcs = {"BT.Flags": "BT/Flags.hs"},
     packages = ["base"],
-    build_tool_depends = [":bt-own"],
+    compiler_flags = ["-F", "-pgmF", "bt-copy"],
+    build_tool_depends = [":bt-copy"],
     per_module = True,
 )

@@ -115,14 +115,3 @@ def per_module_worker_sessions() -> str:
 # See Note [One-shot sessions] in prelude/haskell/tools/worker/src/Session.hs.
 def per_module_worker_session_mode() -> str:
     return read_root_config("haskell", "per_module_worker_session_mode", "")
-
-# The build tools to put on the shared worker's PATH, from `[haskell]
-# per_module_worker_build_tools` in the buckconfig, as target labels
-# separated by spaces. The worker has a single PATH for all its compiles.
-# So a target whose build tools are all in this list compiles in the shared
-# worker, but a target with any other build tool compiles without a worker.
-# It is worth listing the tools that many targets use, such as
-# tasty-discover. A tool that is built with the Haskell toolchain can't be
-# listed, because the toolchain would then depend on itself.
-def per_module_worker_build_tools() -> list[str]:
-    return read_root_config("haskell", "per_module_worker_build_tools", "").split()
