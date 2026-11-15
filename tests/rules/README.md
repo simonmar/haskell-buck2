@@ -97,6 +97,7 @@ compiles with `--make`.
 | `//flat-sources:flat-sources`, `//make-lib:make-lib` | `flat-sources`'s flat sources (`Lib.hs`), one of which imports `Q.Lib` from `make-lib` (built with `--make`), whose interface path ends in `/Lib.hi` |
 | `//module-move:hi`, `//module-move:lo`, `//module-move:main` | a module that moves from `hi` to `lo`, its dependency |
 | `//build-tools:own`, `//build-tools:flags` | modules that run build tools: preprocessors (`-pgmF`) named in a module's pragma or the target's flags, and a splice; and a module that runs none |
+| `//build-tools:discover` | a preprocessor that, like `hspec-discover`, imports the modules it finds by listing a directory |
 | `//index:index` | built with `-fwrite-ide-info`, for its index (`index.bxl` prints it) |
 | `//module-name-clash:user` | `X` uses `bar` through `second`'s `Re`, which re-exports it from `second`'s `Utils`; `first` and `user` have a module `Utils` too |
 | `//header:header` | a module that `#include`s a header in the target's `srcs` (`Hdr/value.h`) |
