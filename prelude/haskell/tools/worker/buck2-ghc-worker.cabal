@@ -32,22 +32,17 @@ library
     , directory
     , filepath
     , ghc >= 9.6 && < 9.15
-    , http2 >= 5.3.7
-    , http-types
-    , network
+    , stm
     , process, unix
 
 executable buck2-ghc-worker
   main-is:          Main.hs
   hs-source-dirs:   app
   default-language: GHC2021
-  -- These RTS options are defaults for a worker run outside the rules. For
-  -- the shared worker, the rules override -A and -qn (see
-  -- per_module_worker_rts_options in prelude/haskell/per_module_worker.bzl).
-  -- --disable-delayed-os-memory-return makes the RTS give the memory of
-  -- dropped sessions (see Worker.hs) back to the OS at once. By default the
-  -- RTS uses MADV_FREE, and the memory stays counted against the process
-  -- until the kernel needs it.
+  -- These are the flags and RTS options that the toolchain builds the
+  -- worker with, so that the tests and the benchmark run the same worker.
+  -- build_per_module_worker in prelude/haskell/per_module_worker.bzl
+  -- explains them: keep the two in step.
   ghc-options:      -Wall -threaded -dynamic -rtsopts "-with-rtsopts=-N -A16m -qn4 --disable-delayed-os-memory-return"
   build-depends:
     , base

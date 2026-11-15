@@ -1,11 +1,11 @@
-# The persistent worker (tools/buck2-ghc-worker) uses the GHC API, so it has to
+# The persistent worker (prelude/haskell/tools/worker) uses the GHC API, so it has to
 # be built with the same GHC that it compiles with. We build and test it with
 # each GHC version that it supports.
 name: buck2-ghc-worker
 
-# Some of the worker's modules are symbolic links to modules of the compile
-# tool, in prelude/haskell/tools/ghc-api, so a change there runs this
-# workflow too. As in rules.yml, pushes only run it on master and the
+# Some of the worker's modules are symbolic links to modules of the rules'
+# GHC-API tools, in prelude/haskell/tools/ghc-api, so a change there runs
+# this workflow too. As in rules.yml, pushes only run it on master and the
 # release branches. A branch with a pull request is already tested by the
 # pull_request event.
 on:
@@ -13,9 +13,9 @@ on:
     branches:
       - master
       - "[0-9]+.[0-9]+.[0-9]+.[0-9]+"
-    paths: [tools/buck2-ghc-worker/**, prelude/haskell/tools/ghc-api/**, .github/workflows/buck2-ghc-worker.yml]
+    paths: [prelude/haskell/tools/worker/**, prelude/haskell/tools/ghc-api/**, .github/workflows/buck2-ghc-worker.yml]
   pull_request:
-    paths: [tools/buck2-ghc-worker/**, prelude/haskell/tools/ghc-api/**, .github/workflows/buck2-ghc-worker.yml]
+    paths: [prelude/haskell/tools/worker/**, prelude/haskell/tools/ghc-api/**, .github/workflows/buck2-ghc-worker.yml]
   workflow_dispatch:
 
 jobs:
@@ -33,7 +33,7 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: tools/buck2-ghc-worker
+        working-directory: prelude/haskell/tools/worker
     steps:
       - uses: actions/checkout@v7
 
@@ -47,8 +47,6 @@ jobs:
         run: cabal update
 
       # The dependencies are cached under a key made from the build plan.
-      # rules.yml uses the same key, so the two workflows reuse each other's
-      # caches.
       - name: Generate the build plan
         run: cabal build all --dry-run
 
@@ -92,15 +90,12 @@ jobs:
         run: |
           # The worker is part of the repository's cabal project, so cabal
           # reads cabal.project.local from the repository's root.
-          printf 'package buck2-ghc-worker\n  ghc-options: -Werror\n' > ../../cabal.project.local
+          printf 'package buck2-ghc-worker\n  ghc-options: -Werror\n' > ../../../../cabal.project.local
           cabal build all
 
-      # The worker isn't supported on macOS yet. The tests that talk to it
-      # over its socket fail there, so on macOS we only build it.
+      # The tests that talk to the worker over its socket fail on macOS, so
+      # there we only build it.
       - name: Test
         if: runner.os != 'macOS'
         run: cabal test
 
-      # Check that the install command in the worker's README works.
-      - name: Install as buck2-ghc-worker-<version>
-        run: cabal install --installdir="$RUNNER_TEMP/bin" --program-suffix=-$(ghc --numeric-version) exe:buck2-ghc-worker

@@ -66,7 +66,7 @@ HaskellToolchainInfo = provider(
         # (not shell-evaluated).
         "link_env": provider_field(typing.Any, default = {}),
         "dynamic_ghc": provider_field(bool, default = True),
-        # The persistent worker (tools/buck2-ghc-worker) that compiles the
+        # The persistent worker (prelude/haskell/tools/worker) that compiles the
         # modules of per-module targets, as a WorkerInfo made by
         # per_module_worker_info. It is None if the toolchain has no worker.
         # See Note [The persistent worker] in compile_per_module.bzl.
