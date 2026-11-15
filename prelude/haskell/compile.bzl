@@ -325,23 +325,31 @@ exec "$@"
 def data_dirs_env(ctx: AnalysisContext) -> dict[str, Artifact]:
     return {name: dep[DefaultInfo].default_outputs[0] for name, dep in ctx.attrs.data_dirs.items()}
 
-# The environment to run GHC in: the toolchain's compile_env variables, and
-# the target's build tools (build_tool_depends) added to PATH.
-def ghc_env(ctx: AnalysisContext, build_tool_dir: str):
-    haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
+# The target's build tools (build_tool_depends), by the name of each tool's
+# executable, which is the name that a program looks it up by on PATH.
+def build_tools(ctx: AnalysisContext) -> dict[str, Artifact]:
+    return {
+        dep[DefaultInfo].default_outputs[0].basename: dep[DefaultInfo].default_outputs[0]
+        for dep in ctx.attrs.build_tool_depends
+    }
 
-    script = compile_env_script(haskell_toolchain.compile_env) if haskell_toolchain.compile_env else ""
+# The environment to run GHC in: the toolchain's compile_env variables, and
+# the target's build tools added to PATH.
+def ghc_env(ctx: AnalysisContext, build_tool_dir: str):
+    return tools_env(ctx.actions, ctx.attrs._haskell_toolchain[HaskellToolchainInfo].compile_env, build_tools(ctx), build_tool_dir)
+
+# The environment to run GHC in: the `compile_env` variables, and the build
+# tools in `tools` (as build_tools gives them) added to PATH. The tools are
+# linked into a directory at `build_tool_dir`.
+def tools_env(actions: AnalysisActions, compile_env: dict[str, str], tools: dict[str, Artifact], build_tool_dir: str):
+    script = compile_env_script(compile_env) if compile_env else ""
     args = []
 
     # We smuggle the build tools in via an extra argument and make the shell
     # command add them to the PATH.
-    build_tool_dirs = {
-        dep[DefaultInfo].default_outputs[0].basename: dep[DefaultInfo].default_outputs[0]
-        for dep in ctx.attrs.build_tool_depends
-    }
-    if build_tool_dirs:
+    if tools:
         script += 'export PATH="$PATH:$1"; shift; '
-        args.append(ctx.actions.symlinked_dir(build_tool_dir, build_tool_dirs, has_content_based_path = False))
+        args.append(actions.symlinked_dir(build_tool_dir, tools, has_content_based_path = False))
     return struct(script = script, args = args)
 
 def in_env(env, cmd: cmd_args) -> cmd_args:

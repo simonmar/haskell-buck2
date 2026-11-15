@@ -182,13 +182,14 @@ possible, all targets share a single worker.
 
 However, a process can't change its environment between requests, so the
 shared worker can't compile a module that needs an environment specific to
-its target. In practice, that means a target whose build tools must be on
-`PATH`.
+its target. In practice, that means a module that may run one of its
+target's build tools from `PATH`: one that GHC runs a preprocessor for
+(`-F -pgmF`, say), or one that runs Template Haskell, whose splices could
+run anything. The target's other modules don't need its build tools.
 
-Those modules are compiled by a plain `ghc -c` instead. To keep that rare,
-`per_module_worker_build_tools` puts common build tools, such as a test
-discovery preprocessor, on the shared worker's `PATH`. In practice, that
-leaves only test suites with build tools of their own.
+Those modules are compiled by a plain `ghc -c` instead. In practice they
+are few: mostly the one module of a test suite that runs a test-discovery
+preprocessor.
 
 We rejected:
 

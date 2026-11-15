@@ -48,11 +48,16 @@ def check_workers(st):
     Template Haskell modules, because their splices load only prebuilt
     libraries (see Note [The persistent worker]).
 
-    A target with build tools compiles in the worker too, if all its build
-    tools are on the worker's PATH. The project's buckconfig puts
-    //build-tools:bt-shared there (per_module_worker_build_tools), so
-    //build-tools:shared's module compiles in the worker, and
-    //build-tools:own's module compiles without it.
+    A module compiles without the worker if it may run one of its target's
+    build tools. It may run one if GHC runs a program for it that it finds
+    on PATH (with -F -pgmF, for example), or if the module runs Template
+    Haskell. So:
+
+    - In //build-tools:own, BT.Own runs bt-own from its OPTIONS_GHC pragma,
+      and BT.OwnSplice runs Template Haskell, so both compile without the
+      worker. BT.OwnPlain runs no program, so it compiles in the worker.
+    - //build-tools:flags's module runs bt-copy because the target's flags
+      say so, and compiles without the worker.
 
     The build of //build-tools is a separate buck2 command, so it starts a
     new worker. That matters because the worker keeps what it reads for its
@@ -63,18 +68,31 @@ def check_workers(st):
         return [(module_of(e), e["reproducer"].get("executor", "")) for e in compiles], [e for e in compiles if e["reproducer"].get("executor") == "WorkerInit"]
 
     ran, inits = executors(st.entries)
-    build("//build-tools:shared", "//build-tools:own")
+    build("//build-tools:own", "//build-tools:flags")
     bt, bt_inits = executors(what_ran_entries())
     bt = set(bt) - {(m, "WorkerInit") for m, _ in bt}
+    bt_modules = ["own:BT.Own", "own:BT.OwnPlain", "own:BT.OwnSplice", "flags:BT.Flags"]
     if not st.worker:
         expect_set("how the module compiles ran", {x for _, x in ran} - {"WorkerInit"}, {"Local"})
-        expect_set("how //build-tools's module compiles ran", bt, {("shared:BT.Shared", "Local"), ("own:BT.Own", "Local")})
+        expect_set("how //build-tools's module compiles ran", bt, {(m, "Local") for m in bt_modules})
         return
     expect_set("the modules compiled without the worker", {m for m, x in ran if x == "Local"}, set())
     expect_set("how the other module compiles ran", {x for _, x in ran} - {"Local", "WorkerInit"}, {"Worker"})
     expect("one worker (started: {})".format(len(inits)), len(inits) == 1)
-    expect_set("how //build-tools's module compiles ran", bt, {("shared:BT.Shared", "Worker"), ("own:BT.Own", "Local")})
+    in_worker = {"own:BT.OwnPlain"}
+    expect_set("how //build-tools's module compiles ran", bt, {(m, "Worker" if m in in_worker else "Local") for m in bt_modules})
     expect("a new worker for a new buck2 command (started: {})".format(len(bt_inits)), len(bt_inits) == 1)
+
+
+def check_build_tool_change(st):
+    """A change to a build tool recompiles only the modules that may run it.
+    In //build-tools:own, BT.Own runs bt-own, and BT.OwnSplice runs Template
+    Haskell, whose splices may run any of the target's build tools. BT.OwnPlain
+    runs no program, so it doesn't compile again. (Its import, BT.Own, does,
+    but bt-own still writes the same module.)"""
+    append("build-tools/bt-own", "# a comment\n")
+    build("//build-tools:own")
+    expect_set("modules compiled after a change to bt-own", compiled_modules(what_ran()), {"own:BT.Own", "own:BT.OwnSplice"})
 
 
 def module_of(entry):

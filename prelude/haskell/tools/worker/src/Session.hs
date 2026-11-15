@@ -142,11 +142,17 @@ newSession libdir files names shared mode r = do
     -- Make the target's module graph with GHC's own dependency analysis of
     -- the source tree. If the analysis fails, the graph is left empty, and
     -- the compiles of the modules at fault report the errors.
-    analysed <- unGhc (do
+    --
+    -- The analysis can also fail with an exception rather than errors.
+    -- GHC throws one when it can't run a module's preprocessor because the
+    -- preprocessor isn't on the worker's PATH. The worker is never asked to
+    -- compile such a module, but its target's other modules can still be
+    -- compiled here.
+    analysed <- either (const False) id <$> tryNonAsync (unGhc (do
       hsc <- getSession
       targets <- mapM (\f -> guessTarget f (Just (homeUnitId (hsc_home_unit hsc))) Nothing) srcs
       setTargets targets
-      analyseTargets) session
+      analyseTargets) session)
     -- The analysis looked up the modules imported from dependencies, and
     -- most of their interfaces don't exist yet, since the interfaces in a
     -- dependency's early package db are written one by one as its modules

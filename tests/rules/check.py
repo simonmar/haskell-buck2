@@ -66,11 +66,13 @@ from per_module import (
     check_th_modules_dbs,
     check_unrelated_modules,
     check_workers,
+    check_build_tool_change,
 )
 
 CHECKS = [
     check_clean_build,
     check_workers,
+    check_build_tool_change,
     check_make_build,
     check_early_db_conf,
     check_cross_package_dep_file,

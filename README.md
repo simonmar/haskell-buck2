@@ -87,6 +87,12 @@ whether to use the worker:
   project's GHC.
 - `none`: no worker.
 
+The worker compiles every module except those that may run one of their
+target's build tools, which are compiled by their own `ghc -c`. Those are
+the modules that GHC runs a build tool for, such as a preprocessor named
+by `-F -pgmF`, and, in a target with build tools, the modules that run
+Template Haskell.
+
 The same section has options for the worker that the targets share:
 
 - `per_module_worker_rts_options`: its RTS options (`-A64m -n4m -qn8 -I5`
@@ -96,10 +102,6 @@ The same section has options for the worker that the targets share:
 - `per_module_worker_session_mode`: how its sessions compile. `auto` is the
   default, and `make` turns off sharing interfaces between targets (see
   `prelude/haskell/per_module_worker.bzl`).
-- `per_module_worker_build_tools`: the build tools on its `PATH`, as
-  targets separated by spaces. A target with a build tool that isn't among
-  them is compiled without the worker, one `ghc -c` per module, so list the
-  tools that many targets use (a test-discovery preprocessor, say).
 
 The recompilation check used by `per_module` is also currently slightly coarser
 than GHC's, in that GHC also looks at which definitions from a dependency are

@@ -19,6 +19,9 @@
 --   module];
 -- - "th": whether it may run code at compile time: a splice, or an ANN
 --   pragma, which GHC also evaluates with its interpreter.
+-- - "programs": the programs that GHC runs for it and finds on PATH, by
+--   name, such as a preprocessor that -F -pgmF names. A program may come
+--   from the module's OPTIONS_GHC pragma or from the target's flags.
 module Main (main) where
 
 import Control.Monad (forM, unless)
@@ -37,7 +40,9 @@ import GHC
 import GHC.Data.StringBuffer (StringBuffer (..), lexemeToString)
 import GHC.Driver.Env (hsc_dflags, hsc_home_unit)
 import GHC.Driver.Ppr (showSDoc)
-import GHC.Driver.Session (defaultFatalMessager, defaultFlushOut, xopt)
+import GHC.Driver.Config.Parser (initParserOpts)
+import GHC.Driver.Session (defaultFatalMessager, defaultFlushOut, parseDynamicFilePragma, pgm_F, pgm_L, pgm_P, pgm_a, pgm_c, pgm_i, pgm_lc, pgm_lo, xopt)
+import GHC.Parser.Header (getOptionsFromFile)
 import GHC.Iface.Errors (cannotFindModule)
 import qualified GHC.LanguageExtensions as LangExt
 import GHC.Unit.Finder (FindResult (..), findImportedModule)
@@ -48,6 +53,10 @@ import GHC.Utils.Outputable (ppr)
 #if MIN_VERSION_ghc(9,8,0)
 import GHC.Driver.Config.Diagnostic (initIfaceMessageOpts)
 import GHC.Iface.Errors.Ppr (missingInterfaceErrorDiagnostic)
+#endif
+#if MIN_VERSION_ghc(9,14,0)
+import GHC.Driver.Session (supportedLanguagesAndExtensions)
+import GHC.Platform (platformArchOS)
 #endif
 
 import Imports (importLocated, importName, srcImportName)
@@ -111,11 +120,18 @@ analyse sources flags = defaultErrorHandler defaultFatalMessager defaultFlushOut
           _ -> notFound hsc (importLocated i) found
       text <- maybe (readFile (ms_hspp_file ms)) (\b -> pure (lexemeToString b (len b))) (ms_hspp_buf ms)
       let th = not (isBoot ms) && (xopt LangExt.TemplateHaskell opts || xopt LangExt.QuasiQuotes opts || hasAnn text)
+      -- The module's flags are read again from its original source, because
+      -- the module's own flags (ms_hspp_opts) come from the preprocessed
+      -- source. A preprocessor that -F -pgmF names usually writes a module
+      -- without the pragma that named it, so those flags would leave it out.
+      -- GHC reports any error in the pragmas when it compiles the module.
+      sourceFlags <- maybe (pure dflags) (withSourcePragmas logger dflags) (ml_hs_file (ms_location ms))
       pure
         ( n
         , nub (mapMaybe (uncurry home . importName) imports ++ mapMaybe (\i -> M.lookup (srcImportName i) bootOf) (ms_srcimps ms) ++ own)
         , external
         , th
+        , pathPrograms dflags0 sourceFlags
         )
     pure (render nodes)
 
@@ -131,6 +147,32 @@ notFound hsc (L loc mn) found = do
   hPutStrLn stderr (showSDoc dflags (ppr loc) ++ ": error:\n" ++ unlines (map ("    " ++) (lines (showSDoc dflags doc))))
   exitWith (ExitFailure 1)
 
+-- | The programs that GHC, compiling a module with the flags @opts@, finds
+-- on PATH. Those are the programs which the flags name without a directory,
+-- and which aren't the ones that GHC runs by default (@base@ has GHC's
+-- defaults). For example, @-F -pgmF hspec-discover@ makes GHC run
+-- hspec-discover from PATH. A toolchain names its programs with their
+-- directories, so they don't count.
+pathPrograms :: DynFlags -> DynFlags -> [String]
+pathPrograms base opts = nub [p opts | p <- programs, p opts /= p base, '/' `notElem` p opts]
+  where
+    programs = [pgm_F, pgm_L, fst . pgm_P, pgm_c, fst . pgm_a, fst . pgm_lo, fst . pgm_lc, pgm_i]
+
+-- | The flags, with those of the OPTIONS_GHC pragmas of the source file
+-- added.
+withSourcePragmas :: Logger -> DynFlags -> FilePath -> IO DynFlags
+#if MIN_VERSION_ghc(9,14,0)
+withSourcePragmas logger dflags src = do
+  (_, pragmas) <- getOptionsFromFile (initParserOpts dflags) (supportedLanguagesAndExtensions (platformArchOS (targetPlatform dflags))) src
+  (flags, _, _) <- parseDynamicFilePragma logger dflags pragmas
+  pure flags
+#else
+withSourcePragmas _ dflags src = do
+  (_, pragmas) <- getOptionsFromFile (initParserOpts dflags) src
+  (flags, _, _) <- parseDynamicFilePragma dflags pragmas
+  pure flags
+#endif
+
 -- | Whether the (preprocessed) source has an ANN pragma, whose name, like
 -- any pragma's, may be in any case.
 hasAnn :: String -> Bool
@@ -138,14 +180,15 @@ hasAnn text = or [isAnn (dropWhile isSpace (drop 3 t)) | t <- tails text, "{-#" 
   where
     isAnn s = map toLower (take 3 s) == "ann" && all isSpace (take 1 (drop 3 s))
 
-render :: [(String, [String], [(String, String)], Bool)] -> String
+render :: [(String, [String], [(String, String)], Bool, [String])] -> String
 render nodes = "{" ++ intercalate ",\n" (map node nodes) ++ "}\n"
   where
-    node (n, imports, external, th) =
+    node (n, imports, external, th, programs) =
       str n ++ ": {"
         ++ intercalate ", "
-          ["\"imports\": " ++ list (map str imports), "\"external\": " ++ list [list [str u, str m] | (u, m) <- external], "\"th\": " ++ if th then "true" else "false"]
+          ["\"imports\": " ++ list (map str imports), "\"external\": " ++ list [list [str u, str m] | (u, m) <- external], "\"th\": " ++ bool th, "\"programs\": " ++ list (map str programs)]
         ++ "}"
+    bool b = if b then "true" else "false"
     list xs = "[" ++ intercalate ", " xs ++ "]"
     str s = "\"" ++ concatMap char s ++ "\""
     char c
