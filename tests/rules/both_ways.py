@@ -86,6 +86,32 @@ def check_module_moved(st):
         expect_output(configured("//module-move:main", c), "after MV.X moves, compiled {}".format(c), "13")
 
 
+def check_discovered_module(st):
+    """A new module that a preprocessor finds by listing a directory, as
+    hspec-discover finds specs, compiles the preprocessed module again.
+    //build-tools:discover's BT.Disc is written by bt-discover, which imports
+    each module in BT/Disc. Adding BT/Disc/B.hs to the target's sources
+    changes no file that BT.Disc's compile names, but it changes what the
+    preprocessor writes.
+
+    Compiled per-module, the target's other modules may compile again too,
+    since a new module changes the target's output directory (see
+    per_module_out_dir), so only BT.Disc and BT.Disc.B are required."""
+    targets = {c: configured("//build-tools:discover", c) for c in COMPILES}
+    build(*targets.values())
+    with open("build-tools/BT/Disc/B.hs", "w") as f:
+        f.write("module BT.Disc.B where\n")
+    replace("build-tools/BUCK.fixture", '"BT.Disc.A": "BT/Disc/A.hs"}', '"BT.Disc.A": "BT/Disc/A.hs", "BT.Disc.B": "BT/Disc/B.hs"}')
+    for c, t in targets.items():
+        build(t)
+        ran = compiled(what_ran())
+        if c == "make":
+            expect_set("compiles after adding BT/Disc/B.hs, compiled with --make", ran, {"discover"})
+        else:
+            required = {"discover:BT.Disc", "discover:BT.Disc.B"}
+            expect("BT.Disc and BT.Disc.B compile after adding BT/Disc/B.hs, compiled {} (compiled: {})".format(c, sorted(ran)), required <= ran)
+
+
 def check_header_change(st):
     """An edit to a header in a target's srcs, which a module #includes,
     compiles the module again."""

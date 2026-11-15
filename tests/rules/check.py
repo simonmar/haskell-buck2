@@ -21,6 +21,7 @@ import traceback
 from both_ways import (
     check_configurations,
     check_data_dirs,
+    check_discovered_module,
     check_header_change,
     check_index,
     check_local_splices,
@@ -99,6 +100,7 @@ CHECKS = [
     check_opt_shared_consumer,
     check_module_moved,
     check_header_change,
+    check_discovered_module,
     check_th_body_change,
     check_native_library_change,
     check_native_soname_for_splices,

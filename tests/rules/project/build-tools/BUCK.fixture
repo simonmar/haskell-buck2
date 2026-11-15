@@ -1,4 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
 
 # Preprocessors (run with -pgmF), which the libraries below use as build
 # tools. bt-own ignores its input and writes a fixed module. bt-copy copies
@@ -36,4 +37,20 @@ haskell_library(
     compiler_flags = ["-F", "-pgmF", "bt-copy"],
     build_tool_depends = [":bt-copy"],
     per_module = True,
+)
+
+# BT.Disc's preprocessor, bt-discover, finds the modules in BT/Disc as
+# hspec-discover finds the specs: by listing the directory, not through
+# anything that the compile names.
+sh_binary(
+    name = "bt-discover",
+    main = "bt-discover",
+)
+
+haskell_library(
+    name = "discover",
+    srcs = {"BT.Disc": "BT/Disc.hs", "BT.Disc.A": "BT/Disc/A.hs"},
+    packages = ["base"],
+    build_tool_depends = [":bt-discover"],
+    per_module = PER_MODULE,
 )

@@ -1,0 +1,11 @@
+#!/bin/sh
+# Like hspec-discover: writes a module that imports each module whose file is
+# in the Disc directory next to the original source, and lists their names.
+dir=$(dirname "$1")/Disc
+names=$(cd "$dir" && ls *.hs | sed 's/\.hs$//')
+{
+  echo "module BT.Disc (found) where"
+  for n in $names; do echo "import BT.Disc.$n ()"; done
+  echo "found :: [String]"
+  printf 'found = [%s]\n' "$(for n in $names; do printf '"%s",' "$n"; done | sed 's/,$//')"
+} > "$3"
