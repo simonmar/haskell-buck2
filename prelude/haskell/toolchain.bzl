@@ -35,6 +35,25 @@ def in_compile_env(script: str, args: list, cmd: cmd_args) -> cmd_args:
         return cmd
     return cmd_args(["sh", "-c", script + 'exec "$@"', "sh"] + args, cmd)
 
+# Write the libdir of `compiler` to a new file called `name`. The libdir is
+# what `ghc --print-libdir` prints. The per-module tools run GHC's code
+# in-process, and that code reads GHC's settings and package database from
+# the libdir. A toolchain rule calls this once and puts the file in the
+# toolchain's `libdir`, so that the compiler runs once per configuration
+# rather than once for each target.
+def print_libdir(actions: AnalysisActions, name: str, compiler, compile_env: dict[str, str]) -> Artifact:
+    out = actions.declare_output(name)
+    actions.run(
+        in_compile_env(
+            compile_env_script(compile_env),
+            [],
+            cmd_args("sh", "-c", 'out="$1"; shift; "$@" --print-libdir > "$out"', "sh", out.as_output(), compiler),
+        ),
+        category = "haskell_libdir",
+        identifier = name,
+    )
+    return out
+
 # Make the WorkerInfo for a per-module worker program, `worker`. The worker
 # runs with the toolchain's compile_env set. The other arguments are the
 # worker's settings, which per_module_worker_rts_options,
@@ -62,6 +81,10 @@ HaskellToolchainInfo = provider(
         # (not shell-evaluated).
         "link_env": provider_field(typing.Any, default = {}),
         "dynamic_ghc": provider_field(bool, default = True),
+        # A file that holds the libdir of `compiler`, as print_libdir writes
+        # it. If it is None, each target that compiles per-module runs the
+        # compiler to find the libdir itself.
+        "libdir": provider_field(Artifact | None, default = None),
         # The persistent worker (prelude/haskell/tools/worker) that compiles the
         # modules of per-module targets, as a WorkerInfo made by
         # per_module_worker_info. It is None if the toolchain has no worker.
