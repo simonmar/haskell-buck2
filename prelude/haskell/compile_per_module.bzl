@@ -23,7 +23,6 @@ load(
 load(
     "@prelude//haskell:toolchain.bzl",
     "HaskellToolchainInfo",
-    "print_libdir",
 )
 load(
     "@prelude//haskell:util.bzl",
@@ -580,10 +579,11 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     stubs = ctx.actions.declare_output("stubs-" + suffix, dir = True, has_content_based_path = False)
     producing_indices = get_producing_indices(ctx)
 
-    # The libdir of the GHC that compiles the target, which the tools need to
-    # run GHC's code (see Libdir in tools/ghc-api). The toolchain usually
-    # provides it.
-    libdir = haskell_toolchain.libdir or print_libdir(ctx.actions, prefix + "libdir", haskell_toolchain.compiler, haskell_toolchain.compile_env)
+    # The libdir of the GHC that compiles the target. The tools need it to
+    # run GHC's code (see Libdir in tools/ghc-api).
+    libdir = haskell_toolchain.libdir
+    if libdir == None:
+        fail("{}: per_module needs the Haskell toolchain's `libdir`, which print_libdir() in prelude/haskell/toolchain.bzl makes".format(ctx.label))
 
     # Work out the module graph with GHC's own dependency analysis, which the
     # deps tool runs (see tools/ghc-api/PerModuleDeps.hs). For each node, it
