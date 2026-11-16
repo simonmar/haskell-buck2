@@ -19,6 +19,10 @@
 --   module];
 -- - "th": whether it may run code at compile time: a splice, or an ANN
 --   pragma, which GHC also evaluates with its interpreter.
+-- - "th_reason", if "th" is true: why. "flags" if the target's flags turn
+--   on TemplateHaskell or QuasiQuotes, "module" if the module's own pragmas
+--   do, and "ann" if it has an ANN pragma (or something like one in a
+--   comment).
 -- - "programs": the programs that GHC runs for it and finds on PATH, by
 --   name, such as a preprocessor that -F -pgmF names. A program may come
 --   from the module's OPTIONS_GHC pragma or from the target's flags.
@@ -29,7 +33,7 @@ import Control.Monad.IO.Class (liftIO)
 import Data.Char (isSpace, ord, toLower)
 import Data.List (intercalate, isPrefixOf, isSuffixOf, nub, tails)
 import qualified Data.Map as M
-import Data.Maybe (mapMaybe)
+import Data.Maybe (isJust, mapMaybe)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (..), exitWith)
 import System.FilePath (normalise)
@@ -120,7 +124,13 @@ analyse libdir sources flags = defaultErrorHandler defaultFatalMessager defaultF
           Found _ m -> pure (unitString (moduleUnit m), moduleNameString (moduleName m))
           _ -> notFound hsc (importLocated i) found
       text <- maybe (readFile (ms_hspp_file ms)) (\b -> pure (lexemeToString b (len b))) (ms_hspp_buf ms)
-      let th = not (isBoot ms) && (xopt LangExt.TemplateHaskell opts || xopt LangExt.QuasiQuotes opts || hasAnn text)
+      let splices f = xopt LangExt.TemplateHaskell f || xopt LangExt.QuasiQuotes f
+          thReason
+            | isBoot ms = Nothing
+            | splices dflags = Just "flags"
+            | splices opts = Just "module"
+            | hasAnn text = Just "ann"
+            | otherwise = Nothing
       -- The module's flags are read again from its original source, because
       -- the module's own flags (ms_hspp_opts) come from the preprocessed
       -- source. A preprocessor that -F -pgmF names usually writes a module
@@ -131,7 +141,7 @@ analyse libdir sources flags = defaultErrorHandler defaultFatalMessager defaultF
         ( n
         , nub (mapMaybe (uncurry home . importName) imports ++ mapMaybe (\i -> M.lookup (srcImportName i) bootOf) (ms_srcimps ms) ++ own)
         , external
-        , th
+        , thReason
         , pathPrograms dflags0 sourceFlags
         )
     pure (render nodes)
@@ -181,13 +191,16 @@ hasAnn text = or [isAnn (dropWhile isSpace (drop 3 t)) | t <- tails text, "{-#" 
   where
     isAnn s = map toLower (take 3 s) == "ann" && all isSpace (take 1 (drop 3 s))
 
-render :: [(String, [String], [(String, String)], Bool, [String])] -> String
+render :: [(String, [String], [(String, String)], Maybe String, [String])] -> String
 render nodes = "{" ++ intercalate ",\n" (map node nodes) ++ "}\n"
   where
-    node (n, imports, external, th, programs) =
+    node (n, imports, external, thReason, programs) =
       str n ++ ": {"
         ++ intercalate ", "
-          ["\"imports\": " ++ list (map str imports), "\"external\": " ++ list [list [str u, str m] | (u, m) <- external], "\"th\": " ++ bool th, "\"programs\": " ++ list (map str programs)]
+          ( ["\"imports\": " ++ list (map str imports), "\"external\": " ++ list [list [str u, str m] | (u, m) <- external], "\"th\": " ++ bool (isJust thReason)]
+              ++ ["\"th_reason\": " ++ str r | Just r <- [thReason]]
+              ++ ["\"programs\": " ++ list (map str programs)]
+          )
         ++ "}"
     bool b = if b then "true" else "false"
     list xs = "[" ++ intercalate ", " xs ++ "]"

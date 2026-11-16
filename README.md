@@ -111,6 +111,32 @@ With `per_module`, `[interfaces]` (above) doesn't link the target's
 dependencies either, because a module's compile needs only the interfaces of
 its imports.
 
+# Advice
+
+The rules can spot some ways of declaring a target that
+build correctly but slowly, and can report them as advice. 
+After a build, the prelude's `validation/audit_results.bxl` can be used to get 
+the check results: 
+
+```
+buck2 build //...
+buck2 bxl prelude//validation/audit_results.bxl:main -- --targets //... --trim true
+```
+
+A result is a JSON file whose `data` has a `message` for people and a list
+of `findings` for tools. `--take NAME` picks out one check. The checks are:
+
+- `haskell_unused_build_tools`: build tools that are not used by any module's 
+  compilation. If the program uses them at runtime, they belong in
+  `run_tool_depends`; otherwise they can go.
+- `haskell_template_haskell_from_flags`: the target's flags turn on
+  `TemplateHaskell` or `QuasiQuotes`, so every module must be compiled as
+  if it used Template Haskell.
+- `haskell_ann_pragmas`: modules that must be compiled as if they used
+  Template Haskell only because of `ANN` pragmas.
+- `haskell_modules_outside_worker`: modules which must be compiled outside the
+  persistent worker, and an explanation for why.
+
 # Compiler and linker flags from the environment
 
 buck2 runs every build action with a clean environment, so directories that

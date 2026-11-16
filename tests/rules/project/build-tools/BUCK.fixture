@@ -54,3 +54,21 @@ haskell_library(
     build_tool_depends = [":bt-discover"],
     per_module = PER_MODULE,
 )
+
+# Build tools that no module runs: unused's module runs no program, and
+# unused-splice's runs a splice, which might run its build tool (it doesn't).
+haskell_library(
+    name = "unused",
+    srcs = {"BT.Unused": "BT/Unused.hs"},
+    packages = ["base"],
+    build_tool_depends = [":bt-copy"],
+    per_module = True,
+)
+
+haskell_library(
+    name = "unused-splice",
+    srcs = {"BT.UnusedSplice": "BT/UnusedSplice.hs"},
+    packages = ["base", "template-haskell"],
+    build_tool_depends = [":bt-copy"],
+    per_module = True,
+)

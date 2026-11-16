@@ -47,6 +47,9 @@ from other_rules import (
     check_toolchain_paths,
 )
 from per_module import (
+    check_advice_modules_outside_worker,
+    check_advice_template_haskell,
+    check_advice_unused_build_tools,
     check_binary_unit,
     check_boot,
     check_boot_cycle_inline,
@@ -74,6 +77,9 @@ CHECKS = [
     check_clean_build,
     check_workers,
     check_build_tool_change,
+    check_advice_unused_build_tools,
+    check_advice_template_haskell,
+    check_advice_modules_outside_worker,
     check_make_build,
     check_early_db_conf,
     check_cross_package_dep_file,

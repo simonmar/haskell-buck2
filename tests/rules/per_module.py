@@ -95,6 +95,62 @@ def check_build_tool_change(st):
     expect_set("modules compiled after a change to bt-own", compiled_modules(what_ran()), {"own:BT.Own", "own:BT.OwnSplice"})
 
 
+def advice(check, *targets):
+    """The findings of an advice check for each target (see Note [Advice] in
+    compile_per_module.bzl), after an ordinary build. They are read through
+    the prelude's validation/audit_results.bxl, as a tool that reports them
+    would."""
+    build(*targets)
+    findings = {}
+    for t in targets:
+        out = buck2("bxl", "prelude//validation/audit_results.bxl:main", "--", "--take", check, "--trim", "true", "--targets", t).stdout
+        for target, results in json.loads(out).items():
+            with open(results[check]) as f:
+                result = json.load(f)
+            expect("{}'s {} succeeds, whatever it finds".format(target, check), result["data"]["status"] == "success")
+            findings[target_name(target.split(" ")[0])] = result["data"]["findings"]
+    return findings
+
+
+def check_advice_unused_build_tools(st):
+    """haskell_unused_build_tools reports the build tools that no module's
+    compile runs: certainly in //build-tools:unused, which runs no Template
+    Haskell, and unless a splice runs it in //build-tools:unused-splice.
+    //build-tools:own's bt-own is run by BT.Own, so there is nothing to
+    report there."""
+    found = advice("haskell_unused_build_tools", "//build-tools:unused", "//build-tools:unused-splice", "//build-tools:own")
+    expect_set("the targets checked", set(found), {"unused", "unused-splice", "own"})
+    expect_set("unused's findings", {(f["tool"], f["certainty"]) for f in found["unused"]}, {("bt-copy", "definite")})
+    expect_set("unused-splice's findings", {(f["tool"], f["certainty"]) for f in found["unused-splice"]}, {("bt-copy", "unless_a_splice_runs_it")})
+    expect_set("own's findings", {(f["tool"], f["certainty"]) for f in found["own"]}, set())
+
+
+def check_advice_template_haskell(st):
+    """haskell_template_haskell_from_flags reports a target whose flags turn
+    on Template Haskell for all its modules (//advice:th-flags's two), and
+    haskell_ann_pragmas the modules that compile as Template Haskell modules
+    only because of ANN pragmas (//advice:ann's AD.Ann). //build-tools:own's
+    BT.OwnSplice turns on Template Haskell in its own pragma, which neither
+    check reports."""
+    targets = ["//advice:th-flags", "//advice:ann", "//build-tools:own"]
+    flags = advice("haskell_template_haskell_from_flags", *targets)
+    expect_set("the targets whose flags turn on Template Haskell", {t for t, fs in flags.items() if fs}, {"th-flags"})
+    expect("th-flags's finding counts its two modules (got {})".format(flags["th-flags"]), flags["th-flags"] == [{"modules": 2}])
+    anns = advice("haskell_ann_pragmas", *targets)
+    expect_set("the modules that run Template Haskell only for ANN pragmas", {(t, f["module"]) for t, fs in anns.items() for f in fs}, {("ann", "AD.Ann")})
+
+
+def check_advice_modules_outside_worker(st):
+    """haskell_modules_outside_worker reports the modules compiled without
+    the persistent worker, with the build tools they may run and why: in
+    //build-tools:own, BT.Own, which runs bt-own as its preprocessor, and
+    BT.OwnSplice, which runs Template Haskell, but not BT.OwnPlain. Without
+    a worker, it reports nothing."""
+    found = advice("haskell_modules_outside_worker", "//build-tools:own")
+    expected = {("BT.Own", ("bt-own",), "programs"), ("BT.OwnSplice", ("bt-own",), "template_haskell")} if st.worker else set()
+    expect_set("the modules of own compiled without the worker", {(f["module"], tuple(f["tools"]), f["reason"]) for f in found["own"]}, expected)
+
+
 def module_of(entry):
     """The module of a what-ran entry, as "target-name:Module"."""
     m = IDENTITY.match(entry["identity"])
