@@ -1,4 +1,4 @@
-load("@prelude//haskell:toolchain.bzl", "HaskellPlatformInfo", "HaskellToolchainInfo", "per_module_worker_info")
+load("@prelude//haskell:toolchain.bzl", "HaskellPlatformInfo", "HaskellToolchainInfo", "per_module_worker_info", "print_libdir")
 load("@prelude//haskell:per_module_worker.bzl", "build_per_module_worker", "per_module_worker_rts_options", "per_module_worker_session_mode", "per_module_worker_sessions")
 
 def _tool(tool):
@@ -24,6 +24,7 @@ def _haskell_toolchain_impl(ctx):
             compile_env = ctx.attrs.compile_env,
             link_env = ctx.attrs.link_env,
             dynamic_ghc = ctx.attrs.dynamic_ghc,
+            libdir = print_libdir(ctx.actions, "libdir", compiler, ctx.attrs.compile_env),
             # The WorkerInfo is made once, here, so that every target names
             # the same worker. buck2 starts a process for each distinct
             # worker.

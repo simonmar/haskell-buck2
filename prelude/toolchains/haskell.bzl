@@ -6,7 +6,7 @@
 # of this source tree. You may select, at your option, one of the
 # above-listed licenses.
 
-load("@prelude//haskell:toolchain.bzl", "HaskellPlatformInfo", "HaskellToolchainInfo")
+load("@prelude//haskell:toolchain.bzl", "HaskellPlatformInfo", "HaskellToolchainInfo", "print_libdir")
 
 def _system_haskell_toolchain(ctx: AnalysisContext) -> list[Provider]:
     return [
@@ -15,6 +15,7 @@ def _system_haskell_toolchain(ctx: AnalysisContext) -> list[Provider]:
             compiler = ctx.attrs.compiler,
             packager = ctx.attrs.packager,
             linker = ctx.attrs.compiler,
+            libdir = print_libdir(ctx.actions, "libdir", ctx.attrs.compiler, {}),
             haddock = "haddock",
             compiler_flags = [],
             linker_flags = [],
