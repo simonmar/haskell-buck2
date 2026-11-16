@@ -5,13 +5,24 @@
 #
 # - "builtin", the default. The toolchain builds the worker from its
 #   sources in prelude/haskell/tools/worker, with the toolchain's own GHC, so
-#   it always matches that GHC.
+#   it always matches that GHC. A toolchain can give its own build of the
+#   worker instead, in its `per_module_worker_program` (see below).
 # - "none". There is no worker, and each module is compiled by its own
 #   `ghc -c`.
 #
-# A toolchain of a project's own can use a worker built some other way, by
-# setting HaskellToolchainInfo's per_module_shared_worker itself (see
-# per_module_worker_info in prelude/haskell/toolchain.bzl).
+# The worker runs GHC's code in-process, so it must be linked with the GHC
+# library of the GHC that compiles the modules. The builtin worker is linked
+# with the `ghc` package installed with the toolchain's GHC. A GHC built from
+# source has no such package: its GHC library is a target of the build. So a
+# toolchain for such a GHC builds the worker itself, as a haskell_binary()
+# with the srcs that per_module_worker_srcs() gives, which depends on that
+# target, and passes it in `per_module_worker_program`. The worker must be
+# linked dynamically if the GHC is, for the reason given at
+# build_per_module_worker below.
+#
+# A toolchain of a project's own can also set HaskellToolchainInfo's
+# per_module_shared_worker itself (see per_module_worker_info in
+# prelude/haskell/toolchain.bzl).
 
 load("@prelude//haskell:ghc_api_tool.bzl", "GHC_API_TOOL_PACKAGES", "build_ghc_api_tool")
 
@@ -48,9 +59,47 @@ def build_per_module_worker(actions: AnalysisActions, compiler, compile_env: dic
         compile_env,
         [cmd_args("-i", srcs, "/worker/src", delimiter = "")],
         cmd_args(srcs, "/worker/app/Main.hs", delimiter = ""),
-        GHC_API_TOOL_PACKAGES + ["stm", "unix"],
-        ["-threaded", "-rtsopts", "-with-rtsopts=-N -A16m -qn4 --disable-delayed-os-memory-return"] + (["-dynamic"] if dynamic else []),
+        PER_MODULE_WORKER_PACKAGES,
+        per_module_worker_link_flags() + (["-dynamic"] if dynamic else []),
     )
+
+# The packages that the worker uses, all of which come with GHC.
+PER_MODULE_WORKER_PACKAGES = GHC_API_TOOL_PACKAGES + ["stm", "unix"]
+
+# The flags that the worker is linked with, and its default RTS options (see
+# build_per_module_worker).
+def per_module_worker_link_flags() -> list[str]:
+    return ["-threaded", "-rtsopts", "-with-rtsopts=-N -A16m -qn4 --disable-delayed-os-memory-return"]
+
+# The worker's own modules, in prelude//haskell/tools/worker/src.
+_WORKER_MODULES = ["Compat", "Grpc", "Proto", "Session", "Worker"]
+
+# The modules that the worker shares with the tools of the per-module
+# compiles. worker/src has symlinks to them in prelude//haskell/tools/ghc-api.
+_WORKER_SHARED_MODULES = ["Contract", "DepFile", "Imports", "Interface", "Request"]
+
+def per_module_worker_srcs() -> dict[str, str]:
+    """The `srcs` of a haskell_binary() that builds the worker, keyed by
+    module name. Build it with PER_MODULE_WORKER_PACKAGES and
+    per_module_worker_link_flags()."""
+    srcs = {m: "prelude//haskell/tools:worker/src/{}.hs".format(m) for m in _WORKER_MODULES}
+    srcs.update({m: "prelude//haskell/tools:ghc-api/{}.hs".format(m) for m in _WORKER_SHARED_MODULES})
+    srcs["Main"] = "prelude//haskell/tools:worker/app/Main.hs"
+    return srcs
+
+def per_module_worker_sources() -> list[str]:
+    """The worker's own source files, relative to prelude//haskell/tools."""
+    return ["worker/src/{}.hs".format(m) for m in _WORKER_MODULES] + ["worker/app/Main.hs"]
+
+def check_per_module_worker_sources(found: list[str]):
+    """Fails if a module in `found`, the sources in worker/src, isn't listed
+    in _WORKER_MODULES or _WORKER_SHARED_MODULES. See
+    check_ghc_api_tool_sources in ghc_api_tool.bzl for why the modules are
+    listed."""
+    listed = ["worker/src/{}.hs".format(m) for m in _WORKER_MODULES + _WORKER_SHARED_MODULES]
+    missing = [src for src in found if src not in listed]
+    if missing:
+        fail("add these modules to _WORKER_MODULES or _WORKER_SHARED_MODULES in per_module_worker.bzl: " + ", ".join(missing))
 
 # The RTS options of the shared worker, from `[haskell]
 # per_module_worker_rts_options` in the buckconfig.
