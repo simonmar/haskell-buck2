@@ -37,7 +37,7 @@ def check_make_build(st):
     build(*[configured(t, "make") for t in st.targets])
     expect_set("compiles of the fixtures with --make", compiled(what_ran()),
                {"lib", "lib-user", "th-gen", "th-local-splice", "show", "th-prebuilt-splice", "th-make-dep", "mkrun",
-                "ffi-import", "boot-cycle", "main", "reexport", "reexport-user", "flat-sources", "make-lib", "m", "p:Chain.P", "t:Chain.T"})
+                "ffi-import", "boot-cycle", "main", "reexport", "reexport-user", "th-boot-cycles", "flat-sources", "make-lib", "m", "p:Chain.P", "t:Chain.T"})
 
 
 def check_local_splices(st):
@@ -54,20 +54,22 @@ def check_local_splices(st):
 def check_own_boot_splices(st):
     """Splices that run code of a module of their own target behind an
     hs-boot file. OB.A imports OB.B {-# SOURCE #-}, and the splices run
-    OB.A's code, which runs OB.B's. Compiled per-module, OB.T, which reaches
-    OB.B only through the boot file, fails to compile. Outside the worker,
-    the dep file check fails it (see DepFile in tools/ghc-api). In the
-    worker, GHC's linker refuses OB.B, or with GHC 9.14 panics. With --make,
-    OB.T compiles. OB.U, which also imports OB.B whole through OB.C,
-    compiles either way, except in the persistent worker, whose session has
-    OB.B only as its boot interface, so that it may fail too."""
-    p = build(configured("//th-own-boot:boot-only", "per-module"), keep_going=True)
-    expect_set("the modules whose compiles failed", failed_compiles(p.stderr), {"boot-only:OB.T"})
-    build(configured("//th-own-boot:boot-only", "make"))
-    build(configured("//th-own-boot:both", "make"))
-    p = build(configured("//th-own-boot:both", "per-module"), keep_going=True)
-    if not st.worker:
-        expect("//th-own-boot:both builds per-module (got:\n{})".format(tail(p.stderr, 15)), p.returncode == 0)
+    OB.A's code, which runs OB.B's. OB.T reaches OB.B only through the boot
+    file, and OB.U also imports it whole, through OB.C. Per-module, each
+    waits for OB.B, so its splice may link it. GHC links it, except that
+    GHC 9.14's one-shot mode doesn't link it for OB.T, which reaches it only
+    through the boot file (see the worker's README). So per-module both
+    targets build, but boot-only fails in OB.T's compile with GHC 9.14
+    outside the worker. With --make, both build."""
+    t_links = st.ghc < (9, 14) or st.worker
+    for t, module, links in [("boot-only", "OB.T", t_links), ("both", "OB.U", True)]:
+        target = "//th-own-boot:" + t
+        build(configured(target, "make"))
+        p = build(configured(target, "per-module"), keep_going=True)
+        if links:
+            expect("{} builds per-module (got:\n{})".format(target, tail(p.stderr, 15)), p.returncode == 0)
+        else:
+            expect_set("the modules of {} whose compiles failed".format(target), failed_compiles(p.stderr), {t + ":" + module})
 
 
 def check_rts_flags(st):

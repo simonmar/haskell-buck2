@@ -1,15 +1,20 @@
 load("//buck2:haskell.bzl", "haskell_library")
 load("//compile:defs.bzl", "PER_MODULE")
 
-# Cyc.A imports Cyc.B's boot file; Cyc.B imports Cyc.A.
+# Cyc.A imports Cyc.B's boot file; Cyc.B imports Cyc.A. Cyc.AS imports Cyc.A
+# and runs a splice, which may link Cyc.B, so its compile waits for Cyc.B
+# too. This splice runs none of Cyc.A's code, since GHC 9.14.1's one-shot
+# mode fails to link Cyc.B for one that does. Its name sorts before
+# Cyc.B's, so that the rules meet it first among Cyc.A's importers.
 haskell_library(
     name = "boot-cycle",
     srcs = {
         "Cyc.A": "Cyc/A.hs",
+        "Cyc.AS": "Cyc/AS.hs",
         "Cyc.B": "Cyc/B.hs",
     },
     boot_srcs = {"Cyc.B": "Cyc/B.hs-boot"},
-    packages = ["base"],
+    packages = ["base", "template-haskell"],
     per_module = PER_MODULE,
     visibility = ["PUBLIC"],
 )

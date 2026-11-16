@@ -42,6 +42,7 @@ data Request = Request
   , reqLibraryPaths :: [FilePath] -- the directories of the native libraries that the module's splices may load, for LD_LIBRARY_PATH (see Note [Template Haskell modules] in compile_per_module.bzl)
   , reqBoot :: Bool -- whether the module is a boot file
   , reqClosure :: [String] -- for a module that runs Template Haskell, the target's modules in its closure, whose objects its splices may load (see Note [Template Haskell modules] in compile_per_module.bzl)
+  , reqLinks :: [String] -- the modules with boot files whose whole code the module's splices may link (see Note [Each compile's home modules] in prelude/haskell/tools/worker/src/Session.hs)
   , reqCompiler :: String
   , reqSessionArgs :: [String] -- the session flags, which are the same for every module of the target
   , reqModuleArgs :: [String] -- the module flags: `ghc -c`'s source and output files, -hiedir and -stubdir
@@ -53,7 +54,7 @@ data Request = Request
 parseRequest :: [String] -> Either String Request
 parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
   "--contract" : v : rest
-    | v == contract -> go (Request "" "" "" "" "" "" "" [] [] [] [] [] False [] "" [] []) rest
+    | v == contract -> go (Request "" "" "" "" "" "" "" [] [] [] [] [] False [] [] "" [] []) rest
     | otherwise -> Left ("this program takes version " ++ contract ++ " of the rules' requests, but the rules sent version " ++ v ++ ": build it from the same version of the rules")
   _ -> Left "the request names no version: build this program from the same version of the rules"
   where
@@ -75,6 +76,7 @@ parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
       | Just v <- stripPrefix "--srcroot=" x = go r{reqSrcRoots = reqSrcRoots r ++ [v]} rest
       | Just v <- stripPrefix "--mkdir=" x = go r{reqMkdirs = reqMkdirs r ++ [v]} rest
       | Just v <- stripPrefix "--closure-module=" x = go r{reqClosure = reqClosure r ++ [v]} rest
+      | Just v <- stripPrefix "--link=" x = go r{reqLinks = reqLinks r ++ [v]} rest
       | Just v <- stripPrefix "--data-dir=" x, (var, '=' : d) <- break (== '=') v = go r{reqDataDirs = reqDataDirs r ++ [(var, d)]} rest
       | Just d <- stripPrefix "--library-path=" x = go r{reqLibraryPaths = reqLibraryPaths r ++ [d]} rest
       | otherwise = Left ("unexpected request argument " ++ show x)

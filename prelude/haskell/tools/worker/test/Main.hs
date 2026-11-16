@@ -253,6 +253,7 @@ data Req = Req
   , compiler :: Maybe String -- a GHC to name instead of the test's
   , libdirOf :: Maybe String -- a libdir to name instead of the test's GHC's
   , closure :: [String] -- the modules of the package below it, whose objects its splices may load, as the rules name them for a module that runs Template Haskell
+  , links :: [String] -- the modules with boot files that its splices may link, as the rules name them
   }
 
 -- | The arguments of a request for a module of the package in the given
@@ -264,7 +265,7 @@ argv pkg ghc libdir r =
   [ "--request", "--contract", reqContract r, "--libdir", fromMaybe libdir (libdirOf r)
   , "--depfile", pkg </> "dep" </> node r <.> "dep", "--abi", abi, "--module", modPath r, "--source", src
   , "--outdir", out, "--hisuf", "hi"
-  ] ++ ["--boot" | boot r] ++ ["--closure-module=" ++ m | m <- closure r]
+  ] ++ ["--boot" | boot r] ++ ["--closure-module=" ++ m | m <- closure r] ++ ["--link=" ++ m | m <- links r]
   ++ ["--srcroot=" ++ pkg </> "src", "--mkdir=" ++ pkg </> "stubs" </> node r]
   ++ ["--", fromMaybe ghc (compiler r), "-hide-all-packages", "-package", "base", "-package-db", pkg </> "db", "-package", "p"] ++ extraFlags r
   ++ ["--", "-c", src, "-o", o, "-ohi", hi, "-stubdir", pkg </> "stubs" </> node r, "-i" ++ out]
@@ -277,7 +278,7 @@ argv pkg ghc libdir r =
     abi = out </> modPath r <.> ("abi" ++ suffix)
 
 req :: String -> String -> Req
-req n m = Req n m False contract [] Nothing Nothing []
+req n m = Req n m False contract [] Nothing Nothing [] []
 
 -- | Make a package (see makePackage) in a new temporary directory, named
 -- after the given string, and return the directory.
@@ -491,8 +492,9 @@ scenarios send dir ghc = do
 
 -- | A target with an import cycle through a boot file (see cyclePackage)
 -- compiles in the order buck2 would send it. The dep files of the modules
--- that read the boot file list its ABI file (T/C.abi-boot). The target
--- compiles again after an edit to the boot file.
+-- that read the boot file list its ABI file (T/C.abi-boot). Then a splice
+-- runs a module of the cycle. Finally, the target compiles again after an
+-- edit to the boot file.
 cycles :: TestWorker -> String -> IO ()
 cycles w ghc = do
   pkg <- cyclePackage w ghc
@@ -506,6 +508,27 @@ cycles w ghc = do
   lists (req "T.D" "T/D") ["out/T/C.abi-boot"]
   lists (req "T.C" "T/C") ["out/T/D.abi", "out/T/C.abi-boot"]
   lists (req "T.B" "T/B") ["out/T/C.abi", "out/T/D.abi"]
+
+  -- A splice that runs a module of a boot cycle, in a session that didn't
+  -- compile the cycle. T.D imports T.C {-# SOURCE #-}, so linking T.D needs
+  -- T.C's object, and the session must have read T.C whole, not just its
+  -- boot interface. We compile the cycle with -dynamic first, so that the
+  -- splice can load it. The otherwise unused -D flag gives T.N a session
+  -- of its own.
+  --
+  -- This doesn't work before GHC 9.12, whose linker leaves T.C out, in the
+  -- worker's sessions as with `ghc -c` (see the README's known issues).
+  -- FIXME: GHC's own --make mode does link T.C, and we don't yet understand
+  -- how.
+#if MIN_VERSION_GLASGOW_HASKELL(9,12,0,0)
+  let th = ["-dynamic", "-package", "template-haskell"]
+  compiled (req "T.C-boot" "T/C"){boot = True, extraFlags = th}
+  compiled (req "T.D" "T/D"){extraFlags = th}
+  compiled (req "T.C" "T/C"){extraFlags = th}
+  writeFile (dir </> "src/T/N.hs") "{-# LANGUAGE TemplateHaskell #-}\nmodule T.N where\nimport T.D (D (..), dSize)\nimport Language.Haskell.TH.Syntax (lift)\nn :: Int\nn = $(lift (dSize (D [])))\n"
+  compiled (req "T.N" "T/N"){extraFlags = th ++ ["-DLINKING_A_CYCLE"], links = ["T.C"], closure = ["T.D", "T.C"]}
+  lists (req "T.N" "T/N") ["out/T/D.o", "out/T/C.o"]
+#endif
 
   -- Edit the boot file, then compile it and every module that reads it,
   -- in order.

@@ -78,6 +78,7 @@ from per_module import (
     check_own_boot,
     check_plain_module_uses_early_dbs,
     check_own_native_libraries_per_module,
+    check_th_boot_cycle_links,
     check_splice_depends_not_a_dependency,
     check_th_modules_dbs,
     check_external_interpreter_splices,
@@ -119,6 +120,7 @@ CHECKS = [
     check_rts_flags,
     check_boot,
     check_boot_cycle_inline,
+    check_th_boot_cycle_links,
     check_index,
     check_cutoff_comment,
     check_interfaces_subtarget,
@@ -166,11 +168,13 @@ def main():
     ap.add_argument("--bazel-remote", help="a bazel-remote binary, for check_cache")
     ap.add_argument("--worker", action="store_true", help="the project compiles in a persistent worker")
     ap.add_argument("--external-interpreter", action="store_true", help="the project compiles with -fexternal-interpreter")
+    ap.add_argument("--ghc-version", required=True, help="the version of the GHC under test")
     args = ap.parse_args()
     unknown = set(args.only or []) - {check.__name__[len("check_"):] for check in CHECKS}
     if unknown:
         ap.error("no such check: " + " ".join(sorted(unknown)))
-    st = State(bazel_remote=args.bazel_remote, worker=args.worker, external_interpreter=args.external_interpreter)
+    major, minor = (int(x) for x in args.ghc_version.split(".")[:2])
+    st = State(bazel_remote=args.bazel_remote, ghc=(major, minor), worker=args.worker, external_interpreter=args.external_interpreter)
     failed = []
     for check in CHECKS:
         name = check.__name__[len("check_"):]

@@ -94,6 +94,27 @@ time of its mutator and of its collections when it ends.
 
 ## Known issues
 
+A Template Haskell splice may run code of a module in an import cycle
+(one behind an hs-boot file, directly or below the modules the splice
+runs). Whether that links depends on the GHC:
+
+- before GHC 9.12, it links neither in the worker nor with `ghc -c`
+  ("cannot be linked; it is only available as a boot module"), though
+  GHC's own `--make` links it;
+- with GHC 9.12, it links in both, unless the module has read that boot
+  interface itself, because it imports the module `{-# SOURCE #-}` or,
+  with `-O`, an unfolding mentions it. Then it links only in the worker;
+- with GHC 9.14.1, it links only in the worker.
+
+Where only the worker links it, build the package with the worker; buck2
+may still run an action outside it, as `ghc -c`, and then that fails.
+
+The worker compiles such a module seeing the modules behind those boot
+files whole, as GHC's `--make` does, where `ghc -c` may see only their boot
+interfaces. Its interface and object can then differ from those `ghc -c`
+writes, even without `-O`: a module that imports one of those modules
+`{-# SOURCE #-}` and runs a splice gets another ABI hash.
+
 Splices run in the worker's own process, in GHC's internal interpreter. So
 the splices of every target in a configuration share the libraries they
 load, and the libraries' global state, and a splice that crashes the
