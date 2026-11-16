@@ -469,18 +469,19 @@ perModule dir ghc n common w edit = do
 -- as a request, and the worker is ended as buck2 ends it.
 viaWorker :: FilePath -> FilePath -> [String] -> String -> Int -> [String] -> [(String, String)] -> Workload -> Maybe String -> IO (Measure, Int)
 viaWorker dir worker rts ghc n common settings w edit = do
+  libdir <- takeWhile (/= '\n') <$> readProcess ghc ["--print-libdir"] ""
   let logFile = dir </> "worker.log"
   (wall, cpu, (path, k)) <- timed $ withFile logFile WriteMode $ \logH ->
     withWorkerProcess worker (["+RTS", "-T"] ++ rts ++ ["-RTS"]) dir ([("TMPDIR", dir </> "tmp"), ("BUCK2_GHC_WORKER_VERBOSE", "1")] ++ settings) (UseHandle logH) $ \sock ->
-      dispatch dir n w edit (\t name -> (\(code, err) -> (code == 0, err)) <$> grpc sock (workerRequest ghc common t name))
+      dispatch dir n w edit (\t name -> (\(code, err) -> (code == 0, err)) <$> grpc sock (workerRequest ghc libdir common t name))
   (peak, live, gc, sessions) <- readWorkerLog logFile
   split <- readWorkerSplit logFile
   pure (Measure wall cpu peak live gc (Just sessions) (Just path) split, k)
 
 -- | The arguments of a module's request, as the rules send them.
-workerRequest :: String -> [String] -> Target -> String -> [String]
-workerRequest ghc common t name =
-  [ "--request", "--contract", contract
+workerRequest :: String -> FilePath -> [String] -> Target -> String -> [String]
+workerRequest ghc libdir common t name =
+  [ "--request", "--contract", contract, "--libdir", libdir
   , "--depfile", tDir t </> "dep" </> name <.> "dep", "--abi", outDir t </> name <.> "abi", "--module", name, "--source", tDir t </> "src" </> name <.> "hs"
   , "--outdir", outDir t, "--hisuf", "hi", "--srcroot=" ++ tDir t </> "src"]
   ++ ["--", ghc] ++ compileFlags common t ++ ["--"] ++ compileArgs t name

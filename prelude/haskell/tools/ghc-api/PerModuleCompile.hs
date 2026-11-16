@@ -4,9 +4,10 @@
 -- same files (see Request and DepFile, and compile_per_module in
 -- prelude/haskell/compile_per_module.bzl).
 --
--- The first argument is --libdir=DIR, the libdir of the GHC that compiles
--- the modules (see Libdir). This program must be built with the same version
--- of GHC: only that version can read the modules' interfaces.
+-- It reads the interface with GHC's code, using the libdir that the request
+-- names. This program must be built with the same version of GHC as the
+-- GHC that compiles the module, because only that version can read the
+-- module's interface.
 module Main (main) where
 
 import Control.Exception (SomeException, displayException, fromException, handle, throwIO)
@@ -23,13 +24,11 @@ import GHC.Utils.Panic (GhcException (..))
 
 import DepFile (writeDepFiles)
 import Interface (readInterface)
-import Libdir (takeLibdir)
 import Request
 
 main :: IO ()
 main = handle failed $ do
-  (libdir, args) <- takeLibdir "per_module_compile" =<< getArgs
-  r <- either (\err -> hPutStrLn stderr ("per_module_compile: " ++ err) >> exitWith (ExitFailure 2)) pure (parseRequest args)
+  r <- either (\err -> hPutStrLn stderr ("per_module_compile: " ++ err) >> exitWith (ExitFailure 2)) pure . parseRequest =<< getArgs
   mapM_ (createDirectoryIfMissing True) (reqMkdirs r)
   -- With -fforce-recomp: buck2 decides when the module compiles, not GHC
   -- (see Note [Early cut-off by dep files] in compile_per_module.bzl).
@@ -40,7 +39,7 @@ main = handle failed $ do
     when unlinked $ hPutStr stderr (spliceHint r)
     exitWith (ExitFailure code)
   case dropWhile (/= "-ohi") (reqModuleArgs r) of
-    _ : hi : _ -> readInterface libdir hi >>= writeDepFiles r
+    _ : hi : _ -> readInterface (reqLibdir r) hi >>= writeDepFiles r
     _ -> hPutStrLn stderr "per_module_compile: the request names no interface file (-ohi)" >> exitWith (ExitFailure 2)
 
 -- | Copy GHC's diagnostics to stderr as they come, bytes unchanged, and say

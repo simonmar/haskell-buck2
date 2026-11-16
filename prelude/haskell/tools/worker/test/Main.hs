@@ -51,12 +51,13 @@ main = do
   let built = showVersion fullCompilerVersion
   unless (version == built) $
     die' ("the test was built with GHC " ++ built ++ " but `" ++ ghc ++ "` is " ++ version ++ ": set GHC")
+  libdir <- trim <$> readProcess ghc ["--print-libdir"] ""
   -- The tests in a group run in order, because each builds on what the
   -- earlier ones compiled. The first group is run twice, once in session
   -- mode make and once in one-shot (see Note [One-shot sessions] in
   -- Session). The groups after it use auto, the default mode.
   defaultMain . dependentTestGroup "buck2-ghc-worker" AllFinish $
-    [ withTestWorker ("one worker, over its socket, in session mode " ++ mode) mode worker ghc $ \getW ->
+    [ withTestWorker ("one worker, over its socket, in session mode " ++ mode) mode worker ghc libdir $ \getW ->
         [testCase "compiles a package, and again after edits" $ getW >>= \w -> scenarios (sendOwn w) (twDir w) ghc]
           ++ bootTests ghc mode getW
           ++ [ testCase "each compile removes its temporary files" $ do
@@ -66,6 +67,7 @@ main = do
              , testCase "compiles another target's modules beside the first's" $ getW >>= \w -> otherTarget (twSendIn w) (twDir w) ghc
              , testCase "fails each request for a session that can't be made" $ getW >>= failedSessions . sendOwn
              , testCase "refuses a request for another GHC" $ getW >>= otherCompiler . sendOwn
+             , testCase "refuses a request for another libdir" $ getW >>= otherLibdir . sendOwn
              , testCase "runs a splice in an external interpreter" $ getW >>= \w -> externalInterpreter w ghc
              , testCase "drops the least recently used idle session, and compiles in new ones" $ getW >>= \w -> idleDrop w ghc
              , testCase "drops a target's session once its modules are all compiled" $ getW >>= \w -> finishedDrop w ghc
@@ -74,13 +76,13 @@ main = do
              ]
     | mode <- ["make", "one-shot"]
     ]
-      ++ [ withTestWorker "one worker in session mode auto" "auto" worker ghc $ \getW ->
+      ++ [ withTestWorker "one worker in session mode auto" "auto" worker ghc libdir $ \getW ->
              [testCase "compiles a target one-shot, and one with boot files with --make" $ getW >>= \w -> autoModes w ghc]
-         , withTestWorker "a new worker's first splices, two at once" "auto" worker ghc $ \getW ->
+         , withTestWorker "a new worker's first splices, two at once" "auto" worker ghc libdir $ \getW ->
              [testCase "both compile" $ getW >>= \w -> firstSplices (sendOwn w) (twDir w)]
          , withResource (newPackage ghc "orphan") removePathForcibly $ \getDir ->
              dependentTestGroup "a worker whose parent has gone ends" AllFinish
-               [testCase (show when') $ getDir >>= \dir -> orphan when' dir worker ghc | when' <- [Idle, AfterASplice, DuringASplice]]
+               [testCase (show when') $ getDir >>= \dir -> orphan when' dir worker ghc libdir | when' <- [Idle, AfterASplice, DuringASplice]]
          ]
   where
     trim = reverse . dropWhile (`elem` ("\r\n" :: String)) . reverse
@@ -247,15 +249,16 @@ data Req = Req
   , reqContract :: String
   , extraFlags :: [String]
   , compiler :: Maybe String -- a GHC to name instead of the test's
+  , libdirOf :: Maybe String -- a libdir to name instead of the test's GHC's
   }
 
 -- | The arguments of a request for a module of the package in the given
 -- subdirectory of the worker's directory. Paths are relative to the
 -- worker's directory. For the worker's own package the subdirectory is "",
 -- so that the paths have no leading "./", as buck2 gives them.
-argv :: FilePath -> String -> Req -> [String]
-argv pkg ghc r =
-  [ "--request", "--contract", reqContract r
+argv :: FilePath -> String -> FilePath -> Req -> [String]
+argv pkg ghc libdir r =
+  [ "--request", "--contract", reqContract r, "--libdir", fromMaybe libdir (libdirOf r)
   , "--depfile", pkg </> "dep" </> node r <.> "dep", "--abi", abi, "--module", modPath r, "--source", src
   , "--outdir", out, "--hisuf", "hi"
   ] ++ ["--boot" | boot r]
@@ -271,7 +274,7 @@ argv pkg ghc r =
     abi = out </> modPath r <.> ("abi" ++ suffix)
 
 req :: String -> String -> Req
-req n m = Req n m False contract [] Nothing
+req n m = Req n m False contract [] Nothing Nothing
 
 -- | Make a package (see makePackage) in a new temporary directory, named
 -- after the given string, and return the directory.
@@ -720,6 +723,13 @@ otherCompiler send = do
   (code, err) <- send (req "T.E" "T/E"){compiler = Just "/no/such/ghc"}
   assertBool ("a request for another GHC is refused: " ++ err) (code /= 0 && "/no/such/ghc" `isInfixOf` err)
 
+-- | The worker refuses a request that names a different libdir from the one
+-- it was started with.
+otherLibdir :: Send -> IO ()
+otherLibdir send = do
+  (code, err) <- send (req "T.E" "T/E"){libdirOf = Just "/no/such/libdir"}
+  assertBool ("a request for another libdir is refused: " ++ err) (code /= 0 && "/no/such/libdir" `isInfixOf` err)
+
 -- | The process ids of the external interpreters (iserv) that the worker
 -- in the given directory started. We recognise them by their TMPDIR, which
 -- is the worker's. This needs /proc, and finds nothing without it.
@@ -761,8 +771,8 @@ sendOwn w = twSendIn w ""
 --
 -- The last test ends the worker with SIGTERM, as buck2 does. The worker must
 -- exit successfully and leave no temporary files behind.
-withTestWorker :: String -> String -> FilePath -> String -> (IO TestWorker -> [TestTree]) -> TestTree
-withTestWorker name mode worker ghc tests =
+withTestWorker :: String -> String -> FilePath -> String -> FilePath -> (IO TestWorker -> [TestTree]) -> TestTree
+withTestWorker name mode worker ghc libdir tests =
   withResource start stop $ \getW ->
     dependentTestGroup name AllFinish (tests getW ++ [testCase "ends on SIGTERM, leaving no temporary files" (getW >>= end)])
   where
@@ -774,7 +784,7 @@ withTestWorker name mode worker ghc tests =
       dir <- newPackage ghc [c | c : _ <- words name]
       logH <- openFile (dir </> "worker.log") WriteMode
       (ph, sock) <- startWorkerProcess worker [] dir [("BUCK2_GHC_WORKER_SESSIONS", "1"), ("BUCK2_GHC_WORKER_VERBOSE", "1"), ("BUCK2_GHC_WORKER_SESSION_MODE", mode), ("TMPDIR", dir </> "tmp")] (UseHandle logH)
-      pure (TestWorker dir ph (\pkg -> grpc sock . argv pkg ghc))
+      pure (TestWorker dir ph (\pkg -> grpc sock . argv pkg ghc libdir))
     end w = do
       terminateProcess (twProcess w)
       code <- waitForProcess (twProcess w)
@@ -807,8 +817,8 @@ data Orphaned = Idle | AfterASplice | DuringASplice
 -- parent exits. Then it waits until the test creates the file "go", or
 -- until the test process itself has gone, so that a test killed part-way
 -- doesn't leave a worker behind.
-orphan :: Orphaned -> FilePath -> FilePath -> String -> IO ()
-orphan when' dir worker ghc = do
+orphan :: Orphaned -> FilePath -> FilePath -> String -> FilePath -> IO ()
+orphan when' dir worker ghc libdir = do
   environment <- getEnvironment
   let sock = dir </> "w.sock"
       go = dir </> "go"
@@ -823,11 +833,11 @@ orphan when' dir worker ghc = do
   when (when' /= Idle) $ do
     writeFile (dir </> "src/T/H.hs") "{-# LANGUAGE TemplateHaskell #-}\nmodule T.H (h) where\nimport Language.Haskell.TH (integerL, litE)\nh :: Int\nh = $(litE (integerL 3))\n"
     forM_ [(req "T.H" "T/H"){extraFlags = th ++ ["-DSPLICING"]}] $ \r -> do
-      (code, err) <- grpc sock (argv "" ghc r)
+      (code, err) <- grpc sock (argv "" ghc libdir r)
       assertBool ("before its parent goes, " ++ node r ++ " compiles: " ++ err) (code == 0)
   when (when' == DuringASplice) $ do
     writeFile (dir </> "src/T/Z.hs") "{-# LANGUAGE TemplateHaskell #-}\nmodule T.Z where\nimport Control.Concurrent (threadDelay)\nimport Control.Monad (forever)\nimport Language.Haskell.TH.Syntax (lift, runIO)\nz :: Int\nz = $(runIO (writeFile \"z-started\" \"\" >> forever (threadDelay 100000)) >> lift (1 :: Int))\n"
-    void . forkIO . void $ grpc sock (argv "" ghc (req "T.Z" "T/Z"){extraFlags = th ++ ["-DNEVER_DONE"]}) `catch` \(_ :: SomeException) -> pure (0, "")
+    void . forkIO . void $ grpc sock (argv "" ghc libdir (req "T.Z" "T/Z"){extraFlags = th ++ ["-DNEVER_DONE"]}) `catch` \(_ :: SomeException) -> pure (0, "")
     started <- poll 300 (doesFileExist (dir </> "z-started"))
     assertBool "the compile that never ends starts" started
   writeFile go ""
