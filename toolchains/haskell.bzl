@@ -38,12 +38,15 @@ def _haskell_toolchain_impl(ctx):
         HaskellPlatformInfo(name = host_info().arch),
     ]
 
-# The persistent worker that the toolchain builds itself, with its own
-# compiler, from the sources in the prelude, or None (see
-# prelude/haskell/per_module_worker.bzl).
+# The toolchain's persistent worker, or None if it has none (see
+# prelude/haskell/per_module_worker.bzl). It is the toolchain's
+# `per_module_worker_program` if that is set. Otherwise the toolchain builds
+# the worker itself, with its own compiler, from the sources in the prelude.
 def _worker(ctx, compiler):
     if ctx.attrs.per_module_worker == "none":
         return None
+    if ctx.attrs.per_module_worker_program:
+        return ctx.attrs.per_module_worker_program[RunInfo]
     srcs = ctx.attrs._per_module_worker_srcs[DefaultInfo].default_outputs[0]
     return build_per_module_worker(ctx.actions, compiler, ctx.attrs.compile_env, srcs, ctx.attrs.dynamic_ghc)
 
@@ -74,6 +77,9 @@ haskell_toolchain = rule(
         # `attrs.option` can't default to a value.
         "per_module_worker_sessions": attrs.string(default = per_module_worker_sessions()),
         "per_module_worker_session_mode": attrs.string(default = per_module_worker_session_mode()),
+        # The worker, if the toolchain's GHC can't build it (see
+        # prelude/haskell/per_module_worker.bzl).
+        "per_module_worker_program": attrs.option(attrs.exec_dep(providers = [RunInfo]), default = None),
         "_per_module_worker_srcs": attrs.dep(default = "prelude//haskell/tools:worker-srcs"),
         # The tools of the per-module compiles, if the prelude's can't be
         # used (see per_module_deps in prelude/haskell/toolchain.bzl).
