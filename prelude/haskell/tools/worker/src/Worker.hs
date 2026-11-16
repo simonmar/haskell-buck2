@@ -15,7 +15,6 @@ import qualified Data.Set as Set
 import Foreign.C.Types (CInt (..))
 import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
-import System.Process (readProcess)
 import Text.Read (readMaybe)
 
 import GHC (getSession, runGhc)
@@ -38,7 +37,7 @@ import Session
 -- sessions]).
 data Worker = Worker
   { wCompiler :: String -- the GHC that the requests name
-  , wLibdir :: FilePath
+  , wLibdir :: FilePath -- the libdir that the requests name
   , wSessions :: MVar (M.Map [String] Entry) -- the sessions, keyed by their session flags
   , wMaxSessions :: Int -- how many sessions to keep, counting those in use and those idle (BUCK2_GHC_WORKER_SESSIONS)
   , wCompiled :: MVar (M.Map FilePath (Set.Set Node)) -- for each target not yet finished, keyed by its output directory, the modules compiled so far
@@ -58,12 +57,12 @@ data Entry = Entry
   , eFinished :: Bool -- whether all the modules of the session's target have been compiled
   }
 
--- | Start the worker for the GHC that the first request names, and run the
--- given action with it. While the action runs, GHC's signal handlers are
--- installed, so buck2's SIGTERM arrives as a 'Signal' exception.
+-- | Start the worker for the GHC and libdir that the first request names,
+-- and run the given action with it. While the action runs, GHC's signal
+-- handlers are installed, so buck2's SIGTERM arrives as a 'Signal'
+-- exception.
 withWorker :: Request -> (Worker -> IO a) -> IO a
 withWorker first k = do
-  libdir <- trim <$> readProcess (reqCompiler first) ["--print-libdir"] ""
   sessions <- newMVar M.empty
   verbose <- isJust <$> lookupEnv "BUCK2_GHC_WORKER_VERBOSE"
   maxSessions <- maybe getNumCapabilities pure . (>>= readMaybe) =<< lookupEnv "BUCK2_GHC_WORKER_SESSIONS"
@@ -83,11 +82,9 @@ withWorker first k = do
   -- a 'Signal' exception, and its name cache, which all the sessions share
   -- (see Note [One name cache for all the sessions] in Session). The
   -- sessions that compile are made on demand, by withSession.
-  runGhc (Just libdir) $ do
+  runGhc (Just (reqLibdir first)) $ do
     names <- hsc_NC <$> getSession
-    liftIO (k (Worker (reqCompiler first) libdir sessions maxSessions compiled verbose files names shared mode))
-  where
-    trim = reverse . dropWhile (`elem` "\r\n") . reverse
+    liftIO (k (Worker (reqCompiler first) (reqLibdir first) sessions maxSessions compiled verbose files names shared mode))
 
 -- | Start the runtime's object linker (see Note [Starting the object linker
 -- once]). A non-zero argument makes the linker keep the CAFs of the code it
@@ -223,13 +220,17 @@ withSession w r k = mask $ \restore -> do
     isAsync e = isJust (fromException e :: Maybe SomeAsyncException)
 
 -- | Compile the request's module in the session for its session flags. It
--- returns the exit code for buck2, and the compile's diagnostics as text. A
--- request that names a different GHC from the worker's fails with exit code
--- 2.
+-- returns the exit code for buck2, and the compile's diagnostics as text.
+--
+-- A request that names a different GHC or libdir from the worker's fails
+-- with exit code 2. The worker makes all of its sessions with its own
+-- libdir, so it can't compile a request for another.
 compileRequest :: Worker -> Request -> IO (Int, String)
 compileRequest w r
   | reqCompiler r /= wCompiler w =
       pure (2, "buck2-ghc-worker: this worker runs " ++ wCompiler w ++ ", the request names " ++ reqCompiler r ++ "\n")
+  | reqLibdir r /= wLibdir w =
+      pure (2, "buck2-ghc-worker: this worker uses the libdir " ++ wLibdir w ++ ", the request names " ++ reqLibdir r ++ "\n")
   | otherwise = do
       diagnostics <- newIORef []
       t0 <- getMonotonicTime

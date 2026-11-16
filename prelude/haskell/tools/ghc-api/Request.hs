@@ -12,8 +12,8 @@ import Contract (contract)
 -- action's arguments (see Note [The persistent worker] in
 -- compile_per_module.bzl):
 --
--- > --request --contract V --depfile DEP --abi ABI --module Foo/Bar
--- >   --source Foo/Bar.hs --outdir OUT --hisuf SUF [--boot]
+-- > --request --contract V --libdir LIBDIR --depfile DEP --abi ABI
+-- >   --module Foo/Bar --source Foo/Bar.hs --outdir OUT --hisuf SUF [--boot]
 -- >   [--hidir=UNIT=DIR]... [--srcroot=SRCS]... [--mkdir=DIR]...
 -- >   -- ghc SESSION_FLAGS... -- -c Foo/Bar.hs -o ... -ohi ...
 --
@@ -23,8 +23,13 @@ import Contract (contract)
 -- @-o@, @-ohi@, @-dyno@, @-dynohi@, @-hiedir@ and @-stubdir@. When buck2
 -- doesn't use the worker, the compile tool (PerModuleCompile) takes the same
 -- request.
+--
+-- LIBDIR is the libdir of the GHC that compiles the module. The worker and
+-- the compile tool run GHC's code in-process, and that code reads GHC's
+-- settings and package database from the libdir.
 data Request = Request
-  { reqDepfile :: FilePath
+  { reqLibdir :: FilePath
+  , reqDepfile :: FilePath
   , reqAbi :: FilePath
   , reqModPath :: String -- Foo/Bar
   , reqSource :: FilePath
@@ -45,10 +50,11 @@ data Request = Request
 parseRequest :: [String] -> Either String Request
 parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
   "--contract" : v : rest
-    | v == contract -> go (Request "" "" "" "" "" "" [] [] [] False "" [] []) rest
+    | v == contract -> go (Request "" "" "" "" "" "" "" [] [] [] False "" [] []) rest
     | otherwise -> Left ("this program takes version " ++ contract ++ " of the rules' requests, but the rules sent version " ++ v ++ ": build it from the same version of the rules")
   _ -> Left "the request names no version: build this program from the same version of the rules"
   where
+    go r ("--libdir" : v : rest) = go r{reqLibdir = v} rest
     go r ("--depfile" : v : rest) = go r{reqDepfile = v} rest
     go r ("--abi" : v : rest) = go r{reqAbi = v} rest
     go r ("--module" : v : rest) = go r{reqModPath = v} rest
@@ -56,9 +62,11 @@ parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
     go r ("--outdir" : v : rest) = go r{reqOutDir = v} rest
     go r ("--hisuf" : v : rest) = go r{reqHisuf = v} rest
     go r ("--boot" : rest) = go r{reqBoot = True} rest
-    go r ("--" : compiler : rest) =
-      let (session, moduleArgs) = break (== "--") rest
-       in Right r{reqCompiler = compiler, reqSessionArgs = session, reqModuleArgs = drop 1 moduleArgs}
+    go r ("--" : compiler : rest)
+      | null (reqLibdir r) = Left "the request names no libdir (--libdir)"
+      | otherwise =
+          let (session, moduleArgs) = break (== "--") rest
+           in Right r{reqCompiler = compiler, reqSessionArgs = session, reqModuleArgs = drop 1 moduleArgs}
     go r (x : rest)
       | Just v <- stripPrefix "--hidir=" x, (unit, '=' : d) <- break (== '=') v = go r{reqHidirs = reqHidirs r ++ [(unit, d)]} rest
       | Just v <- stripPrefix "--srcroot=" x = go r{reqSrcRoots = reqSrcRoots r ++ [v]} rest

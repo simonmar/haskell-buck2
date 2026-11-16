@@ -275,7 +275,7 @@ def _declare_module_outputs(ctx: AnalysisContext, out_dir: str, nodes: list, osu
 # of the rules reports the mismatch rather than misreading the request. When
 # either the request or the worker's outputs change, bump this and the
 # version in tools/ghc-api/Contract.hs.
-_WORKER_CONTRACT = "1"
+_WORKER_CONTRACT = "2"
 
 # The dynamic output of a per-module compile. It runs once the deps tool has
 # written the module graph. It registers a compile action for each node,
@@ -396,6 +396,8 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             "--request",
             "--contract",
             _WORKER_CONTRACT,
+            "--libdir",
+            libdir.read_string().strip(),
             "--depfile",
             tag.tag_artifacts(depfile.as_output()),
             "--abi",
@@ -438,7 +440,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         # only if it has no tools, since the worker can't put a compile's
         # tools on PATH (see Note [The persistent worker]).
         module_tools = list(tools) if runs_th[n] else [p for p in program_nodes[n] if p in tools]
-        script = in_env(env_with(module_tools), cmd_args(compile_script, "--libdir=" + libdir.read_string().strip()))
+        script = in_env(env_with(module_tools), cmd_args(compile_script))
         category = "haskell_compile_module_" + suffix.replace("-", "_")
         if worker_info != None and not module_tools:
             actions.run(request, exe = WorkerRunInfo(worker = worker_info, exe = script), category = category, identifier = n, dep_files = {"hs": tag})
@@ -580,7 +582,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     producing_indices = get_producing_indices(ctx)
 
     # The libdir of the GHC that compiles the target. The tools need it to
-    # run GHC's code (see Libdir in tools/ghc-api).
+    # run GHC's code (see Libdir and Request in tools/ghc-api).
     libdir = haskell_toolchain.libdir
     if libdir == None:
         fail("{}: per_module needs the Haskell toolchain's `libdir`, which print_libdir() in prelude/haskell/toolchain.bzl makes".format(ctx.label))
@@ -909,8 +911,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #
 # A module's action sends the same request whether or not there is a
 # worker. The request goes either to the worker, or to the compile tool,
-# which runs it as one `ghc -c`. It holds the module's source and the
-# compile's flags, which come in two parts:
+# which runs it as one `ghc -c`. It holds the module's source, the libdir
+# of the GHC that compiles it, and the compile's flags. The flags come in
+# two parts:
 #
 # - The session flags are the same for all the target's modules. The worker
 #   keeps a session for each distinct set of session flags.

@@ -427,7 +427,7 @@ isCompiled _ = False
 -- whether to compare objects (which are deterministic from GHC 9.12) or
 -- else the usages that interfaces record; and whether the worker uses
 -- one-shot sessions rather than --make ones.
-data Config = Config {cWorker :: FilePath, cGhc :: String, cDir :: FilePath, cObjects :: Bool, cOneShot :: Bool}
+data Config = Config {cWorker :: FilePath, cGhc :: String, cLibdir :: FilePath, cDir :: FilePath, cObjects :: Bool, cOneShot :: Bool}
 
 -- | Counts of what a history's builds did. The coverage checks in
 -- historyProp use them to make sure the generated histories exercise the
@@ -570,7 +570,7 @@ workerBuild cfg h b mods lastOk stats = do
     -- each package may have the same name.
     depFile node@(i, _) = "dep" </> (if inP i then "p-" else "") ++ nodeName node <.> "dep"
     request node@(i, boot) =
-      [ "--request", "--contract", contract
+      [ "--request", "--contract", contract, "--libdir", cLibdir cfg
       , "--depfile", depFile node, "--abi", outDir i </> modName i <.> ("abi" ++ suffix node), "--module", modName i
       , "--source", source node, "--outdir", outDir i, "--hisuf", "hi", "--srcroot=" ++ srcDir i
       ] ++ ["--boot" | boot]
@@ -629,10 +629,11 @@ main = do
   when (version /= showVersion fullCompilerVersion) $ do
     hPutStrLn stderr ("the props were built with GHC " ++ showVersion fullCompilerVersion ++ " but `" ++ ghc ++ "` is " ++ version ++ ": set GHC")
     exitFailure
+  libdir <- trim <$> readProcess ghc ["--print-libdir"] ""
   tmp <- getTemporaryDirectory
   pid <- getProcessID
   let v = versionBranch fullCompilerVersion
-      cfg = Config worker ghc (tmp </> ("buck2-ghc-worker-props-" ++ show pid)) (v >= [9, 12]) False
+      cfg = Config worker ghc libdir (tmp </> ("buck2-ghc-worker-props-" ++ show pid)) (v >= [9, 12]) False
       -- Each property has a directory of its own, because tasty runs them
       -- at the same time.
       oneShotCfg = cfg{cOneShot = True, cDir = cDir cfg ++ "-one-shot"}
