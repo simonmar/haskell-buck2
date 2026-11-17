@@ -25,6 +25,8 @@ def _haskell_toolchain_impl(ctx):
             link_env = ctx.attrs.link_env,
             dynamic_ghc = ctx.attrs.dynamic_ghc,
             ghc_version = ctx.attrs.ghc_version,
+            make_jobs = ctx.attrs.make_jobs,
+            make_rts_options = ctx.attrs.make_rts_options,
             libdir = print_libdir(ctx.actions, "libdir", compiler, ctx.attrs.compile_env),
             # The WorkerInfo is made once, here, so that every target names
             # the same worker. buck2 starts a process for each distinct
@@ -74,6 +76,10 @@ haskell_toolchain = rule(
         # The version of the `compiler` above, as `ghc --numeric-version`
         # prints it (see HaskellToolchainInfo).
         "ghc_version": attrs.string(),
+        # See HaskellToolchainInfo. `[haskell] make_jobs` in the buckconfig
+        # sets the default.
+        "make_jobs": attrs.int(default = int(read_root_config("haskell", "make_jobs", "1"))),
+        "make_rts_options": attrs.list(attrs.string(), default = read_root_config("haskell", "make_rts_options", "-A128m -qn4").split()),
         # See HaskellToolchainInfo.
         "per_module_worker": attrs.enum(["builtin", "none"], default = "builtin"),
         "per_module_worker_rts_options": attrs.list(attrs.string(), default = per_module_worker_rts_options()),

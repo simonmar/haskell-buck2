@@ -573,6 +573,13 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
     )
     compile_cmd.add(ghc_file_args(ctx, "args-" + args.variant + ".haskell_compile_argsfile", cmd_args(args.args_for_file, outputs), args.srcs))
 
+    modules = len([src for _, src in srcs_to_pairs(ctx.attrs.srcs) if is_haskell_src(src)])
+    jobs = max(1, min(haskell_toolchain.make_jobs, modules))
+    if jobs > 1:
+        compile_cmd.add("-j{}".format(jobs))
+        if haskell_toolchain.make_rts_options:
+            compile_cmd.add("+RTS", haskell_toolchain.make_rts_options, "-RTS")
+
     steps = _MAKE_STUBDIR
     step_args = [result.stubs.as_output()]
     if dynamic_from != None and splice_objects_kind(ctx, enable_profiling) == "from_non_profiled":
@@ -586,7 +593,7 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
     # GHC >= 9.4 tracks file changes with hashes rather than
     # timestamps, so this is safe even though Buck doesn't preserve
     # timestamps on artifacts.
-    run_ghc(ctx, compile_cmd, splices, args.variant, args.variant, steps, step_args, "haskell_compile", diagnostics)
+    run_ghc(ctx, compile_cmd, splices, args.variant, args.variant, steps, step_args, "haskell_compile", diagnostics, weight = jobs)
 
     return result
 
@@ -618,7 +625,10 @@ def target_splice_env(ctx: AnalysisContext, link_style: LinkStyle, enable_profil
 # The action doesn't clean up its outputs before it runs, because GHC can
 # sometimes reuse them. Pass -fforce-recomp in `cmd` to stop GHC from doing
 # that.
-def run_ghc(ctx: AnalysisContext, cmd: cmd_args, splices, variant: str, name: str, steps: str, step_args: list, category: str, diagnostics: Artifact):
+#
+# `weight` is the number of buck2's jobs that the action takes up. A --make
+# compile with -j uses more than one.
+def run_ghc(ctx: AnalysisContext, cmd: cmd_args, splices, variant: str, name: str, steps: str, step_args: list, category: str, diagnostics: Artifact, weight: int = 1):
     env = ghc_env(ctx, "build-tool-depends-" + name)
     native_dir = native_libs_tree(ctx, "native-libs-" + name, splices.native_libs)
     script = env.script + "set -eu; " + steps + _CAPTURE_DIAGNOSTICS
@@ -627,6 +637,7 @@ def run_ghc(ctx: AnalysisContext, cmd: cmd_args, splices, variant: str, name: st
         category = category,
         identifier = variant,
         no_outputs_cleanup = True,
+        weight = weight,
         env = splices.data_dirs | ({"LD_LIBRARY_PATH": cmd_args(native_dir)} if native_dir != None else {}),
     )
 
