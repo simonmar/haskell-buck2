@@ -68,6 +68,7 @@ main = do
              , testCase "fails each request for a session that can't be made" $ getW >>= failedSessions . sendOwn
              , testCase "refuses a request for another GHC" $ getW >>= otherCompiler . sendOwn
              , testCase "refuses a request for another libdir" $ getW >>= otherLibdir . sendOwn
+             , testCase "ignores the ghc program's -B flag" $ getW >>= \w -> libdirFlag (sendOwn w) libdir
              , testCase "runs a splice in an external interpreter" $ getW >>= \w -> externalInterpreter w ghc
              , testCase "drops the least recently used idle session, and compiles in new ones" $ getW >>= \w -> idleDrop w ghc
              , testCase "drops a target's session once its modules are all compiled" $ getW >>= \w -> finishedDrop w ghc
@@ -729,6 +730,14 @@ otherLibdir :: Send -> IO ()
 otherLibdir send = do
   (code, err) <- send (req "T.E" "T/E"){libdirOf = Just "/no/such/libdir"}
   assertBool ("a request for another libdir is refused: " ++ err) (code /= 0 && "/no/such/libdir" `isInfixOf` err)
+
+-- | A toolchain whose GHC is built from source gives its compiler command
+-- the GHC's libdir with -B. The worker isn't the ghc program, and takes the
+-- libdir from the request, so it must accept the flag and ignore it.
+libdirFlag :: Send -> FilePath -> IO ()
+libdirFlag send libdir = do
+  (code, err) <- send (req "T.E" "T/E"){extraFlags = ["-B" ++ libdir]}
+  assertBool ("a request whose compiler command has -B compiles: " ++ err) (code == 0)
 
 -- | The process ids of the external interpreters (iserv) that the worker
 -- in the given directory started. We recognise them by their TMPDIR, which

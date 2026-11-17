@@ -4,7 +4,7 @@
 -- failed compile's output.
 module Request (Request (..), parseRequest, sessionFlags, withoutRts, unlinkedSplice, spliceHint, withSpliceHint) where
 
-import Data.List (isInfixOf, stripPrefix)
+import Data.List (isInfixOf, isPrefixOf, stripPrefix)
 
 import Contract (contract)
 
@@ -75,9 +75,16 @@ parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
     go _ [] = Left "the request has no compiler command"
 
 -- | The flags of the session that compiles the request's module. They are
--- the request's session flags, without any options for the ghc program's
--- runtime (@+RTS ... -RTS@), because the worker has its own runtime. To
--- those, this adds:
+-- the request's session flags, without two kinds of flag that only the ghc
+-- program takes:
+--
+-- - options for the ghc program's runtime (@+RTS ... -RTS@), because the
+--   worker has its own runtime;
+-- - @-B@, which tells the ghc program its libdir. A toolchain whose GHC is
+--   built from source passes it as part of the compiler command. The worker
+--   takes the libdir from the request instead (@--libdir@).
+--
+-- To those, this adds:
 --
 -- - @-odir@ and @-hidir@, so that GHC writes each output into the output
 --   directory, at a path made from the module's name. That is where the
@@ -90,7 +97,7 @@ parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
 --   (see 'objectDeterminism').
 sessionFlags :: Request -> [String]
 sessionFlags r =
-  withoutRts (reqSessionArgs r)
+  filter (not . ("-B" `isPrefixOf`)) (withoutRts (reqSessionArgs r))
     ++ ["-odir", reqOutDir r, "-hidir", reqOutDir r, "-fforce-recomp"]
     ++ objectDeterminism
     ++ ["-i" ++ d | d <- reqSrcRoots r]
