@@ -82,6 +82,15 @@ HaskellToolchainInfo = provider(
         # (not shell-evaluated).
         "link_env": provider_field(typing.Any, default = {}),
         "dynamic_ghc": provider_field(bool, default = True),
+        # Maximum parallelism for `ghc --make` (GHC's -j flag).
+        # Reduced to the number of modules if that's lower than
+        # make_jobs. We tell Buck about this via `weight`, so Buck
+        # will run fewer other actions in parallel.
+        "make_jobs": provider_field(int, default = 1),
+        # RTS options for GHC when `make_jobs > 1`.  Typically
+        # increasing the allocation area with "-A128m" and limiting the
+        # GC parallelism with "-qn4" are good things to do here.
+        "make_rts_options": provider_field(list[str], default = []),
         # A file that holds the libdir of `compiler`, as print_libdir writes
         # it. Targets that compile per-module need it.
         "libdir": provider_field(Artifact | None, default = None),
