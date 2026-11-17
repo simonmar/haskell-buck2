@@ -5,17 +5,17 @@ name: buck2-ghc-worker
 
 # Some of the worker's modules are symbolic links to modules of the rules'
 # GHC-API tools, in prelude/haskell/tools/ghc-api, so a change there runs
-# this workflow too. As in rules.yml, pushes only run it on master and the
-# release branches. A branch with a pull request is already tested by the
-# pull_request event.
+# this workflow too. A change only to Markdown files doesn't. As in
+# rules.yml, pushes only run it on master and the release branches. A branch
+# with a pull request is already tested by the pull_request event.
 on:
   push:
     branches:
       - master
       - "[0-9]+.[0-9]+.[0-9]+.[0-9]+"
-    paths: [prelude/haskell/tools/worker/**, prelude/haskell/tools/ghc-api/**, .github/workflows/buck2-ghc-worker.yml]
+    paths: &worker [prelude/haskell/tools/worker/**, prelude/haskell/tools/ghc-api/**, .github/workflows/buck2-ghc-worker.yml, "!**.md"]
   pull_request:
-    paths: [prelude/haskell/tools/worker/**, prelude/haskell/tools/ghc-api/**, .github/workflows/buck2-ghc-worker.yml]
+    paths: *worker
   workflow_dispatch:
 
 jobs:
