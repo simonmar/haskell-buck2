@@ -254,7 +254,9 @@ def check_data_dirs(st):
     the variable data_dirs sets, as a package's Paths_<pkg> module does.
     Per-module, the module with the splice compiles outside the worker even
     when the project has one, since the worker can't give a compile the
-    variable (see Note [Data files of splices])."""
+    variable (see Note [Data files of splices]). With -fexternal-interpreter,
+    it compiles in the worker, which starts the session's interpreter with
+    the variable."""
     for c in COMPILES:
         target = configured("//data-dirs:data-dirs", c)
         build(target)
@@ -263,7 +265,7 @@ def check_data_dirs(st):
             # The first compile that buck2 sends to a worker has the executor
             # WorkerInit rather than Worker, because it also starts the worker.
             executor = {"WorkerInit": "Worker"}.get(ran.get("data-dirs:Main"), ran.get("data-dirs:Main"))
-            expect_set("how //data-dirs:data-dirs's Main compiled", {executor}, {"Local"})
+            expect_set("how //data-dirs:data-dirs's Main compiled", {executor}, {"Worker" if st.worker and st.external_interpreter else "Local"})
         expect_output(target, "from its data file, compiled {}".format(c), "hello")
 
 

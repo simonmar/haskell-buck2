@@ -182,9 +182,10 @@ def check_native_libraries_outside_worker(st):
     library. A splice finds that through LD_LIBRARY_PATH, which the worker
     can't set for one compile, so both modules compile outside the worker
     even when the project has one, and haskell_modules_outside_worker says
-    why."""
+    why. With -fexternal-interpreter, they compile in the worker, which
+    starts each session's interpreter with that LD_LIBRARY_PATH."""
     found = advice("haskell_modules_outside_worker", "//th-ffi-splice:th-ffi-splice")
-    expected = {("U.V", "native_libraries"), ("U.W", "native_libraries")} if st.worker else set()
+    expected = {("U.V", "native_libraries"), ("U.W", "native_libraries")} if st.worker and not st.external_interpreter else set()
     expect_set("the modules of th-ffi-splice compiled outside the worker", {(f["module"], f["reason"]) for f in found["th-ffi-splice"]}, expected)
 
 
