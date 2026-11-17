@@ -61,6 +61,7 @@ load(
 )
 load(
     "@prelude//haskell:compile_per_module.bzl",
+    "advice_validations",
     "compile_per_module",
     "compiles_per_module",
     "per_module_out_dir",
@@ -1344,6 +1345,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     providers.append(TemplatePlaceholderInfo(keyed_variables = templ_vars))
 
     providers.append(merge_link_group_lib_info(deps = attr_deps(ctx)))
+    providers += advice_validations(hlib_compiled[actual_link_style])
 
     return providers
 
@@ -1750,7 +1752,7 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
             sub_targets = {"interfaces": [DefaultInfo(default_output = compiled.hi)]},
         ),
         RunInfo(args = run),
-    ]
+    ] + advice_validations(compiled)
 
     if indexing_tsets:
         providers.append(HaskellIndexInfo(info = indexing_tsets))

@@ -44,9 +44,12 @@ CompileResultInfo = record(
     hi = field(Artifact),
     stubs = field(Artifact),
     producing_indices = field(bool),
-    # These two are only set when the target is compiled per-module:
+    # These are only set when the target is compiled per-module:
     modules = field(dict[str, HaskellModuleFiles] | None, None),
     closures = field(typing.Any, None),
+    # The results of the advice checks, by the names of their validations
+    # (see Note [Advice] in compile_per_module.bzl).
+    advice = field(dict[str, Artifact] | None, None),
 )
 
 CompileArgsInfo = record(

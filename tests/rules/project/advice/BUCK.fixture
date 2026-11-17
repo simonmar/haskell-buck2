@@ -1,0 +1,20 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# The target's flags turn on TemplateHaskell, so both modules compile as
+# Template Haskell modules, though neither runs a splice.
+haskell_library(
+    name = "th-flags",
+    srcs = {"AD.F1": "AD/F1.hs", "AD.F2": "AD/F2.hs"},
+    packages = ["base", "template-haskell"],
+    compiler_flags = ["-XTemplateHaskell"],
+    per_module = True,
+)
+
+# AD.Ann compiles as a Template Haskell module only because of HLint's ANN
+# pragma. AD.Plain has none.
+haskell_library(
+    name = "ann",
+    srcs = {"AD.Ann": "AD/Ann.hs", "AD.Plain": "AD/Plain.hs"},
+    packages = ["base"],
+    per_module = True,
+)
