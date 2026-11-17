@@ -57,7 +57,7 @@ import GHC.Utils.TmpFs (cleanCurrentModuleTempFiles, cleanTempDirs, cleanTempFil
 import Compat
 import DepFile (writeDepFiles)
 import Imports (findImport, findModuleByName, importName, sourceImports, textualImports)
-import Interface (directDep)
+import Interface (directDep, usages)
 import Request
 
 -- | A GHC session, and what the worker keeps with it.
@@ -401,7 +401,13 @@ compileHeld s report r = do
     `finally` (cleanCurrentModuleTempFiles (hsc_logger hsc) tmpfs >> mergeTmpFsInto tmpfs (hsc_tmpfs hsc))
   let n = (ms_mod_name ms, if reqBoot r then IsBoot else NotBoot)
   unless (gsOneShot s) $ modifyMVar_ (gsHomes s) (pure . compiled key n below hmi)
-  writeDepFiles r (hm_iface hmi)
+  -- The dep file comes from the usages that the interface records. When
+  -- GHC compiles its primitive module, GHC.Internal.Prim, it writes the
+  -- module's interface to disk, but returns its built-in interface for the
+  -- module, which records no usages. In that case, the worker reads the
+  -- interface that GHC wrote, as the compile tool does for every module.
+  iface <- if isJust (usages (hm_iface hmi)) then pure (hm_iface hmi) else readIface hsc (ml_hi_file (ms_location ms))
+  writeDepFiles r iface
   pure n
   where
     isError cls = case cls of
