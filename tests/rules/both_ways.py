@@ -187,6 +187,21 @@ def check_own_native_libraries_for_splices(st):
         expect_output(configured("//th-own-native:show", c), "compiled {}".format(c), "(9,11)")
 
 
+@known_failure("with -fexternal-interpreter, the static and profiled interpreters don't load a local library's native dependencies")
+def check_external_interpreter_native_splices(st):
+    """With -fexternal-interpreter in the toolchain's compiler flags, splices
+    that call native libraries run in the opt and prof modes too: U.V's and
+    U.W's splices, which run //c-lib:c-lib's code through
+    //ffi-import:ffi-import, compile with --make.
+
+    In those modes the external interpreter is static or profiled, and it
+    loads ffi-import's archive with GHC's own linker. Only the libraries that
+    ffi-import's package db names are loaded, and the db doesn't name
+    c-lib, so the splices can't find its symbols."""
+    for mode in ["opt", "prof"]:
+        buck2("build", "-c", "haskell.compiler_flags=-fexternal-interpreter", configured("//th-ffi-splice:th-ffi-splice", "make", mode))
+
+
 @known_failure("with --make, a splice isn't run again when only the code it runs changes")
 def check_native_library_change(st):
     """U.V's and U.W's splices run //c-lib:c-lib's code, through
