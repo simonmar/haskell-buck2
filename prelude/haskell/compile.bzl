@@ -303,18 +303,28 @@ def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: 
         args_for_file = compile_args,
     )
 
+# Shell steps that run before `ghc --make`, in the same shell as the
+# toolchain's environment (see in_env). Each step takes its arguments from
+# the front of the positional parameters and shifts them off, so that what
+# is left at the end is the command to run.
+
+# GHC creates the -stubdir only when it compiles a module. The action keeps
+# the outputs of its previous run (see no_outputs_cleanup in compile), so if
+# GHC finds every module up to date, it compiles nothing. If the stub
+# directory is missing in that case, for example because Buck removed it,
+# the action would fail to produce one of its outputs. This step makes the
+# directory that its argument names.
+_MAKE_STUBDIR = 'mkdir -p "$1"; shift; '
+
 # Copies the .dyn_o objects of another compile of the same sources into this
-# compile's -odir, then runs the rest of the arguments.
+# compile's -odir. The arguments are the -odir and the other compile's
+# objects directory.
 _COPY_DYN_OBJECTS = """\
-set -eu
-odir=$1
-src=$2
-shift 2
+odir=$1; src=$2; shift 2
 (cd "$src" && find . -name '*.dyn_o') | while read -r f; do
   mkdir -p "$odir/${f%/*}"
   cp -f "$src/$f" "$odir/$f"
 done
-exec "$@"
 """
 
 # The environment for the rule's `data_dirs`: each variable name mapped to the
@@ -403,24 +413,15 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
 
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
 
+    env = ghc_env(ctx, artifact_suffix + "-build-tool-depends")
+    steps = "set -eu; " + _MAKE_STUBDIR
+    step_args = [args.result.stubs.as_output()]
     if dynamic_from != None:
-        compile_cmd = cmd_args(
-            ["sh", "-c", _COPY_DYN_OBJECTS, "sh", args.result.objects.as_output(), dynamic_from.objects],
-            compile_cmd,
-        )
-
-    # GHC creates the -stubdir only when it compiles a module. The action
-    # keeps the outputs of its previous run (see no_outputs_cleanup below),
-    # so if GHC finds every module up to date, it compiles nothing. If the
-    # stub directory is missing in that case, for example because Buck
-    # removed it, the action would fail to produce one of its outputs.
-    compile_cmd = cmd_args(
-        ["sh", "-c", 'mkdir -p "$1" && shift && exec "$@"', "sh", args.result.stubs.as_output()],
-        compile_cmd,
-    )
+        steps += _COPY_DYN_OBJECTS
+        step_args += [args.result.objects.as_output(), dynamic_from.objects]
 
     ctx.actions.run(
-        in_env(ghc_env(ctx, artifact_suffix + "-build-tool-depends"), compile_cmd),
+        in_env(struct(script = env.script + steps, args = env.args + step_args), compile_cmd),
         category = "haskell_compile_" + artifact_suffix.replace("-", "_"),
         # Keep the previous run's -odir/-hidir so that `ghc --make` can do its
         # own recompilation checking and only rebuild the modules whose

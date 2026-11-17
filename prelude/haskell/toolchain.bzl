@@ -44,10 +44,11 @@ def in_compile_env(script: str, args: list, cmd: cmd_args) -> cmd_args:
 def print_libdir(actions: AnalysisActions, name: str, compiler, compile_env: dict[str, str]) -> Artifact:
     out = actions.declare_output(name)
     actions.run(
+        # The shell sends its output, and so the compiler's, to the file.
         in_compile_env(
-            compile_env_script(compile_env),
-            [],
-            cmd_args("sh", "-c", 'out="$1"; shift; "$@" --print-libdir > "$out"', "sh", out.as_output(), compiler),
+            compile_env_script(compile_env) + 'exec > "$1"; shift; ',
+            [out.as_output()],
+            cmd_args(compiler, "--print-libdir"),
         ),
         category = "haskell_libdir",
         identifier = name,

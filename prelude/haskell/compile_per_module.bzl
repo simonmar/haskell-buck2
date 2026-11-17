@@ -598,11 +598,12 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     # GHC's analysis in-process.
     deps = ctx.actions.declare_output(prefix + "deps.json")
     ctx.actions.run(
-        in_env(env, cmd_args(
-            "sh",
-            "-c",
-            'tool="$1"; libdir=$(cat "$2"); shift 2; exec "$tool" "--libdir=$libdir" "$@"',
-            "sh",
+        # The tool takes the libdir as a flag, so the shell reads it from
+        # the file and puts the flag after the tool.
+        in_env(struct(
+            script = env.script + 'tool="$1"; libdir=$(cat "$2"); shift 2; set -- "$tool" "--libdir=$libdir" "$@"; ',
+            args = env.args,
+        ), cmd_args(
             haskell_toolchain.per_module_deps or ctx.attrs._per_module_deps[RunInfo],
             libdir,
             deps.as_output(),
