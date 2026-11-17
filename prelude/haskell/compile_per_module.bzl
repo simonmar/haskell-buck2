@@ -449,10 +449,11 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         category = "haskell_compile_module_" + suffix.replace("-", "_")
         if worker_info != None and module_tools:
             outside_worker[n] = module_tools
+        # For allow_dep_file_cache_upload, see Note [Early cut-off by dep files], section 5.
         if worker_info != None and not module_tools:
-            actions.run(request, exe = WorkerRunInfo(worker = worker_info, exe = script), category = category, identifier = n, dep_files = {"hs": tag})
+            actions.run(request, exe = WorkerRunInfo(worker = worker_info, exe = script), category = category, identifier = n, dep_files = {"hs": tag}, allow_dep_file_cache_upload = True)
         else:
-            actions.run(cmd_args(script, request), category = category, identifier = n, dep_files = {"hs": tag})
+            actions.run(cmd_args(script, request), category = category, identifier = n, dep_files = {"hs": tag}, allow_dep_file_cache_upload = True)
 
     obj_map = {}
     hi_map = {}
@@ -951,6 +952,18 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # export list, and of each entity the module used. A module's compile could
 # write those as separate files (a directory per module), and its importers'
 # dep files would list only the ones they used.
+#
+# 5. With a remote cache
+#
+# buck2 keeps dep files in the daemon's memory, so a new daemon, or a new
+# checkout, has none, and a module whose tagged inputs changed compiles
+# again even if it read none of them. A remote cache can keep the dep files
+# too. buck2 then also stores each compile's result under a key that leaves
+# out the tagged inputs, together with its dep file, and reuses the result
+# if the inputs that the dep file lists are unchanged. The compiles allow
+# that with allow_dep_file_cache_upload, which only uploads where results
+# are uploaded at all, and the execution platform that uses the cache turns
+# it on with remote_dep_file_cache_enabled.
 
 # Note [Template Haskell modules]
 #
