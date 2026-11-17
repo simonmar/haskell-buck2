@@ -409,6 +409,16 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
             compile_cmd,
         )
 
+    # GHC creates the -stubdir only when it compiles a module. The action
+    # keeps the outputs of its previous run (see no_outputs_cleanup below),
+    # so if GHC finds every module up to date, it compiles nothing. If the
+    # stub directory is missing in that case, for example because Buck
+    # removed it, the action would fail to produce one of its outputs.
+    compile_cmd = cmd_args(
+        ["sh", "-c", 'mkdir -p "$1" && shift && exec "$@"', "sh", args.result.stubs.as_output()],
+        compile_cmd,
+    )
+
     ctx.actions.run(
         in_env(ghc_env(ctx, artifact_suffix + "-build-tool-depends"), compile_cmd),
         category = "haskell_compile_" + artifact_suffix.replace("-", "_"),
