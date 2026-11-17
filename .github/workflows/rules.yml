@@ -1,20 +1,24 @@
 # The tests of the rules (tests/rules), run with each GHC version that the
 # rules support, on Linux and macOS, both without the persistent worker and
-# with it. The GHC versions are the same as the worker's (see
-# buck2-ghc-worker.yml). The tests build a small project that uses only GHC's
-# own packages, so they need just GHC, buck2 and a C compiler. The worker
-# uses only GHC's packages too, and the toolchain builds it.
+# with it. One job runs both, so that it installs GHC once. The GHC versions
+# are the same as the worker's (see buck2-ghc-worker.yml). The tests build
+# a small project that uses only GHC's own packages, so they need just GHC,
+# buck2 and a C compiler. The worker uses only GHC's packages too, and the
+# toolchain builds it.
 name: rules
 
 # Pushes are only tested on master and the release branches (0.6.0.0, say).
 # A branch with a pull request is tested by the pull_request event, and
-# testing its pushes as well would run every job twice.
+# testing its pushes as well would run every job twice. A change only to
+# files that the tests don't read, such as documentation, runs nothing.
 on:
   push:
     branches:
       - master
       - "[0-9]+.[0-9]+.[0-9]+.[0-9]+"
+    paths-ignore: &untested ["**.md", "**.svg", LICENSE, flake.nix, flake.lock, template/**]
   pull_request:
+    paths-ignore: *untested
   workflow_dispatch:
 
 env:
@@ -26,14 +30,13 @@ env:
 
 jobs:
   rules:
-    name: rules (${{ matrix.os }}, GHC ${{ matrix.ghc }}${{ matrix.worker && ', worker' || '' }})
+    name: rules (${{ matrix.os }}, GHC ${{ matrix.ghc }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
         ghc: ["9.6.7", "9.8.4", "9.10.3", "9.12.4", "9.14.1"]
-        worker: [false, true]
     defaults:
       run:
         shell: bash
@@ -54,7 +57,8 @@ jobs:
         uses: haskell-actions/setup@v2
         with:
           ghc-version: ${{ matrix.ghc }}
-          cabal-version: latest
+          # The tests don't use cabal, though the action installs it anyway.
+          cabal-update: false
 
       - name: Install buck2
         run: |
@@ -81,16 +85,26 @@ jobs:
           chmod +x "$RUNNER_TEMP/bazel-remote"
           echo "BAZEL_REMOTE=$RUNNER_TEMP/bazel-remote" >> "$GITHUB_ENV"
 
-      # With the worker, the toolchain builds it (per_module_worker =
-      # builtin), with the GHC under test.
       - name: Test
+        id: test
         env:
-          PER_MODULE_WORKER: ${{ matrix.worker && 'builtin' || 'none' }}
+          PER_MODULE_WORKER: none
         run: tests/rules/run.sh "$(dirname "${{ steps.setup.outputs.ghc-exe }}")" "$RUNNER_TEMP/rules"
+
+      # The toolchain builds the worker (per_module_worker = builtin), with
+      # the GHC under test. This runs even if the tests without the worker
+      # failed.
+      - name: Test with the worker
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
+        env:
+          PER_MODULE_WORKER: builtin
+        run: tests/rules/run.sh "$(dirname "${{ steps.setup.outputs.ghc-exe }}")" "$RUNNER_TEMP/rules-worker"
 
       - name: Upload the buck2 logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: buck-logs-${{ matrix.os }}-${{ matrix.ghc }}${{ matrix.worker && '-worker' || '' }}
-          path: ${{ runner.temp }}/rules/project/buck-logs
+          name: buck-logs-${{ matrix.os }}-${{ matrix.ghc }}
+          path: |
+            ${{ runner.temp }}/rules/project/buck-logs
+            ${{ runner.temp }}/rules-worker/project/buck-logs
