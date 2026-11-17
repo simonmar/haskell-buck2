@@ -110,7 +110,11 @@ def check_cache(st):
     http = "127.0.0.1:{}".format(free_port())
     cache_dir = tempfile.mkdtemp(prefix="bazel-remote-")
     log = open(os.path.join(LOG_DIR, "bazel-remote.log"), "w")
-    server = subprocess.Popen([st.bazel_remote, "--dir", cache_dir, "--max_size", "1",
+    # The limit is in GB. It is far above what the check stores, since with a
+    # GHC whose libraries have debug info, the per-module tools alone are
+    # about 1 GB, and evicting to fit them would lose the results that the
+    # check looks for.
+    server = subprocess.Popen([st.bazel_remote, "--dir", cache_dir, "--max_size", "20",
                                "--grpc_address", grpc, "--http_address", http],
                               stdout=log, stderr=subprocess.STDOUT)
 
