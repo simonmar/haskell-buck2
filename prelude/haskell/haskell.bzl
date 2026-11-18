@@ -1071,15 +1071,14 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
         process_output_style_for_pic_behavior(LibOutputStyle("archive"), pic_behavior),
     )
 
-    # With a dynamically linked GHC, when this library's preferred_linkage
-    # offers both a shared variant and the static style that executables use,
-    # build the two together from one -dynamic-too compile instead of two
-    # independent ones (see build_shared_too on _build_haskell_lib). It has to
-    # be the static style consumers use: its package registration is what lets
-    # their Template Haskell splices load this one the dynamic way. See Note
-    # [Link styles and profiling].
+    # When this library's preferred_linkage offers both a shared variant and
+    # the static style that executables use, build the two together from one
+    # -dynamic-too compile instead of two independent ones (see
+    # build_shared_too on _build_haskell_lib). It has to be the static style
+    # consumers use: its package registration is what lets their Template
+    # Haskell splices load this one the dynamic way. See Note [Link styles
+    # and profiling].
     build_shared_too = (
-        haskell_toolchain.dynamic_ghc and
         consumed_static_link_style in link_styles and
         LinkStyle("shared") in link_styles
     )

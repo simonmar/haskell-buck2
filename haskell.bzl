@@ -5,7 +5,8 @@
 #   - build modes: e.g. `-m opt` selects optimisation + static linking
 #   - package deps: `packages = ["text", ...]` instead of explicit
 #     `"@third-party-haskell//:text"` entries in `deps`.
-#   - a standard set of packages (rts) added to every target.
+#   - a standard set of packages (rts) added to every target. A target can
+#     give its own set with `auto_packages`.
 #   - hsc2hs: any `.hsc` file in `srcs` is automatically preprocessed, with
 #     include paths derived from `deps` (see buck2/hsc2hs.bzl) - so a `.hsc`
 #     file that needs a C++ dependency's headers just needs that dependency
@@ -28,8 +29,8 @@ load("@prelude//paths.bzl", "paths")
 # Packages implicitly needed by every Haskell target.
 AUTO_PACKAGES = ["rts"]
 
-def _package_deps(packages):
-    all_pkgs = {p: None for p in (AUTO_PACKAGES + packages)}
+def _package_deps(packages, auto_packages):
+    all_pkgs = {p: None for p in (auto_packages + packages)}
     return [("@third-party-haskell//:" + p) for p in sorted(all_pkgs.keys())]
 
 def _cabal_macros_include_flags(cabal_component):
@@ -70,15 +71,19 @@ _BUILD_MODE_HASKELL_FLAGS = select({
 
 # Libraries are built shared when executables are linked shared, and static
 # and shared otherwise (Template Haskell needs a library shared, for a GHC
-# that is itself linked shared).
+# that is itself linked shared). With all_ways, libraries are built in every
+# way, whatever the linking of executables.
 _BUILD_MODE_PREFERRED_LINKAGE = select({
-    "root//buck2/constraints:static": "any",
-    "root//buck2/constraints:shared": "shared",
+    "root//buck2/constraints:all_ways": "any",
     "DEFAULT": select({
-        "root//buck2/constraints:prof": "any",
+        "root//buck2/constraints:static": "any",
+        "root//buck2/constraints:shared": "shared",
         "DEFAULT": select({
-            "root//buck2/constraints:opt": "any",
-            "DEFAULT": "shared",
+            "root//buck2/constraints:prof": "any",
+            "DEFAULT": select({
+                "root//buck2/constraints:opt": "any",
+                "DEFAULT": "shared",
+            }),
         }),
     }),
 })
@@ -100,19 +105,19 @@ def hs_module_path(path):
             return path[:-len(ext)] + ".hs"
     return path
 
-def _resolve_src(name, src, deps, hsc_flags, hsc_cxx):
+def _resolve_src(name, src, deps, hsc_flags, hsc_cxx, common):
     out = paths.replace_extension(src, ".hs")
     if src.endswith(".hsc"):
         rule_name = name + "-hsc-" + out.replace("/", "_")
-        hsc2hs(name = rule_name, hsc_file = src, out = out, deps = deps, extra_flags = hsc_flags, cxx = hsc_cxx)
+        hsc2hs(name = rule_name, hsc_file = src, out = out, deps = deps, extra_flags = hsc_flags, cxx = hsc_cxx, **common)
         return ":" + rule_name
     elif src.endswith(".x"):
         rule_name = name + "-alex-" + out.replace("/", "_")
-        alex(name = rule_name, src = src, out = out)
+        alex(name = rule_name, src = src, out = out, **common)
         return ":" + rule_name
     elif src.endswith(".y") or src.endswith(".ly"):
         rule_name = name + "-happy-" + out.replace("/", "_")
-        happy(name = rule_name, src = src, out = out)
+        happy(name = rule_name, src = src, out = out, **common)
         return ":" + rule_name
     else:
         return src
@@ -136,17 +141,20 @@ _with_boot = rule(
     },
 )
 
-def _resolve_srcs(name, srcs, boot_srcs, deps, hsc_flags, hsc_cxx):
+def _resolve_srcs(name, srcs, boot_srcs, deps, hsc_flags, hsc_cxx, kwargs):
+    # The rules that preprocess sources are compatible with the same
+    # configurations as the rule whose sources they are.
+    common = {"target_compatible_with": kwargs["target_compatible_with"]} if "target_compatible_with" in kwargs else {}
     if type(srcs) != type({}):
         if boot_srcs:
             fail("{}: boot_srcs needs srcs to be a dict, by module name".format(name))
-        return [ _resolve_src(name, src, deps, hsc_flags, hsc_cxx) for src in srcs ]
+        return [ _resolve_src(name, src, deps, hsc_flags, hsc_cxx, common) for src in srcs ]
     unknown = [modl for modl in boot_srcs if modl not in srcs]
     if unknown:
         fail("{}: boot_srcs for modules not in srcs: {}".format(name, ", ".join(unknown)))
     resolved = {}
     for modl, src in srcs.items():
-        resolved_src = _resolve_src(name, src, deps, hsc_flags, hsc_cxx)
+        resolved_src = _resolve_src(name, src, deps, hsc_flags, hsc_cxx, common)
         boot = boot_srcs.get(modl)
         if boot == None:
             resolved[modl] = resolved_src
@@ -155,7 +163,7 @@ def _resolve_srcs(name, srcs, boot_srcs, deps, hsc_flags, hsc_cxx):
             resolved[modl + "-boot"] = boot
         else:
             rule_name = name + "-boot-" + modl
-            _with_boot(name = rule_name, src = resolved_src, boot = boot, path = paths.replace_extension(src, ".hs"))
+            _with_boot(name = rule_name, src = resolved_src, boot = boot, path = paths.replace_extension(src, ".hs"), **common)
             resolved[modl] = ":" + rule_name + "[src]"
             resolved[modl + "-boot"] = ":" + rule_name + "[boot]"
     return resolved
@@ -170,13 +178,14 @@ def haskell_library(
         hsc_cxx = True,
         cabal_component = None,
         boot_srcs = {},
+        auto_packages = AUTO_PACKAGES,
         internal_deps = [],
         **kwargs):
-    all_deps = deps + _package_deps(packages)
+    all_deps = deps + _package_deps(packages, auto_packages)
     kwargs.setdefault("preferred_linkage", _BUILD_MODE_PREFERRED_LINKAGE)
     native.haskell_library(
         name = name,
-        srcs = _resolve_srcs(name, srcs, boot_srcs, all_deps + internal_deps, hsc_flags + _cabal_macros_hsc_flags(cabal_component), hsc_cxx),
+        srcs = _resolve_srcs(name, srcs, boot_srcs, all_deps + internal_deps, hsc_flags + _cabal_macros_hsc_flags(cabal_component), hsc_cxx, kwargs),
         compiler_flags = _BUILD_MODE_HASKELL_FLAGS + compiler_flags + _cabal_macros_include_flags(cabal_component),
         deps = all_deps,
         internal_deps = internal_deps,
@@ -194,13 +203,14 @@ def haskell_binary(
         linker_flags = [],
         cabal_component = None,  # see haskell_library()
         boot_srcs = {},  # see haskell_library()
+        auto_packages = AUTO_PACKAGES,  # see haskell_library()
         **kwargs):
-    all_deps = deps + _package_deps(packages)
+    all_deps = deps + _package_deps(packages, auto_packages)
     kwargs.setdefault("link_style", _BUILD_MODE_LINK_STYLE)
     kwargs.setdefault("enable_profiling", _PROF_ENABLED)
     native.haskell_binary(
         name = name,
-        srcs = _resolve_srcs(name, srcs, boot_srcs, all_deps, hsc_flags + _cabal_macros_hsc_flags(cabal_component), hsc_cxx),
+        srcs = _resolve_srcs(name, srcs, boot_srcs, all_deps, hsc_flags + _cabal_macros_hsc_flags(cabal_component), hsc_cxx, kwargs),
         compiler_flags = _BUILD_MODE_HASKELL_FLAGS + compiler_flags + _ASAN_LINKER_FLAGS + _cabal_macros_include_flags(cabal_component),
         deps = all_deps,
         linker_flags = _ASAN_LINKER_FLAGS + linker_flags,
