@@ -61,6 +61,45 @@ def check_profiled_shared_only(st):
             expect_output(configured("//prof-shared:" + binary, c), "compiled {}".format(c), "7")
 
 
+def _link_package_flags(target):
+    """The package flags in the arguments file of the target's link (which
+    the build has made): -no-auto-link-packages, and each -package-db and
+    -package-id with its argument."""
+    # The link's command names its arguments file as @FILE. aquery gives the
+    # command of the target in the configuration that `build` builds.
+    out = buck2("aquery", "attrfilter(category, haskell_link, {})".format(target), "--output-attribute", "cmd").stdout
+    files = re.findall(r"@(buck-out/[^,\]]*args\.haskell_link_argsfile)", out)
+    expect("{}'s link has one arguments file (found {})".format(target, files), len(files) == 1)
+    with open(files[0]) as f:
+        args = f.read().split()
+    flags = []
+    for i, arg in enumerate(args):
+        if arg == "-no-auto-link-packages":
+            flags.append(arg)
+        elif arg in ("-package-db", "-package-id"):
+            flags.append(arg + " " + args[i + 1])
+    return flags
+
+
+def check_own_rts(st):
+    """A binary that depends on an RTS that the project provides (a package
+    with is_rts, which //own-rts:rts makes of the compiler's RTS) links that
+    RTS by its package. The link passes -no-auto-link-packages, and the
+    RTS's package database and unit id, and no other package flags. GHC
+    chooses the RTS's library from the way that it links, so
+    //own-rts:threaded, linked -threaded, gets the threaded RTS. A binary
+    without such a dependency (//main:main) has no package flags."""
+    expect_output("//own-rts:main", "linked with the project's RTS", "False")
+    expect_output("//own-rts:threaded", "linked -threaded with the project's RTS", "True")
+    build("//main:main")
+    for target in ["//own-rts:main", "//own-rts:threaded"]:
+        flags = _link_package_flags(target)
+        expect("{}'s link passes -no-auto-link-packages, one -package-db, and -package-id for the RTS (got {})".format(target, flags),
+               len(flags) == 3 and flags[0] == "-no-auto-link-packages" and flags[1].startswith("-package-db ")
+               and re.fullmatch(r"-package-id rts-[\d.]+", flags[2]) is not None)
+    expect_set("package flags of //main:main's link", set(_link_package_flags("//main:main")), set())
+
+
 # The names of the tools that the toolchains once ran from the daemon's PATH.
 _TOOLS = ["ghc", "ghc-pkg", "haddock", "hsc2hs"]
 _C_TOOLS = ["clang", "clang++", "c++", "g++"]

@@ -1,0 +1,25 @@
+load("//buck2:haskell.bzl", "haskell_binary")
+load(":defs.bzl", "own_rts")
+
+own_rts(
+    name = "rts",
+    rts = "@third-party-haskell//:rts",
+)
+
+# Binaries that link the RTS that the project provides. GHC chooses the
+# RTS's library from the way that it links, so the threaded binary gets the
+# threaded RTS.
+haskell_binary(
+    name = "main",
+    srcs = {"Main": "Main.hs"},
+    packages = ["base"],
+    deps = [":rts"],
+)
+
+haskell_binary(
+    name = "threaded",
+    srcs = {"Main": "Main.hs"},
+    packages = ["base"],
+    deps = [":rts"],
+    linker_flags = ["-threaded"],
+)
