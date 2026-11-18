@@ -814,9 +814,11 @@ def _build_haskell_lib(
             True: compiled.hi,
             False: non_profiling_hlib.compiled.hi,
         }
+        # Only the profiled library: GHC's internal interpreter finds the
+        # non-profiled one through dynamic-library-dirs (own_shared_lib). 
+        # Listing both can confuse a profiled external interpreter.
         library_artifacts = {
             True: lib,
-            False: non_profiling_hlib.libs[0],
         }
         all_libs = libs + non_profiling_hlib.libs
         stub_dirs = [compiled.stubs] + [non_profiling_hlib.compiled.stubs]
