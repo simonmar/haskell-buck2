@@ -199,10 +199,10 @@ haskell_library = prelude_rule(
             "_per_module_deps": attrs.default_only(attrs.exec_dep(providers = [RunInfo], default = "prelude//haskell/tools:per_module_deps")),
             # The local dependencies (compiled per-module or built with
             # --make) whose code the target's Template Haskell splices and
-            # ANN pragmas run, for per_module. A Template Haskell module
-            # waits until these libraries, and the libraries they depend on,
-            # are linked. Its splices can't run code of any other local
-            # library. Splices can always run code of prebuilt packages, so
+            # ANN pragmas run. The target's compile (a Template Haskell
+            # module's, with per_module) waits until these libraries, and
+            # the libraries they depend on, are linked. Its splices can't run
+            # code of any other local library. Splices can always run code of prebuilt packages, so
             # listing those makes no difference. The default, an empty list,
             # means that splices run no local library's code.
             "splice_depends": attrs.list(attrs.dep(), default = []),

@@ -15,18 +15,14 @@ load(
     "has_modules",
     "in_env",
     "native_libs_tree",
+    "th_libraries",
     "tools_env",
 )
 load("@prelude//linking:shared_libraries.bzl", "EMPTY_SHARED_LIBRARY_INFO", "SharedLibraryInfo")
 load(
     "@prelude//haskell:library_info.bzl",
     "HaskellLibraryInfoTSet",
-    "HaskellLibraryProvider",
     "HaskellModuleFiles",
-)
-load(
-    "@prelude//haskell:link_info.bzl",
-    "HaskellLinkInfo",
 )
 load(
     "@prelude//haskell:toolchain.bzl",
@@ -250,36 +246,6 @@ def _dependency_order(nodes: list, imports: dict) -> (list[str], list[str]):
                 order.append(m)
     done = {n: True for n in order}
     return order, [n for n, _ in nodes if n not in done]
-
-# The names of the libraries whose final dbs the target's Template Haskell
-# modules compile against (the ones whose code splices may run, see Note
-# [Template Haskell modules]): the dependencies that
-# splice_depends lists, the dependencies that are neither local
-# nor prebuilt Haskell libraries, and the closures of both. A module that
-# uses a dependency's final db also uses the final dbs of its whole closure,
-# because the dependency's library was linked against them (see Note
-# [Libraries of the early package dbs]).
-def _th_set(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool) -> dict[str, bool]:
-    deps = attr_deps(ctx) + ctx.attrs.template_deps
-    known = {d.label.raw_target(): True for d in deps}
-    listed = {}
-    for d in ctx.attrs.splice_depends:
-        t = d.label.raw_target()
-        if t not in known:
-            fail("{}: splice_depends names {}, which is not a dependency".format(ctx.label.raw_target(), t))
-        listed[t] = True
-
-    children = []
-    for d in deps:
-        link = d.get(HaskellLinkInfo)
-        if link == None:
-            continue
-        provider = d.get(HaskellLibraryProvider)
-        lib = (provider.prof_lib if enable_profiling else provider.lib)[link_style] if provider != None else None
-        selectable = lib != None and (lib.early_db != None or lib.is_prebuilt)
-        if not selectable or d.label.raw_target() in listed:
-            children.append(link.prof_info[link_style] if enable_profiling else link.info[link_style])
-    return {l.name: True for l in ctx.actions.tset(HaskellLibraryInfoTSet, children = children).traverse()}
 
 # The nodes of the target's module graph, as (node name, source) pairs. A
 # module's node name is the module's name, and a boot file's is
@@ -695,7 +661,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     # dependencies' libraries, because only those modules load them, and so
     # only they have to wait for the libraries to be linked. Most Template
     # Haskell modules use the target's set of final dbs.
-    target_th = packages(_th_set(ctx, link_style, enable_profiling))
+    target_th = packages(th_libraries(ctx, link_style, enable_profiling))
     module_libs = {lib.name: lib for lib in dep_libs if lib.modules != None}
     this_pkg = pkgname or haskell_library_unit_id(ctx.label)
 
@@ -1070,10 +1036,10 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #
 # A Template Haskell module compiles against the final package dbs of the
 # local dependencies that the target's splice_depends lists (see
-# _th_set), with their libraries and the native libraries they depend on as
-# inputs. So it waits only for those libraries (and those of their own
-# dependencies), and compiles against library-less dbs for the
-# other local dependencies, like any other module. The prebuilt packages'
+# th_libraries in compile.bzl), with their libraries and the native
+# libraries they depend on as inputs. So it waits only for those libraries
+# (and those of their own dependencies), and compiles against library-less
+# dbs for the other local dependencies, like any other module. The prebuilt packages'
 # libraries are there from the start, so a Template Haskell module gets
 # them all.
 #
