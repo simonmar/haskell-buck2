@@ -388,6 +388,13 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
 
     compile_cmd.add(args.args_for_cmd)
 
+    modules = len([src for _, src in srcs_to_pairs(ctx.attrs.srcs) if is_haskell_src(src)])
+    jobs = max(1, min(haskell_toolchain.make_jobs, modules))
+    if jobs > 1:
+        compile_cmd.add("-j{}".format(jobs))
+        if haskell_toolchain.make_rts_options:
+            compile_cmd.add("+RTS", haskell_toolchain.make_rts_options, "-RTS")
+
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
 
     if args.args_for_file:
@@ -422,6 +429,7 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
         # timestamps, so this is safe even though Buck doesn't preserve
         # timestamps on artifacts.
         no_outputs_cleanup = True,
+        weight = jobs,
         env = data_dirs_env(ctx) | ({"LD_LIBRARY_PATH": cmd_args(native_shared_libs_dir)} if native_shared_libs_dir != None else {}),
     )
 
