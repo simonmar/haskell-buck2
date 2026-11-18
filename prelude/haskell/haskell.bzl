@@ -58,6 +58,7 @@ load(
     "CompileResultInfo",
     "compile",
     "data_dirs_env",
+    "dependency_libs",
 )
 load(
     "@prelude//haskell:compile_per_module.bzl",
@@ -1456,6 +1457,28 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         link.add("-dynamic")
 
     link_args = cmd_args("-package-env=-")
+
+    # By default GHC links the rts, ghc-internal and base packages of its
+    # own package database. When a dependency provides the RTS (is_rts), the
+    # link passes -no-auto-link-packages, and the RTS's package database and
+    # -package-id, so that GHC links that RTS in place of its own. The
+    # RTS's files are inputs of the link, because GHC reads them. Other
+    # packages, including ghc-internal and base, are linked as the
+    # dependencies' link infos say, so the link doesn't need their package
+    # databases.
+    rts = {
+        lib.id: lib
+        for lib in dependency_libs(ctx, link_style, enable_profiling).traverse()
+        if lib.is_rts
+    }.values()
+    if len(rts) > 1:
+        fail("{}: more than one RTS among the dependencies: {}".format(ctx.label, ", ".join([lib.id for lib in rts])))
+    if rts:
+        link_args.add(
+            "-no-auto-link-packages",
+            cmd_args("-package-db", rts[0].db),
+            cmd_args("-package-id", rts[0].id, hidden = rts[0].libs),
+        )
 
     osuf, _hisuf = output_extensions(link_style, enable_profiling)
 

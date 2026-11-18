@@ -86,6 +86,19 @@ HaskellLibraryInfo = record(
     # PerModuleClosures provider (see compile_per_module.bzl) maps each
     # module to its closure set.
     closures = field(typing.Any, None),
+    # True for the package of an RTS that the project provides, in place of
+    # the RTS of the compiler's own package database. GHC links the RTS
+    # itself, because it chooses the RTS's library from the way that it
+    # links (threaded or debug, say). So an executable that depends on this
+    # package passes -package-id for it, and the package's link info must
+    # not give the RTS's libraries to the link. GHC adds those way tags only
+    # to the RTS's libraries, which is why this is only for the RTS.
+    #
+    # The link reads only this package's `db`, so that database must also
+    # have the packages that the RTS depends on (libffi-clib, say).
+    # Otherwise GHC would ignore the RTS because its dependencies are
+    # missing.
+    is_rts = field(bool, False),
 )
 
 HaskellLibraryInfoTSet = transitive_set()

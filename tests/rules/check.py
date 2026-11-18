@@ -41,6 +41,7 @@ from both_ways import (
 from harness import CheckFailed, Skipped, State
 from other_rules import (
     check_data_files,
+    check_own_rts,
     check_profiled_shared_only,
     check_test_build_tools,
     check_test_labels,
@@ -117,6 +118,7 @@ CHECKS = [
     check_data_dirs,
     check_test_build_tools,
     check_data_files,
+    check_own_rts,
     check_test_labels,
     check_profiled_shared_only,
     check_toolchain_th,
