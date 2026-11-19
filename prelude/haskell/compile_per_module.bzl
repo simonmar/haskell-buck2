@@ -1174,12 +1174,6 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # as well. The package dbs would have to name those libraries for the
 # interpreter.
 #
-# In a profiled build, a profiled external interpreter also crashes when a
-# splice runs code of a library compiled per-module. That doesn't happen
-# with --make, and we don't know why yet. Leaving the library's
-# non-profiled shared library out of its package db's library-dirs stops
-# the crash.
-#
 # 6. Code of the target's own modules
 #
 # A splice can't run code of the target's own modules. GHC would load their

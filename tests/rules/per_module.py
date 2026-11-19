@@ -347,7 +347,6 @@ def check_external_interpreter_splices(st):
     expect("//th-local-splice:show should print {} with -fexternal-interpreter, as without it; it printed {}".format(without, with_flag), with_flag == without)
 
 
-@known_failure("with -fexternal-interpreter, a profiled splice that runs a per-module library's code crashes the interpreter")
 def check_external_interpreter_prof_splices(st):
     """As check_external_interpreter_splices, in prof mode, where the
     interpreter is a profiled one."""
@@ -533,18 +532,16 @@ def check_local_splices_in_modes(st):
       in each mode, and //th-local-splice:show prints the new value.
 
     check_native_splices_in_modes checks the splices that call native
-    libraries. With -fexternal-interpreter, prof mode is left to
-    check_external_interpreter_prof_splices."""
-    modes = ["opt"] if st.external_interpreter else ["opt", "prof"]
+    libraries."""
     def check():
         shown = buck2("run", "//th-local-splice:show").stdout.strip()
-        for mode in modes:
+        for mode in ["opt", "prof"]:
             build("//th-local-splice:show", mode=mode)
             ran = compiled_modules(what_ran())
             expect("C.Splice compiled per-module in {} mode (ran: {})".format(mode, sorted(ran)), "th-local-splice:C.Splice" in ran)
             expect_output("//th-local-splice:show", "in {} mode".format(mode), shown, mode)
         bump_literal("th-gen/TH/Gen.hs", 10)
-        for mode in modes:
+        for mode in ["opt", "prof"]:
             build("//th-local-splice:show", mode=mode)
             expect_set("modules of th-local-splice compiled in {} mode after a body-only edit to TH.Gen".format(mode),
                        {m for m in compiled_modules(what_ran()) if m.startswith("th-local-splice:")}, {"th-local-splice:C.Splice", "th-local-splice:C.Ann"})
