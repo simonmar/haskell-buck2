@@ -2,11 +2,14 @@
 fixtures both per-module and with --make (see COMPILES), and says how the
 two differ where they should."""
 
+import json
 import re
 import sys
 
 from harness import (
     COMPILES,
+    CheckFailed,
+    DEV_STYLE,
     Skipped,
     buck2,
     build,
@@ -20,6 +23,7 @@ from harness import (
     known_failure,
     module_of,
     replace,
+    short,
     what_ran,
     what_ran_entries,
 )
@@ -118,6 +122,29 @@ def check_header_change(st):
     for c, t in targets.items():
         build(t)
         expect_set("compiles after an edit to Hdr/value.h, compiled {}".format(c), compiled(what_ran()), expected[c])
+
+
+def make_compile_dbs(target):
+    """The package dbs of `target`'s --make compile in dev mode, by short
+    name. aquery doesn't take a target's modifiers, so --make's is passed
+    with -m, and it prints the command as one string."""
+    out = buck2("aquery", "-m", "//compile:make", "all_actions({})".format(target), "--output-attribute", "category", "--output-attribute", "cmd", "--json").stdout
+    for action in json.loads(out).values():
+        if action.get("category") == "haskell_compile_" + DEV_STYLE:
+            cmd = action["cmd"].strip("[]").split(", ")
+            return {short(cmd[n + 1]) for n, a in enumerate(cmd) if a == "-package-db"}
+    raise CheckFailed("no --make compile of {}".format(target))
+
+
+def check_make_th_dbs(st):
+    """With --make, a target's compile gets the final package db of a local
+    dependency only if its splice_depends lists it, as a
+    per-module Template Haskell module does. For the other local
+    dependencies, it gets a db that names no library, so it doesn't wait
+    for their libraries to be linked. th-local-splice lists //th-gen:th-gen
+    but not //lib:lib, and th-prebuilt-splice lists neither."""
+    expect_set("th-local-splice's package dbs with --make", make_compile_dbs("root//th-local-splice:th-local-splice"), {"lib:nolib", "th-gen:final", "ghc:global"})
+    expect_set("th-prebuilt-splice's package dbs with --make", make_compile_dbs("root//th-prebuilt-splice:th-prebuilt-splice"), {"lib:nolib", "th-gen:nolib", "ghc:global"})
 
 
 def check_th_modes(st):

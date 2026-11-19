@@ -30,6 +30,12 @@ There are other build options that can be selected in a similar way, such as `-m
 `buck2 build my-package:my-program[interfaces]` compiles a target without
 linking it, which is enough to see its type errors.
 
+# Splice dependencies
+
+A Template Haskell splice, quasiquote or `ANN` pragma needs the linked libraries
+of dependencies that it uses. A target must list the local dependencies that it uses 
+in this way in `splice_depends`. The default, an empty list, means that they use none. 
+
 # Per-module compilation (experimental)
 
 By default each `haskell_library()`/`haskell_binary()` is compiled by one
@@ -43,17 +49,12 @@ depend on are done, without having to wait for the full package.
 `per_module` is only tested on Linux.
 
 The main thing that still leads to suboptimal dependency graphs is Template
-Haskell. A module with TH needs the linked libraries of the dependencies
-whose code its splices run. A target lists the local ones in
-`splice_depends`, and its TH modules wait only for those. A splice
-that runs code of a local library that isn't listed fails to compile, saying
-so. (The persistent worker doesn't always catch it. See "Known issues" in
+Haskell. A module that runs Template Haskell waits for the libraries that
+its target lists in `splice_depends` (see above) to be linked.
+The target's other modules don't wait for them. A splice that runs code of
+a local library that isn't listed fails to compile, saying so. (The
+persistent worker doesn't always catch it. See "Known issues" in
 `prelude/haskell/tools/worker/README.md`.)
-
-`cabal.bzl` lists all of a Cabal package's dependencies in
-`splice_depends`, unless the package says which ones its splices
-run. Its TH modules then wait for all of them, which loses much of the
-cross-package parallelism.
 
 A splice can't run code of its own target's modules. Such a target fails to
 compile, saying so, and has to be built with `per_module = False`.
