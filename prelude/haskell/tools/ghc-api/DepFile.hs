@@ -34,12 +34,12 @@ writeDepFiles r iface = do
   -- Without usages, the dep file would say the module read nothing, and it
   -- would never compile again.
   us <- maybe (throwGhcExceptionIO (ProgramError (modName ++ ": its interface records no usages, so its dep file can't say what it read: don't compile it with -fno-write-if-self-recomp"))) pure (usages iface)
-  -- A splice can't run code of a module that this module reaches only
-  -- through boot files, since only the objects of the modules in the
-  -- module's closure are inputs of the compile (see Note [Template Haskell
-  -- modules] in compile_per_module.bzl). GHC may still have found another
-  -- module's object in the output directory, so we fail the compile if a
-  -- splice loaded one.
+  -- A splice can only run code of the modules that the compile waits for,
+  -- whose objects are its inputs (see Note [Template Haskell modules] in
+  -- compile_per_module.bzl). It doesn't wait for a module that an import
+  -- cycle among Template Haskell modules kept out. GHC may still have found
+  -- such a module's object in the output directory, left by an earlier
+  -- build, so we fail the compile if a splice loaded one.
   outDir <- canonicalizePath (reqOutDir r)
   loaded <- fmap concat . forM us $ \u -> case usageFile u of
     Just path -> do
@@ -52,7 +52,7 @@ writeDepFiles r iface = do
     Nothing -> pure []
   let reached = [m | m <- loaded, m `notElem` reqClosure r]
   unless (null reached) $
-    throwGhcExceptionIO (ProgramError (modName ++ ": a splice ran code of " ++ unwords reached ++ ", which " ++ modName ++ " reaches only through hs-boot files, and per_module doesn't support that: build the target with per_module = False"))
+    throwGhcExceptionIO (ProgramError (modName ++ ": a splice ran code of " ++ unwords reached ++ ", which " ++ modName ++ "'s compile doesn't wait for, because of an import cycle among the target's Template Haskell modules"))
   entries <- fmap concat . forM us $ \u -> case u of
     UsageHomeModule{usg_mod_name = m} -> existing [reqOutDir r </> modFile m <.> ext m]
     _ | Just m <- usageLoadedModule u -> existing [reqOutDir r </> modFile m <.> "abi"]

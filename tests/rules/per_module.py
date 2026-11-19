@@ -34,16 +34,18 @@ from harness import (
 def check_clean_build(st):
     """The fixtures build from clean, compiling every module. The build itself
     guards against some regressions: flat-sources's flat Lib taken for
-    make-lib's Q.Lib (whose interface path ends the same way); the hs-boot pair
-    of boot-cycle; B.Lit, a literate source."""
+    make-lib's Q.Lib (whose interface path ends the same way); th-boot-cycles's
+    Template Haskell modules, which would each wait for the other; the hs-boot
+    pair of boot-cycle; B.Lit, a literate source."""
     buck2("clean")
     build(*st.targets)
     st.entries = what_ran_entries()
     st.actions = what_ran(st.entries)
     expect_set("modules compiled from clean", compiled_modules(st.actions),
                {"lib:A.Base", "lib:A.Mid", "lib:A.Unused", "lib-user:B.M", "th-gen:TH.Gen", "th-local-splice:C.Splice", "th-local-splice:C.Plain", "th-local-splice:C.Ann", "th-make-dep:MK.Lit", "mkrun:MK.Run", "ffi-import:FFI.C", "p:Chain.P", "t:Chain.T",
-                "th-prebuilt-splice:D.Splice", "boot-cycle:Cyc.A", "boot-cycle:Cyc.B", "boot-cycle:Cyc.B-boot", "reexport:R.R", "reexport-user:U.M", "main:Main", "main:Main.Util", "show:Main",
-                "flat-sources:Lib", "flat-sources:User", "lib-user:B.Lit", "lib-user:B.UsesLit", "lib-user:B.Safe"})
+                "th-prebuilt-splice:D.Splice", "boot-cycle:Cyc.A", "boot-cycle:Cyc.B", "boot-cycle:Cyc.B-boot", "boot-cycle:Cyc.AS", "reexport:R.R", "reexport-user:U.M", "main:Main", "main:Main.Util", "show:Main",
+                "th-boot-cycles:Tie.A", "th-boot-cycles:Tie.B", "th-boot-cycles:Tie.I", "th-boot-cycles:Tie.K", "th-boot-cycles:Tie.I-boot", "th-boot-cycles:Tie.K-boot",
+                "th-boot-cycles:Tie.AZ", "th-boot-cycles:Tie.V", "th-boot-cycles:Tie.W", "th-boot-cycles:Tie.W-boot", "flat-sources:Lib", "flat-sources:User", "lib-user:B.Lit", "lib-user:B.UsesLit", "lib-user:B.Safe"})
 
 
 def check_workers(st):
@@ -378,13 +380,18 @@ def check_boot(st):
     """The hs-boot pair: the boot file has its own action, which Cyc.A (its
     {-# SOURCE #-} importer) and Cyc.B (checked against it) depend on; its
     own dep file doesn't list its own output, and Cyc.A's lists the boot
-    file's, even once Cyc.B's own is there too."""
+    file's, even once Cyc.B's own is there too. Cyc.AS, whose splice may link
+    Cyc.B past its boot file, names Cyc.B with --link. Cyc.B, which runs no
+    splice, names nothing."""
     tagged, _ = dep_file("//boot-cycle:boot-cycle", "haskell_compile_module_" + DEV_STYLE, "Cyc.B-boot")
     expect_set("Cyc.B-boot's dep file", tagged, set())
     tagged, _ = dep_file("//boot-cycle:boot-cycle", "haskell_compile_module_" + DEV_STYLE, "Cyc.A")
     expect_set("Cyc.A's dep file", tagged, {"boot-cycle:Cyc.B.abi-boot"})
     tagged, _ = dep_file("//boot-cycle:boot-cycle", "haskell_compile_module_" + DEV_STYLE, "Cyc.B")
     expect_set("Cyc.B's dep file", tagged, {"boot-cycle:Cyc.A.abi", "boot-cycle:Cyc.B.abi-boot"})
+    # The clean build's compiles (st.actions):
+    expect_set("the modules Cyc.AS links past boot files", find_compile(st.actions, "boot-cycle", "Cyc.AS")["links"], {"Cyc.B"})
+    expect_set("the modules Cyc.B links past boot files", find_compile(st.actions, "boot-cycle", "Cyc.B")["links"], set())
     # Compiled again, with Cyc.B's whole interface there now too, Cyc.A's
     # dep file still lists the boot file's .abi, which is what Cyc.A
     # imports. We read the file the action wrote, since buck2's record of it
@@ -405,6 +412,18 @@ def check_boot_cycle_inline(st):
     same."""
     p = build("//boot-cycle-inline:boot-cycle-inline", keep_going=True)
     expect("//boot-cycle-inline:boot-cycle-inline builds (got:\n{})".format(tail(p.stderr, 15)), p.returncode == 0)
+
+
+def check_th_boot_cycle_links(st):
+    """Tie.I and Tie.K run Template Haskell, and each one's boot file is
+    below the other, so each would wait for the other. Tie.I, the first by
+    name, doesn't wait for Tie.K. Tie.K waits for Tie.I, and names it to
+    link past its boot file. Tie.AZ, which is only behind that cycle, keeps
+    its waits."""
+    expect_set("the modules Tie.I links past boot files", find_compile(st.actions, "th-boot-cycles", "Tie.I")["links"], set())
+    expect_set("the modules Tie.K links past boot files", find_compile(st.actions, "th-boot-cycles", "Tie.K")["links"], {"Tie.I"})
+    expect_set("the modules Tie.AZ, only behind the cycle, links past boot files",
+               find_compile(st.actions, "th-boot-cycles", "Tie.AZ")["links"], {"Tie.I", "Tie.K", "Tie.W"})
 
 
 def rebuild(st):

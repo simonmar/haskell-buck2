@@ -55,10 +55,8 @@ have, or `check_cache` without `BAZEL_REMOTE`). A check of a known bug in
 the rules (marked with `known_failure` in harness.py, for all runs or only
 for some, such as those with the worker) prints `XFAIL` when it fails, and
 `XPASS` when it passes, which means the bug is fixed and the mark should go.
-The script fails on any `FAIL` or `XPASS`. Some checks are of what
-per_module doesn't support, such as a splice that runs code behind an
-hs-boot file of its own target, or of a mistake in `splice_depends`. They
-check that the compile fails.
+The script fails on any `FAIL` or `XPASS`. Some checks are of a mistake in
+`splice_depends`. They check that the compile fails.
 
 ## How it works
 
@@ -119,7 +117,8 @@ check that the compile fails.
 | `//th-internal-splice:th-internal-splice`, `//th-internal-splice:use` | a splice that runs a module of its own library; `use` prints the splice |
 | `//th-internal-splice:static`, `//th-internal-splice:static-main` | the same library linked statically only, and a binary that prints its splice |
 | `//th-internal-splice:own` | a binary whose splice runs a module of its own |
-| `//th-own-boot:boot-only`, `//th-own-boot:both` | splices that run code behind an hs-boot file of their own target: in `boot-only`, the splicing module reaches it only through the boot file, which per_module doesn't support; in `both`, it also imports it whole |
+| `//th-own-boot:boot-only`, `//th-own-boot:both` | splices that run code behind an hs-boot file of their own target: in `boot-only`, the splicing module reaches it only through the boot file; in `both`, it also imports it whole |
+| `//th-boot-cycles:th-boot-cycles` | two Template Haskell modules, each with its boot file below the other, and one that is only behind them; their splices run only `template-haskell` |
 | `//test-suite:uses-tool`, `//test-suite:reads-data`, `//test-suite:manual` | `haskell_test`s: one that runs its build tool (`//test-suite:tool`), one that reads a data file through `data_dirs`, and one that fails, labelled `manual` |
 | `//test-suite:uses-run-tool`, `//test-suite:runs-tool`, `//test-suite:build-tool-only` | `uses-run-tool` (a test) and `runs-tool` (an executable) have `//test-suite:tool` as a run tool only, and `build-tool-only` has it as a build tool only |
 | `//instances:low`, `//instances:mid`, `//instances:high` | `high`'s module sees orphan instances (a class instance, a type family instance) of `low` only through `mid`, so an edit to one of them must compile it again |
