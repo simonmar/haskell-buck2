@@ -71,19 +71,19 @@ _BUILD_MODE_HASKELL_FLAGS = select({
 
 # Libraries are built shared when executables are linked shared, and static
 # and shared otherwise (Template Haskell needs a library shared, for a GHC
-# that is itself linked shared). With all_ways, libraries are built in every
-# way, whatever the linking of executables.
+# that is itself linked shared). With all_ways, libraries are built both
+# static and shared, whatever the linking of executables.
+#
+# Profiling doesn't change this. A library always has profiled variants,
+# which are only built when a profiled link or compile asks for them.
 _BUILD_MODE_PREFERRED_LINKAGE = select({
     "root//buck2/constraints:all_ways": "any",
     "DEFAULT": select({
         "root//buck2/constraints:static": "any",
         "root//buck2/constraints:shared": "shared",
         "DEFAULT": select({
-            "root//buck2/constraints:prof": "any",
-            "DEFAULT": select({
-                "root//buck2/constraints:opt": "any",
-                "DEFAULT": "shared",
-            }),
+            "root//buck2/constraints:opt": "any",
+            "DEFAULT": "shared",
         }),
     }),
 })

@@ -108,9 +108,12 @@ constraint_value(
     visibility = ["PUBLIC"],
 )
 
-# libraries: libraries are built in every way (static, shared, and
-# profiled), regardless of the linking setting for executables. This
-# can be used when building a library to be installed.
+# libraries: with all_ways, libraries are built both static and shared,
+# whatever the linking of executables. This can be used when building
+# libraries to be installed. A library that is built both ways is compiled
+# once, with -dynamic-too. Profiled libraries don't need a constraint,
+# because a library's profiled variants are built whenever something asks
+# for them.
 constraint_setting(
     name = "libraries",
     visibility = ["PUBLIC"],
