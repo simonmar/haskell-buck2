@@ -15,7 +15,8 @@ load(
     "has_modules",
     "in_env",
     "native_libs_tree",
-    "th_libraries",
+    "splice_dep_infos",
+    "splice_libraries",
     "tools_env",
 )
 load("@prelude//linking:shared_libraries.bzl", "EMPTY_SHARED_LIBRARY_INFO", "SharedLibraryInfo")
@@ -189,11 +190,18 @@ def _dir_of(artifact, node: str, ext: str) -> cmd_args:
 #   "th_reason").
 # - programs: for each node, the programs that GHC runs for it and finds on
 #   PATH, by name, such as a preprocessor that -F -pgmF names.
-def _read_deps(label, deps: dict, nodes: list, module_libs: dict):
+# - splice_imports: for each node with explicit level imports, the modules
+#   it imports at the splice level, as (library name, module) pairs. The
+#   library is that of a dependency that the import comes through, which for
+#   a re-exported module is the dependency that re-exports it.
+#
+# `prebuilt_names` maps the unit id of each prebuilt dependency to its name.
+def _read_deps(label, deps: dict, nodes: list, module_libs: dict, prebuilt_names: dict[str, str]):
     imports = {n: [] for n, _ in nodes}
     upstream = {n: [] for n, _ in nodes}
     th = {}
     programs = {n: [] for n, _ in nodes}
+    splice_imports = {}
     for n, d in deps.items():
         if n not in imports:
             fail("{}: GHC's dependency analysis found {}, but srcs has no such module (or boot file)".format(label, n))
@@ -205,7 +213,9 @@ def _read_deps(label, deps: dict, nodes: list, module_libs: dict):
         if d["th"]:
             th[n] = d.get("th_reason", "module")
         programs[n] = d["programs"]
-    return imports, upstream, th, programs
+        if "splice" in d:
+            splice_imports[n] = [(prebuilt_names.get(pkg, pkg), mod) for pkg, mod in d["splice"]]
+    return imports, upstream, th, splice_imports, programs
 
 # For each node, all the nodes of this target that it imports directly or
 # indirectly, with its direct imports first. `order` must be a dependency
@@ -303,8 +313,11 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     modules = s.modules
     module_libs = s.module_libs
     module_lib_dirs = s.module_lib_dirs
-    early_set = s.early_set
-    target_th = s.target_th
+    splice_infos = s.splice_infos
+    packages = s.packages
+    early_packages = s.early_packages
+    target_splice_packages = s.target_splice_packages
+    splice_native_libs_dir = s.splice_native_libs_dir
     dynamic_too = s.dynamic_too
     o_of = s.o_of
     hi_of = s.hi_of
@@ -327,7 +340,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     tools = s.tools
     compile_script = s.compile_script
 
-    imports, upstream, th_nodes, program_nodes = _read_deps(s.label, deps.read_json(), nodes, module_libs)
+    imports, upstream, th_nodes, splice_imports, program_nodes = _read_deps(s.label, deps.read_json(), nodes, module_libs, s.prebuilt_names)
     order, left = _dependency_order(nodes, imports)
     if left:
         fail("{}: import cycle among {}".format(s.label, ", ".join(left)))
@@ -363,6 +376,47 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             tools_envs[key] = tools_env(actions, s.compile_env, {t: tools[t] for t in names}, prefix + "build-tools/" + str(len(tools_envs)))
         return tools_envs[key]
 
+    # The package flags of a module with explicit level imports (see Note
+    # [Explicit level imports]). 
+    #
+    # Of the target's normal splice dependencies, the module gets the final dbs of
+    # those whose modules it imports at the splice level (and their
+    # closures). For other local dependencies it gets library-less dbs .
+    narrowed_splice_packages = {}
+
+    # A splice can run code of any prebuilt package, since all their
+    # libraries are there from the start (see Note [Libraries of the early
+    # package dbs]). So only local packages are checked here.
+    prebuilt = {name: True for name in s.prebuilt_names.values()}
+
+    # The package flags of a Template Haskell module. That is the target's
+    # set, unless the module has explicit level imports, which may narrow it.
+    def splice_packages(n):
+        if n not in splice_imports:
+            return target_splice_packages
+        libs = {}
+        for lib, m in splice_imports[n]:
+            if lib == s.this_pkg:
+                fail("{}: {} imports {} at the splice level, but with per_module a splice can't run code of its own target (see Note [Template Haskell modules]): build the target with per_module = False".format(s.label, _module_of(n), m))
+            libs[lib] = m
+        # An import of a module that several dependencies re-export, or that
+        # its own package exposes as well, comes through each of them, and
+        # any one would do. But each of them has to be covered here. That is
+        # stricter than it needs to be, in a case that should be rare.
+        for lib, m in libs.items():
+            if lib not in target_splice_packages.final and lib not in prebuilt:
+                fail("{}: {}'s splice import of {} runs code from {}, but splice_depends doesn't list it".format(s.label, _module_of(n), m, lib))
+        # A dependency that isn't listed, but that a listed one's closure
+        # brings in, has no closure of its own here. A module that imports
+        # from one gets the target's whole set.
+        if [l for l in libs if l not in splice_infos.listed and l not in prebuilt]:
+            return target_splice_packages
+        names = sorted([l for l in libs if l in splice_infos.listed])
+        key = " ".join(names)
+        if key not in narrowed_splice_packages:
+            narrowed_splice_packages[key] = packages(splice_libraries(actions, splice_infos, names))
+        return narrowed_splice_packages[key]
+
     # Register the compiles in dependency order. An action's inputs, and the
     # artifacts that a symlinked_dir links to, must be outputs of actions
     # that have already been registered.
@@ -385,7 +439,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             closure_files += [hi_of[d], abi_of[d]]
             if dynamic_too:
                 closure_files.append(dyn_hi_of[d])
-        mod_packages = target_th if runs_th[n] else early_set
+        mod_packages = splice_packages(n) if runs_th[n] else early_packages
         hidirs = mod_packages.local_import_dirs + [(name, d) for name, d in module_lib_dirs.items() if name in mod_packages.early_names]
 
         # The flags specific to this module: its source and output files.
@@ -445,7 +499,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             # See Note [Data files of splices].
             [cmd_args(d, format = "--data-dir=" + var + "={}") for var, d in data_dirs.items()] if runs_th[n] else [],
             # See Note [Template Haskell modules], section 4.
-            cmd_args(mod_packages.native_libs_dir, format = "--library-path={}") if runs_th[n] and mod_packages.native_libs_dir != None else [],
+            cmd_args(splice_native_libs_dir, format = "--library-path={}") if runs_th[n] and splice_native_libs_dir != None else [],
             "--",
             base_cmd,
             mod_packages.args,
@@ -471,7 +525,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         # libraries that it loads (see Note [Template Haskell modules],
         # section 4), must also compile outside the worker.
         needs_data = runs_th[n] and len(data_dirs) > 0
-        needs_native = runs_th[n] and mod_packages.native_libs_dir != None
+        needs_native = runs_th[n] and splice_native_libs_dir != None
         script = in_env(env_with(module_tools), cmd_args(compile_script))
         category = "haskell_compile_module_" + suffix.replace("-", "_")
         in_worker = worker_info != None and not module_tools and not needs_data and not needs_native
@@ -645,23 +699,32 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     below = ctx.actions.tset(HaskellLibraryInfoTSet, children = [lib.below for lib in dep_libs if lib.below != None])
     below_make = {lib.name: True for lib in below.traverse() if lib.modules != None}
 
+    # A module with explicit level imports calls this from the dynamic
+    # output, with the packages that its splice imports need.
     def packages(final, runs_th = True):
         dbs = _package_dbs(dep_libs, final, below_make, tag, runs_th)
         return struct(
             args = cmd_args(exposed_package_args, dbs.packagedb_args),
             local_import_dirs = dbs.local_import_dirs,
             early_names = dbs.early_names,
-            # One tree for every module that uses these packages.
-            native_libs_dir = native_libs_tree(ctx, prefix + "native-libs", dbs.native_libs) if runs_th else None,
+            native_libs = dbs.native_libs,
+            final = final,
         )
 
-    early_set = packages({}, runs_th = False)
+    early_packages = packages({}, runs_th = False)
 
     # Only the actions of Template Haskell modules depend on the
     # dependencies' libraries, because only those modules load them, and so
     # only they have to wait for the libraries to be linked. Most Template
-    # Haskell modules use the target's set of final dbs.
-    target_th = packages(th_libraries(ctx, link_style, enable_profiling))
+    # Haskell modules use the target's set of final dbs. A module with
+    # explicit level imports narrows it to what its splices import (see Note
+    # [Explicit level imports]).
+    splice_infos = splice_dep_infos(ctx, link_style, enable_profiling)
+    target_splice_packages = packages(splice_libraries(ctx.actions, splice_infos))
+    # One tree of native libraries for every Template Haskell module: those
+    # of the libraries in the target's set. A module whose set is narrowed
+    # gets it too, since its native libraries are among them.
+    splice_native_libs_dir = native_libs_tree(ctx, prefix + "native-libs", target_splice_packages.native_libs)
     module_libs = {lib.name: lib for lib in dep_libs if lib.modules != None}
     this_pkg = pkgname or haskell_library_unit_id(ctx.label)
 
@@ -746,7 +809,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             [cmd_args(n, src, delimiter = "=") for n, src in nodes],
             "--",
             ghc_args,
-            early_set.args,
+            early_packages.args,
             # The compiler command may carry files that the libdir is made
             # of, so we add a dependency on it
             hidden = haskell_toolchain.compiler,
@@ -765,6 +828,10 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 
     module_lib_dirs = {name: out_dir_of(lib) for name, lib in module_libs.items()}
 
+    # The prebuilt dependencies' names, by unit id. The deps tool names the
+    # packages that splice imports come through by unit id.
+    prebuilt_names = {lib.id: lib.name for lib in dep_libs if lib.is_prebuilt}
+
     modules = {
         n: HaskellModuleFiles(hi = hi_of[n], abi = abi_of[n], dyn_hi = dyn_hi_of[n] if dynamic_too else None)
         for n, _ in nodes
@@ -777,14 +844,19 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     closures = ctx.actions.dynamic_output_new(_register_modules(
         s = struct(
             label = ctx.label,
+            this_pkg = this_pkg,
             compile_script = haskell_toolchain.per_module_compile or ctx.attrs._per_module_compile[RunInfo],
             nodes = nodes,
             src_of = src_of,
             modules = modules,
             module_libs = module_libs,
             module_lib_dirs = module_lib_dirs,
-            early_set = early_set,
-            target_th = target_th,
+            prebuilt_names = prebuilt_names,
+            splice_infos = splice_infos,
+            packages = packages,
+            early_packages = early_packages,
+            target_splice_packages = target_splice_packages,
+            splice_native_libs_dir = splice_native_libs_dir,
             dynamic_too = dynamic_too,
             o_of = o_of,
             hi_of = hi_of,
@@ -904,7 +976,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #   edit.
 # - Note [Template Haskell modules]: what the modules that run code at
 #   compile time wait for. Note [Libraries of the early package dbs] has
-#   the package dbs each compile gets.
+#   the package dbs each compile gets, and Note [Explicit level imports]
+#   how a module can say what its splices run.
 # - Note [The persistent worker]: compiling the modules in long-running
 #   GHC sessions rather than one `ghc -c` per module.
 
@@ -1036,12 +1109,16 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #
 # A Template Haskell module compiles against the final package dbs of the
 # local dependencies that the target's splice_depends lists (see
-# th_libraries in compile.bzl), with their libraries and the native
+# target_splice_libraries in compile.bzl), with their libraries and the native
 # libraries they depend on as inputs. So it waits only for those libraries
 # (and those of their own dependencies), and compiles against library-less
 # dbs for the other local dependencies, like any other module. The prebuilt packages'
 # libraries are there from the start, so a Template Haskell module gets
 # them all.
+#
+# A module with explicit level imports narrows the target's list further,
+# to the libraries that its splices import. See Note [Explicit level
+# imports].
 #
 # Note [Libraries of the early package dbs] has a table of which package db
 # a compile gets for each dependency. If a splice runs code from a
@@ -1147,7 +1224,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # compile, along with the modules behind any boot files among them. A
 # target whose splices need that can't be built with per_module.
 # The compile fails if a splice loaded one of the target's objects (see
-# DepFile in tools/ghc-api).
+# DepFile in tools/ghc-api), and the analysis fails if a module imports one
+# of the target's modules at the splice level (see Note [Explicit level
+# imports]).
 #
 # 7. Finding the Template Haskell modules
 #
@@ -1187,10 +1266,54 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #   module that runs no TH        no library               final
 #   TH module                     final if listed,         final
 #                                 else no library
+#   TH module, explicit level     final if listed and      final
+#   imports                       its splice imports
+#                                 need it,
+#                                 else no library
 #
 # A final db comes with the final dbs of the dependency's closure. A module
 # that runs no Template Haskell never starts the interpreter, so it doesn't
 # depend on the libraries of the final dbs it gets.
+
+# Note [Explicit level imports]
+#
+# 1. The idea
+#
+# With ExplicitLevelImports (GHC 9.14 and later), or
+# NoImplicitStagePersistence, a splice or ANN pragma can only use what the
+# module imports with `import splice`. Using a name imported otherwise, even
+# from the Prelude, is a level error. So those imports tell us exactly what
+# code the module's splices may run, and so which libraries its compile
+# needs:
+#
+# - A module of a dependency needs that dependency's library, and the
+#   libraries of its own dependencies (see Note [Libraries of the early
+#   package dbs]).
+# - A module of the target itself is an error, since splices can't run code
+#   of their own target (see Note [Template Haskell modules]).
+#
+# The splice imports refine the target's splice_depends, as a module's
+# imports refine its target's dependencies. The module compiles against the
+# final dbs of the listed dependencies, local or prebuilt, that its splice
+# imports come through, and against dbs that name no library for the
+# others. So it waits only for those libraries, even if its target lists
+# more. A module that a dependency re-exports comes through that
+# dependency, whose closure has the package that defines it.
+#
+# A splice import from a dependency outside the closures of the listed ones
+# is an error, as an import from a package that isn't a dependency is. A
+# dependency inside one of those closures that isn't listed itself has no
+# closure of its own here, so a module that imports from it gets the
+# target's whole set. This works for dependencies built with --make too,
+# since GHC's dependency analysis says which dependency any imported module
+# comes from.
+#
+# 2. Finding the splice imports
+#
+# The deps tool reads each import's level from GHC's summary of the module,
+# whose imports carry a level from GHC 9.14. It decides whether the module
+# has explicit level imports from the module's extensions, which come from
+# its pragmas and the target's flags.
 
 # Note [The persistent worker]
 #

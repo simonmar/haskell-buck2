@@ -51,10 +51,11 @@ splices share its process then pass.
 
 Each check prints `PASS` or `FAIL` (with the missing and unexpected members
 of the set it compared) or `SKIP` (a check of what the platform doesn't
-have, or `check_cache` without `BAZEL_REMOTE`). A check of a known bug in
-the rules (marked with `known_failure` in harness.py, for all runs or only
-for some, such as those with the worker) prints `XFAIL` when it fails, and
-`XPASS` when it passes, which means the bug is fixed and the mark should go.
+have, `check_cache` without `BAZEL_REMOTE`, or the explicit level imports
+check before GHC 9.14). A check of a known bug in the rules (marked with
+`known_failure` in harness.py, for all runs or only for some, such as those
+with the worker) prints `XFAIL` when it fails, and `XPASS` when it passes,
+which means the bug is fixed and the mark should go.
 The script fails on any `FAIL` or `XPASS`. Some checks are of what
 per_module doesn't support, such as a splice that runs its own target's
 code, or of a mistake in `splice_depends`. They check that the
@@ -92,6 +93,9 @@ compile fails.
 | `//th-local-splice:show` | prints `C.Splice`'s value, which comes from `gen` |
 | `//data-dirs:data-dirs` | a splice that runs `//data-dirs:paths`'s code, which reads a data file through the variable that `data_dirs` sets |
 | `//th-prebuilt-splice:th-prebuilt-splice` | `splice_depends = []`: a splice that runs only `template-haskell` |
+| `//eli:eli`, `//eli:eli-unlisted`, `//eli:eli-own` | GHC 9.14: `import splice TH.Gen`, `import splice Q.Lib` (from `//make-lib`, built with --make) and `import splice Language.Haskell.TH`, in a target that lists `th-gen` and `make-lib` in `splice_depends`; `import splice TH.Gen` in one that doesn't list `th-gen`; and an `import splice` of a module of the target itself |
+| `//eli-reexport:eli-reexport`, `//eli-reexport:eli-reexport-wide` | GHC 9.14: `import splice A.Base`, which `//reexport:reexport` re-exports, and the same import in a target that also depends on `//lib`, without listing it |
+| `//eli-persist:eli-persist` | GHC 9.14: a splice that runs `TH.Gen`, imported without `splice`, in a module with `ExplicitLevelImports` and then `ImplicitStagePersistence` |
 | `//boot-cycle:boot-cycle` | two modules in an import cycle, through an hs-boot file |
 | `//boot-cycle-inline:boot-cycle-inline` | with -O, a module that needs the interface of a module in an import cycle that it reaches only through an unfolding |
 | `//ownboot:ownboot` | a module whose hs-boot file no import cycle needs |

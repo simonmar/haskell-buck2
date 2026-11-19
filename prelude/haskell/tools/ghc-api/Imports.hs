@@ -1,23 +1,23 @@
 {-# LANGUAGE CPP #-}
 -- | A module summary's imports, wherever each GHC version (9.6 to 10.1)
 -- keeps them.
-module Imports (Import, ordinaryImports, textualImports, sourceImports, importName, importLocated, findImport, findModuleByName) where
+module Imports (Import, ordinaryImports, textualImports, sourceImports, importName, importLocated, spliceImport, findImport, findModuleByName) where
 
 import GHC (GenLocated (..), Located, ModSummary, ModuleName, PkgQual (..))
 import GHC.Driver.Env (HscEnv)
 import GHC.Unit.Finder (FindResult, findImportedModule)
 import GHC.Unit.Module.ModSummary (ModSummary (ms_textual_imps), ms_imps, ms_srcimps)
+#if MIN_VERSION_ghc(9,14,0)
+import GHC.Types.Basic (ImportLevel (..))
+#endif
 #if MIN_VERSION_ghc(10,1,0)
 import GHC.Unit.Finder (resolveImport)
 import GHC.Types.UnresolvedImport (UnresolvedImport (..))
 import GHC.Unit.Types (IsBootInterface (..), ModuleLookupScope (..))
 #endif
-#if !MIN_VERSION_ghc(10,1,0) && MIN_VERSION_ghc(9,14,0)
-import GHC.Types.Basic (ImportLevel)
-#endif
 
 -- | An import of a module summary. GHC 9.14 added an import level to each
--- import, which these functions ignore.
+-- import, which only spliceImport reads.
 #if MIN_VERSION_ghc(10,1,0)
 type Import = UnresolvedImport PkgQual
 #elif MIN_VERSION_ghc(9,14,0)
@@ -44,6 +44,10 @@ importName :: Import -> (ModuleName, PkgQual)
 -- | An import's module name, with its source location.
 importLocated :: Import -> Located ModuleName
 
+-- | Whether an import is at the splice level (`import splice`). An import
+-- before GHC 9.14, which added levels, never is.
+spliceImport :: Import -> Bool
+
 -- | Find the module that an import names, as GHC does when it compiles the
 -- module. Since GHC 10.1, the lookup depends on where the import comes
 -- from: GHC's implicit import of GHC.Essentials may name a hidden module,
@@ -61,6 +65,7 @@ textualImports = filter ((== NotBoot) . ui_boot) . ms_textual_imps
 sourceImports ms = [mn | UnresolvedImport{ui_mod_name = L _ mn} <- ms_srcimps ms]
 importName i = let L _ mn = ui_mod_name i in (mn, ui_pkg_qual i)
 importLocated = ui_mod_name
+spliceImport = (== SpliceLevel) . ui_level
 findImport = resolveImport
 findModuleByName hsc mn = findImportedModule hsc LookupUser mn NoPkgQual
 #elif MIN_VERSION_ghc(9,14,0)
@@ -69,12 +74,14 @@ textualImports = ms_textual_imps
 sourceImports ms = [mn | L _ mn <- ms_srcimps ms]
 importName (_, pkg, L _ mn) = (mn, pkg)
 importLocated (_, _, lmn) = lmn
+spliceImport (level, _, _) = level == SpliceLevel
 #else
 ordinaryImports = ms_imps
 textualImports = ms_textual_imps
 sourceImports ms = [mn | (_, L _ mn) <- ms_srcimps ms]
 importName (pkg, L _ mn) = (mn, pkg)
 importLocated (_, lmn) = lmn
+spliceImport _ = False
 #endif
 
 #if !MIN_VERSION_ghc(10,1,0)

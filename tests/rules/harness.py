@@ -10,6 +10,9 @@ import subprocess
 import sys
 
 MAIN_TARGETS = ["//lib:lib", "//lib-user:lib-user", "//th-gen:th-gen", "//th-local-splice:th-local-splice", "//th-local-splice:show", "//th-prebuilt-splice:th-prebuilt-splice", "//th-make-dep:th-make-dep", "//th-make-dep:mkrun", "//ffi-import:ffi-import", "//make-between:t", "//boot-cycle:boot-cycle", "//main:main", "//reexport:reexport", "//reexport-user:reexport-user", "//flat-sources:flat-sources"]
+# Targets whose modules use explicit level imports. Only GHC 9.14 and later
+# have them, so the checks only build these targets with those GHCs.
+ELI_TARGETS = ["//eli:eli", "//eli-reexport:eli-reexport", "//eli-persist:eli-persist"]
 
 LOG_DIR = "buck-logs"
 
@@ -268,11 +271,12 @@ def write(path, text):
 # --- What the checks share -------------------------------------------------------
 
 class State:
-    def __init__(self, bazel_remote=None, worker=False, external_interpreter=False):
+    def __init__(self, bazel_remote=None, eli=False, worker=False, external_interpreter=False):
         self.bazel_remote = bazel_remote
+        self.eli = eli
         self.worker = worker
         self.external_interpreter = external_interpreter
-        self.targets = MAIN_TARGETS
+        self.targets = MAIN_TARGETS + (ELI_TARGETS if eli else [])
         self.entries = None
         self.actions = None
 
