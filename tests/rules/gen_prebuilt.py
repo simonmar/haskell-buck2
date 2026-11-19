@@ -103,8 +103,11 @@ def main():
                     if os.path.exists(os.path.join(d, so)):
                         shared[so] = rel(os.path.join(d, so))
                         break
-        if name == "rts":
-            ldflags = ["-L" + d for d in libdirs]
+        # A package's library-dirs are also where its extra-libraries are,
+        # which may not be on the linker's default path (with a GHC from Nix,
+        # say). GHC passes them when it links the package itself.
+        if info.get("extra-libraries"):
+            ldflags = ["-L" + d for d in dict.fromkeys(libdirs)]
         ldflags += ["-l" + lib for lib in info.get("extra-libraries", [])]
         headers = [rel(d) for d in info.get("include-dirs", []) if os.path.isdir(d)] if name == "rts" else []
         out += [
