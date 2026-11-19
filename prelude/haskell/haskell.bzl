@@ -58,6 +58,7 @@ load(
     "CompileResultInfo",
     "compile",
     "data_dirs_env",
+    "own_data_dirs",
     "dependency_libs",
 )
 load(
@@ -904,6 +905,7 @@ def _build_haskell_lib(
             stub_dirs = [compiled.stubs],
             libs = [shared_lib],
             native_libs = native_libs,
+            data_dirs = own_data_dirs(ctx),
             version = ctx.attrs.package_version or "1.0.0",
             is_prebuilt = False,
             profiling_enabled = False,
@@ -938,6 +940,7 @@ def _build_haskell_lib(
         stub_dirs = stub_dirs,
         libs = all_libs,
         native_libs = native_libs,
+        data_dirs = own_data_dirs(ctx),
         version = ctx.attrs.package_version or "1.0.0",
         is_prebuilt = False,
         profiling_enabled = enable_profiling,

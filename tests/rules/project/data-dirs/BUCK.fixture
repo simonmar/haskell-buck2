@@ -1,23 +1,47 @@
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
 load("//compile:defs.bzl", "PER_MODULE")
 
-# DD.Paths finds data files through the data_dirs_datadir variable, as a
-# Cabal package's Paths_<pkg> module does.
+# Paths_dd reads the dd_datadir variable to find the package dd's data
+# files, as a Cabal package's Paths_<pkg> module does.
 haskell_library(
     name = "paths",
-    srcs = {"DD.Paths": "DD/Paths.hs"},
+    srcs = {"Paths_dd": "Paths_dd.hs"},
     packages = ["base"],
+    data_dirs = {"dd_datadir": ":data"},
     per_module = PER_MODULE,
 )
 
-# A splice that runs DD.Paths's code to read a data file, in data_dirs.
+# Another library of the package dd. It has dd's data dirs, as cabal-buck2
+# gives every component of a package, but no Paths_dd, so it can't read
+# them.
+haskell_library(
+    name = "plain",
+    srcs = {"DD.Plain": "DD/Plain.hs"},
+    packages = ["base"],
+    data_dirs = {"dd_datadir": ":data"},
+    per_module = PER_MODULE,
+)
+
+# A splice that reads a data file with Paths_dd.
 haskell_binary(
     name = "data-dirs",
     srcs = {"Main": "Main.hs"},
     packages = ["base", "template-haskell"],
     deps = [":paths"],
     splice_depends = [":paths"],
-    data_dirs = {"data_dirs_datadir": ":data"},
+    data_dirs = {"dd_datadir": ":data"},
+    per_module = PER_MODULE,
+)
+
+# A splice that runs :plain's code, which can't read the data files.
+# Per-module, its module gets no data dirs.
+haskell_binary(
+    name = "no-data",
+    srcs = {"Main": "NoData.hs"},
+    packages = ["base", "template-haskell"],
+    deps = [":plain"],
+    splice_depends = [":plain"],
+    data_dirs = {"dd_datadir": ":data"},
     per_module = PER_MODULE,
 )
 

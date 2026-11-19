@@ -403,6 +403,26 @@ done
 def data_dirs_env(ctx: AnalysisContext) -> dict[str, Artifact]:
     return {name: dep[DefaultInfo].default_outputs[0] for name, dep in ctx.attrs.data_dirs.items()}
 
+# The data dirs that the Paths_<pkg> modules in `modules` use. Paths_foo
+# reads foo_datadir.
+def paths_data_dirs(modules, data_dirs: dict[str, Artifact]) -> dict[str, Artifact]:
+    vars = [m.removeprefix("Paths_") + "_datadir" for m in modules if m.startswith("Paths_")]
+    return {var: data_dirs[var] for var in vars if var in data_dirs}
+
+# The data dirs that the rule's own Paths_<pkg> modules use.
+def own_data_dirs(ctx: AnalysisContext) -> dict[str, Artifact]:
+    return paths_data_dirs([m for m, _ in srcs_to_pairs(ctx.attrs.srcs)], data_dirs_env(ctx))
+
+# The data dirs to set for a compile whose splices can run code from the
+# libraries in `final` (see target_splice_libraries): the ones those
+# libraries use, and the rule's own. If the rule has build tools, the
+# compile gets all of them, since a tool might need its own.
+def splice_data_dirs(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, final: dict[str, bool]) -> dict[str, Artifact]:
+    if build_tools(ctx):
+        return data_dirs_env(ctx)
+    libs = [lib for lib in dependency_libs(ctx, link_style, enable_profiling).traverse() if lib.name in final]
+    return own_data_dirs(ctx) | {var: d for lib in libs for var, d in lib.data_dirs.items()}
+
 # The target's build tools (build_tool_depends), by the name of each tool's
 # executable, which is the name that a program looks it up by on PATH.
 def build_tools(ctx: AnalysisContext) -> dict[str, Artifact]:
@@ -515,7 +535,7 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
         # timestamps, so this is safe even though Buck doesn't preserve
         # timestamps on artifacts.
         no_outputs_cleanup = True,
-        env = data_dirs_env(ctx) | ({"LD_LIBRARY_PATH": cmd_args(native_dir)} if native_dir != None else {}),
+        env = splice_data_dirs(ctx, link_style, enable_profiling, final) | ({"LD_LIBRARY_PATH": cmd_args(native_dir)} if native_dir != None else {}),
     )
 
     return args.result

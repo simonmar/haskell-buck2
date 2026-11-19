@@ -440,6 +440,16 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             if dynamic_too:
                 closure_files.append(dyn_hi_of[d])
         mod_packages = splice_packages(n) if runs_th[n] else early_packages
+        # The build tools that the module may run, which are the only ones
+        # its compile has on PATH, and so the only ones it depends on. GHC
+        # may run a build tool for the module, such as a preprocessor that
+        # -F -pgmF names. A splice may run any of them, so a module that runs
+        # Template Haskell gets them all. The module compiles in the worker
+        # only if it has no tools, since the worker can't put a compile's
+        # tools on PATH (see Note [The persistent worker]).
+        module_tools = list(tools) if runs_th[n] else [p for p in program_nodes[n] if p in tools]
+        # See Note [Data files of splices].
+        module_data_dirs = (data_dirs if module_tools else mod_packages.data_dirs) if runs_th[n] else {}
         hidirs = mod_packages.local_import_dirs + [(name, d) for name, d in module_lib_dirs.items() if name in mod_packages.early_names]
 
         # The flags specific to this module: its source and output files.
@@ -497,7 +507,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             tag.tag_artifacts(cmd_args(src_tree, format = "--srcroot={}")) if src_tree != None else [],
             cmd_args(mkdirs, format = "--mkdir={}"),
             # See Note [Data files of splices].
-            [cmd_args(d, format = "--data-dir=" + var + "={}") for var, d in data_dirs.items()] if runs_th[n] else [],
+            [cmd_args(d, format = "--data-dir=" + var + "={}") for var, d in module_data_dirs.items()],
             # See Note [Template Haskell modules], section 4.
             cmd_args(splice_native_libs_dir, format = "--library-path={}") if runs_th[n] and splice_native_libs_dir != None else [],
             "--",
@@ -510,21 +520,13 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         # buck2 sends the request to the worker instead, and runs the compile
         # tool only when it runs the action somewhere the worker isn't, such
         # as on a remote executor.
-        # The build tools that the module may run, which are the only ones
-        # its compile has on PATH, and so the only ones it depends on. GHC
-        # may run a build tool for the module, such as a preprocessor that
-        # -F -pgmF names. A splice may run any of them, so a module that runs
-        # Template Haskell gets them all. The module compiles in the worker
-        # only if it has no tools, since the worker can't put a compile's
-        # tools on PATH (see Note [The persistent worker]).
-        module_tools = list(tools) if runs_th[n] else [p for p in program_nodes[n] if p in tools]
         # The worker cannot give a compile environment variables of its
         # own, since it is a single process. So a module whose splices need
         # the environment variables for the target's data dirs (see Note
         # [Data files of splices]), or an LD_LIBRARY_PATH for native
         # libraries that it loads (see Note [Template Haskell modules],
         # section 4), must also compile outside the worker.
-        needs_data = runs_th[n] and len(data_dirs) > 0
+        needs_data = len(module_data_dirs) > 0
         needs_native = runs_th[n] and splice_native_libs_dir != None
         script = in_env(env_with(module_tools), cmd_args(compile_script))
         category = "haskell_compile_module_" + suffix.replace("-", "_")
@@ -709,6 +711,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             early_names = dbs.early_names,
             native_libs = dbs.native_libs,
             final = final,
+            # The data dirs that the splices' libraries use (see Note [Data
+            # files of splices]).
+            data_dirs = {var: d for lib in dep_libs if lib.name in final for var, d in lib.data_dirs.items()},
         )
 
     early_packages = packages({}, runs_th = False)
@@ -874,8 +879,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             producing_indices = producing_indices,
             src_tree = src_tree,
             base_cmd = base_cmd,
-            data_dirs = data_dirs_env(ctx),
             worker_info = worker_info,
+            data_dirs = data_dirs_env(ctx),
             tools = build_tools(ctx),
             compile_env = haskell_toolchain.compile_env,
             advice = advice,
@@ -1412,14 +1417,28 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 
 # Note [Data files of splices]
 #
-# A package's Paths_<pkg> module finds the package's data files through the
-# environment variable <pkg>_datadir, which the target's data_dirs attribute
-# sets (see data_dirs_env). A splice that runs code of a local library may
-# read that library's data files, so the interpreter that runs the splice
-# needs the variables.
+# A package's Paths_<pkg> module finds the package's data files by reading
+# the environment variable <pkg>_datadir, which comes from the data_dirs
+# attribute (see data_dirs_env). So a compile whose splices run code that
+# reads data files has to set these variables.
 #
-# So a module that runs splices gets the data dirs in its request
-# (--data-dir=VAR=DIR), and has them as inputs. The compile tool gives their
-# variables to `ghc -c`, whose splices run in its own process. The worker
-# can't do that, because its environment is shared by all its sessions, so
-# such a module compiles outside the worker.
+# A module that needs any of them can't compile in the worker (see below),
+# and in a large project nearly every target has some. So rather than set
+# them all, we only give a Template Haskell module the ones it could need.
+# A splice can only run code from the libraries in its splice set, and code
+# can only read its own package's data files, through that package's
+# Paths_<pkg> module. So the module only needs <pkg>_datadir if one of
+# those libraries has a Paths_<pkg> module (see own_data_dirs in
+# compile.bzl). Most Template Haskell modules need none. A --make compile
+# works its variables out the same way, for the whole target (see
+# splice_data_dirs).
+#
+# Build tools are the exception. A tool might read data files of its own,
+# so a module that might run one of the target's build tools, or a --make
+# compile of a target with any, gets all the target's data dirs.
+#
+# A module that needs data dirs gets them in its request (--data-dir=VAR=DIR)
+# and as inputs. The compile tool sets the variables for `ghc -c`, which
+# runs the splices in its own process. The worker can't do that, because
+# its sessions all share one environment, so such a module compiles outside
+# the worker.

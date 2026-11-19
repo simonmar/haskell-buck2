@@ -1,7 +1,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 module Main (main) where
 
-import DD.Paths (getDataFileName)
+import Paths_dd (getDataFileName)
 import Language.Haskell.TH (litE, runIO, stringL)
 
 main :: IO ()
