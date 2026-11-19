@@ -239,7 +239,7 @@ compileRequest w r
       ds <- reverse <$> readIORef diagnostics
       when (wVerbose w) $ hPutStrLn stderr ("buck2-ghc-worker: " ++ reqModPath r ++ " " ++ show (round ((t1 - t0) * 1000) :: Int) ++ "ms")
       let text = map diagText ds
-      pure $ withSpliceHint r $ case result of
+      pure $ case result of
         Right () | not (any diagIsError ds) -> (0, unlines text)
         Right () -> (1, unlines text)
         -- compileOne throws a compile's errors as a SourceError rather than

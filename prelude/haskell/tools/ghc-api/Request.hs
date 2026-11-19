@@ -1,10 +1,9 @@
 {-# LANGUAGE CPP #-}
--- | The request that the rules send to compile each module, the flags of
--- the GHC session that compiles it, and the advice that is added to a
--- failed compile's output.
-module Request (Request (..), parseRequest, sessionFlags, withoutRts, unlinkedSplice, spliceHint, withSpliceHint) where
+-- | The request that the rules send to compile each module, and the flags
+-- of the GHC session that compiles it.
+module Request (Request (..), parseRequest, sessionFlags, withRequestEnv, withoutRts) where
 
-import Data.List (isInfixOf, isPrefixOf, stripPrefix)
+import Data.List (intercalate, isPrefixOf, stripPrefix)
 
 import Contract (contract)
 
@@ -15,6 +14,7 @@ import Contract (contract)
 -- > --request --contract V --libdir LIBDIR --depfile DEP --abi ABI
 -- >   --module Foo/Bar --source Foo/Bar.hs --outdir OUT --hisuf SUF [--boot]
 -- >   [--hidir=UNIT=DIR]... [--srcroot=SRCS]... [--mkdir=DIR]...
+-- >   [--data-dir=VAR=DIR]... [--library-path=DIR]...
 -- >   -- ghc SESSION_FLAGS... -- -c Foo/Bar.hs -o ... -ohi ...
 --
 -- The flags come in two parts: the session flags, which are the same for
@@ -38,6 +38,8 @@ data Request = Request
   , reqHidirs :: [(String, FilePath)] -- the dependencies' interface (and .abi) dirs, by unit id
   , reqSrcRoots :: [FilePath] -- trees of the target's sources, which go on the session's import path
   , reqMkdirs :: [FilePath] -- output directories to create first
+  , reqDataDirs :: [(String, FilePath)] -- the variables for the module's splices, with the data dirs they name (see Note [Data files of splices] in compile_per_module.bzl)
+  , reqLibraryPaths :: [FilePath] -- the directories of the native libraries that the module's splices may load, for LD_LIBRARY_PATH (see Note [Template Haskell modules] in compile_per_module.bzl)
   , reqBoot :: Bool -- whether the module is a boot file
   , reqCompiler :: String
   , reqSessionArgs :: [String] -- the session flags, which are the same for every module of the target
@@ -50,7 +52,7 @@ data Request = Request
 parseRequest :: [String] -> Either String Request
 parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
   "--contract" : v : rest
-    | v == contract -> go (Request "" "" "" "" "" "" "" [] [] [] False "" [] []) rest
+    | v == contract -> go (Request "" "" "" "" "" "" "" [] [] [] [] [] False "" [] []) rest
     | otherwise -> Left ("this program takes version " ++ contract ++ " of the rules' requests, but the rules sent version " ++ v ++ ": build it from the same version of the rules")
   _ -> Left "the request names no version: build this program from the same version of the rules"
   where
@@ -71,6 +73,8 @@ parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
       | Just v <- stripPrefix "--hidir=" x, (unit, '=' : d) <- break (== '=') v = go r{reqHidirs = reqHidirs r ++ [(unit, d)]} rest
       | Just v <- stripPrefix "--srcroot=" x = go r{reqSrcRoots = reqSrcRoots r ++ [v]} rest
       | Just v <- stripPrefix "--mkdir=" x = go r{reqMkdirs = reqMkdirs r ++ [v]} rest
+      | Just v <- stripPrefix "--data-dir=" x, (var, '=' : d) <- break (== '=') v = go r{reqDataDirs = reqDataDirs r ++ [(var, d)]} rest
+      | Just d <- stripPrefix "--library-path=" x = go r{reqLibraryPaths = reqLibraryPaths r ++ [d]} rest
       | otherwise = Left ("unexpected request argument " ++ show x)
     go _ [] = Left "the request has no compiler command"
 
@@ -113,24 +117,16 @@ objectDeterminism = ["-fobject-determinism"]
 objectDeterminism = []
 #endif
 
+-- | Add the variables of the request's data dirs to an environment, in place
+-- of any variables with the same names, and put the request's library paths
+-- at the front of its LD_LIBRARY_PATH. The request's splices need both.
+withRequestEnv :: Request -> [(String, String)] -> [(String, String)]
+withRequestEnv r env = vars ++ [(k, v) | (k, v) <- env, k `notElem` map fst vars]
+  where
+    vars = reqDataDirs r ++ [("LD_LIBRARY_PATH", intercalate ":" (reqLibraryPaths r ++ maybe [] pure (lookup "LD_LIBRARY_PATH" env))) | not (null (reqLibraryPaths r))]
+
 -- | GHC's flags without options for its runtime (@+RTS ... -RTS@).
 withoutRts :: [String] -> [String]
 withoutRts args = case break (== "+RTS") args of
   (ghc, _ : rest) -> ghc ++ withoutRts (drop 1 (dropWhile (/= "-RTS") rest))
   (ghc, []) -> ghc
-
--- | Add the rules' advice to the output of a compile whose splice couldn't
--- load the code it runs. A splice can only run code of prebuilt packages
--- (see Note [Template Haskell modules] in compile_per_module.bzl).
-withSpliceHint :: Request -> (Int, String) -> (Int, String)
-withSpliceHint r (code, out)
-  | code /= 0 && unlinkedSplice `isInfixOf` out = (code, out ++ spliceHint r)
-  | otherwise = (code, out)
-
--- | GHC's error for a splice that couldn't load the code it runs.
-unlinkedSplice :: String
-unlinkedSplice = "couldn't find the following symbol"
-
--- | The advice for a module whose splice couldn't load the code it runs.
-spliceHint :: Request -> String
-spliceHint r = "\n" ++ map (\c -> if c == '/' then '.' else c) (reqModPath r) ++ ": per_module: a splice can run only the code of prebuilt packages, not of this project's other libraries: build the target with per_module = False\n"

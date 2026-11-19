@@ -587,29 +587,18 @@ def _get_haskell_shared_library_name_linker_flags(linker_type: LinkerType, sonam
     else:
         fail("Unknown linker type '{}'.".format(linker_type))
 
-# A merged symlink tree of every native (cxx_library) shared library reached
-# through this target's deps, named by SONAME - the same shape as the tree
-# haskell_binary_impl builds for its own final-link rpath (see
-# create_shlib_symlink_tree's other call site below), but built here so it
-# can be handed to compile() as well: Template Haskell splices dlopen their
-# dependencies' shared objects *during* compilation, not just at final link,
-# so the compile action's sandbox needs the same search path. Returns None
-# when there's nothing to add, so callers can skip the LD_LIBRARY_PATH
-# plumbing entirely for targets with no shared native deps. Called once per
-# target (not once per link_style/profiling variant compiled) since it maps
-# to a single declared symlink-tree output.
-def _native_shared_libs_dir(actions: AnalysisActions, name: str, shared_library_infos: list[SharedLibraryInfo]) -> [Artifact, None]:
-    if not shared_library_infos:
-        return None
-    shlib_info = merge_shared_libraries(actions, deps = shared_library_infos)
-    sos = traverse_shared_library_info(shlib_info, transformation_provider = None)
-    if not sos:
-        return None
-    return create_shlib_symlink_tree(
-        actions = actions,
-        out = "__{}__th_shared_libs_symlink_tree".format(name),
-        shared_libs = sos,
-    )
+# The shared libraries of a target's native dependencies, and of their
+# dependencies in turn. A splice that runs the
+# target's code finds them through LD_LIBRARY_PATH (see native_libs_tree in
+# compile.bzl, and Note [Template Haskell modules] in compile_per_module.bzl).
+#
+# It leaves out the shared libraries of the target's Haskell dependencies,
+# which GHC loads by their paths in the package dbs, so that a compile that
+# loads them doesn't wait for any other Haskell library to be linked. The
+# Haskell dependencies have sets of their own, which a compile merges with
+# this one.
+def _native_libs(ctx: AnalysisContext) -> SharedLibraryInfo:
+    return merge_shared_libraries(ctx.actions, deps = [d[SharedLibraryInfo] for d in ctx.attrs.deps if SharedLibraryInfo in d and HaskellLinkInfo not in d])
 
 # Links a Haskell shared library from a set of already-compiled object
 # files. Factored out of _build_haskell_lib's own "shared" branch so the
@@ -697,9 +686,8 @@ def _build_haskell_lib(
     nlis: list[MergedLinkInfo],  # native link infos from all deps
     link_style: LinkStyle,
     enable_profiling: bool,
-    # Precomputed once per target (not per link_style/profiling variant - see
-    # call site) since it maps to a single declared symlink-tree output.
-    native_shared_libs_dir: [Artifact, None],
+    # The library's native libraries (see _native_libs).
+    native_libs: SharedLibraryInfo,
     # The non-profiling artifacts are also needed to build the package for
     # profiling, so it should be passed when `enable_profiling` is True.
     non_profiling_hlib: [HaskellLibBuildOutput, None] = None,
@@ -745,7 +733,7 @@ def _build_haskell_lib(
         link_style,
         enable_profiling = enable_profiling,
         pkgname = pkgname,
-        native_shared_libs_dir = native_shared_libs_dir,
+        native_libs = native_libs,
         dynamic_too = dynamic_too,
         dynamic_from = non_profiling_shared_compiled if enable_profiling else None,
     )
@@ -912,6 +900,7 @@ def _build_haskell_lib(
             import_dirs = {False: compiled.hi},
             stub_dirs = [compiled.stubs],
             libs = [shared_lib],
+            native_libs = native_libs,
             version = ctx.attrs.package_version or "1.0.0",
             is_prebuilt = False,
             profiling_enabled = False,
@@ -945,6 +934,7 @@ def _build_haskell_lib(
         import_dirs = import_artifacts,
         stub_dirs = stub_dirs,
         libs = all_libs,
+        native_libs = native_libs,
         version = ctx.attrs.package_version or "1.0.0",
         is_prebuilt = False,
         profiling_enabled = enable_profiling,
@@ -1056,10 +1046,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     pkgname = ctx.attrs.unit_id or haskell_library_unit_id(ctx.label)
 
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
-    native_shared_libs_dir = (
-        _native_shared_libs_dir(ctx.actions, libname, shared_library_infos)
-        if haskell_toolchain.dynamic_ghc else None
-    )
+    native_libs = _native_libs(ctx)
 
     link_styles = [legacy_output_style_to_link_style(o) for o in get_output_styles_for_linkage(preferred_linkage)]
 
@@ -1181,7 +1168,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 nlis = nlis,
                 link_style = link_style,
                 enable_profiling = enable_profiling,
-                native_shared_libs_dir = native_shared_libs_dir,
+                native_libs = native_libs,
                 non_profiling_hlib = non_profiling_hlib.get(non_profiling_style(link_style) if enable_profiling else link_style),
                 non_profiling_shared_lib = non_profiling_shared.libs[0] if (enable_profiling and non_profiling_shared) else None,
                 non_profiling_shared_compiled = non_profiling_shared.compiled if (enable_profiling and non_profiling_shared) else None,
@@ -1428,10 +1415,7 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         ctx,
         link_style,
         enable_profiling = enable_profiling,
-        native_shared_libs_dir = (
-            _native_shared_libs_dir(ctx.actions, ctx.attrs.name, attr_deps_shared_library_infos(ctx))
-            if haskell_toolchain.dynamic_ghc else None
-        ),
+        native_libs = _native_libs(ctx),
     )
 
     output = ctx.actions.declare_output(ctx.attrs.exe_name or ctx.attrs.name, has_content_based_path = False)

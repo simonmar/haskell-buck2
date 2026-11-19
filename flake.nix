@@ -56,11 +56,12 @@
             targetPkgs = p: [ p.coreutils p.bash ];
             runScript = "bash";
           };
-          rules = ghc: withWorker: pkgs.runCommandCC "rules-tests-${lib.optionalString withWorker "worker-"}${ghc}"
+          rules = ghc: withWorker: withExternal: pkgs.runCommandCC "rules-tests-${lib.optionalString withWorker "worker-"}${lib.optionalString withExternal "ext-"}${ghc}"
             {
               nativeBuildInputs = testTools pkgs;
               BAZEL_REMOTE = "${pkgs.bazel-remote}/bin/bazel-remote";
               PER_MODULE_WORKER = if withWorker then "builtin" else "none";
+              EXTERNAL_INTERPRETER = if withExternal then "true" else "false";
               src = clean (lib.cleanSourceWith {
                 src = ./.;
                 filter = path: type: !(lib.hasPrefix (toString ./.github) path);
@@ -82,8 +83,10 @@
           { name = "worker-${ghc}"; value = worker ghc; }
         ] ++ lib.optionals pkgs.stdenv.isLinux [
           # We only run the rules tests on linux currently
-          { name = "rules-${ghc}"; value = rules ghc false; }
-          { name = "rules-worker-${ghc}"; value = rules ghc true; }
+          { name = "rules-${ghc}"; value = rules ghc false false; }
+          { name = "rules-worker-${ghc}"; value = rules ghc true false; }
+          { name = "rules-ext-${ghc}"; value = rules ghc false true; }
+          { name = "rules-worker-ext-${ghc}"; value = rules ghc true true; }
         ]) ghcs));
 
       devShells = forAllSystems (pkgs:

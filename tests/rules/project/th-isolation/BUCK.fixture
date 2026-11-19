@@ -1,0 +1,66 @@
+load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
+
+# Splices that would be isolated from each other if each module compiled in
+# a process of its own, as it does without the persistent worker. In the
+# worker, they share its process (see Note [Template Haskell modules] in
+# compile_per_module.bzl).
+
+# G.State's next counts its calls in a global variable.
+haskell_library(
+    name = "state",
+    srcs = {"G.State": "G/State.hs"},
+    packages = ["base"],
+)
+
+# TI.A's and TI.B's splices each lift the result of their first call of
+# next. Isolated, both get 1. show prints the pair.
+haskell_library(
+    name = "a",
+    srcs = {"TI.A": "TI/A.hs"},
+    packages = ["base", "template-haskell"],
+    deps = [":state"],
+    splice_depends = [":state"],
+    per_module = True,
+)
+
+haskell_library(
+    name = "b",
+    srcs = {"TI.B": "TI/B.hs"},
+    packages = ["base", "template-haskell"],
+    deps = [":state"],
+    splice_depends = [":state"],
+    per_module = True,
+)
+
+haskell_binary(
+    name = "show",
+    srcs = {"Main": "Show.hs"},
+    packages = ["base"],
+    deps = [":a", ":b"],
+)
+
+# K.Crash's crash aborts the process. TI.Crash's splice waits a second and
+# then calls it, so its compile fails. TI.Slow's splice, which runs only
+# base's code, waits five seconds, so that it is still running when TI.Crash
+# aborts. Isolated, only TI.Crash fails.
+haskell_library(
+    name = "crash-lib",
+    srcs = {"K.Crash": "K/Crash.hs"},
+    packages = ["base"],
+)
+
+haskell_library(
+    name = "crash",
+    srcs = {"TI.Crash": "TI/Crash.hs"},
+    packages = ["base", "template-haskell"],
+    deps = [":crash-lib"],
+    splice_depends = [":crash-lib"],
+    per_module = True,
+)
+
+haskell_library(
+    name = "slow",
+    srcs = {"TI.Slow": "TI/Slow.hs"},
+    packages = ["base", "template-haskell"],
+    per_module = True,
+)

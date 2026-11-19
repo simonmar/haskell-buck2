@@ -9,7 +9,9 @@
 # builds with it as a remote cache. PER_MODULE_WORKER is the project's
 # `[haskell] per_module_worker`: "builtin" compiles the modules in the worker
 # that the toolchain builds, and "none", the default here, compiles them
-# without a worker. The buck2 daemon is killed at the end.
+# without a worker. EXTERNAL_INTERPRETER=true compiles with
+# -fexternal-interpreter, in the toolchain's `[haskell] compiler_flags`. The
+# buck2 daemon is killed at the end.
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -31,12 +33,18 @@ case "$worker" in
   builtin | none) ;;
   *) echo "PER_MODULE_WORKER must be builtin or none" >&2; exit 2 ;;
 esac
+external=${EXTERNAL_INTERPRETER:-false}
+case "$external" in
+  true | false) ;;
+  *) echo "EXTERNAL_INTERPRETER must be true or false" >&2; exit 2 ;;
+esac
 printf '\n[haskell]\n  per_module_worker = %s\n' "$worker" >> "$project/.buckconfig"
+if [ "$external" = true ]; then printf '  compiler_flags = -fexternal-interpreter\n' >> "$project/.buckconfig"; fi
 
 python3 "$here/gen_prebuilt.py" "$ghc_bin/ghc" "$project/third-party/haskell"
 
 cd "$project"
 status=0
-python3 "$here/check.py" ${BAZEL_REMOTE:+--bazel-remote "$BAZEL_REMOTE"} $([ "$worker" = builtin ] && echo --worker) "$@" || status=$?
+python3 "$here/check.py" ${BAZEL_REMOTE:+--bazel-remote "$BAZEL_REMOTE"} $([ "$worker" = builtin ] && echo --worker) $([ "$external" = true ] && echo --external-interpreter) "$@" || status=$?
 buck2 kill > /dev/null 2>&1 || true
 exit $status

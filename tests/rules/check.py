@@ -63,12 +63,24 @@ from per_module import (
     check_early_db_conf,
     check_interfaces_subtarget,
     check_main_file,
+    check_local_splices_in_modes,
+    check_native_splices_in_modes,
     check_module_name_clash,
+    check_native_libraries_outside_worker,
+    check_native_library_change_recompiles,
     check_opt_shared_consumer,
     check_opt_static,
     check_own_boot,
     check_plain_module_uses_early_dbs,
+    check_th_body_change_recompiles,
+    check_splice_depends_not_a_dependency,
     check_th_modules_dbs,
+    check_external_interpreter_splices,
+    check_external_interpreter_prof_splices,
+    check_splice_crash,
+    check_splice_global_state,
+    check_unlisted_th_dependency_fails,
+    check_unlisted_th_dependency_fails_after_load,
     check_unrelated_modules,
     check_workers,
     check_build_tool_change,
@@ -83,11 +95,17 @@ CHECKS = [
     check_advice_modules_outside_worker,
     check_make_build,
     check_early_db_conf,
+    check_native_libraries_outside_worker,
     check_cross_package_dep_file,
     check_module_name_clash,
     check_plain_module_uses_early_dbs,
     check_binary_unit,
     check_th_modules_dbs,
+    check_unlisted_th_dependency_fails,
+    check_splice_depends_not_a_dependency,
+    check_unlisted_th_dependency_fails_after_load,
+    check_splice_global_state,
+    check_splice_crash,
     check_local_splices,
     check_th_boot_cycles,
     check_own_boot,
@@ -100,10 +118,16 @@ CHECKS = [
     check_interfaces_subtarget,
     check_cutoff_abi_base,
     check_cutoff_abi_mid,
+    check_th_body_change_recompiles,
+    check_native_library_change_recompiles,
     check_cutoff_instances,
     check_unrelated_modules,
     check_opt_static,
     check_th_modes,
+    check_local_splices_in_modes,
+    check_native_splices_in_modes,
+    check_external_interpreter_splices,
+    check_external_interpreter_prof_splices,
     check_opt_shared_consumer,
     check_module_moved,
     check_header_change,
@@ -131,11 +155,12 @@ def main():
     ap.add_argument("--only", action="append", help="run only this check (by name, without check_); repeatable")
     ap.add_argument("--bazel-remote", help="a bazel-remote binary, for check_cache")
     ap.add_argument("--worker", action="store_true", help="the project compiles in a persistent worker")
+    ap.add_argument("--external-interpreter", action="store_true", help="the project compiles with -fexternal-interpreter")
     args = ap.parse_args()
     unknown = set(args.only or []) - {check.__name__[len("check_"):] for check in CHECKS}
     if unknown:
         ap.error("no such check: " + " ".join(sorted(unknown)))
-    st = State(bazel_remote=args.bazel_remote, worker=args.worker)
+    st = State(bazel_remote=args.bazel_remote, worker=args.worker, external_interpreter=args.external_interpreter)
     failed = []
     for check in CHECKS:
         name = check.__name__[len("check_"):]
@@ -159,6 +184,9 @@ def main():
             error = traceback.format_exc()
         took = "{:.0f}s".format(time.time() - start)
         known = getattr(check, "known_failure", None)
+        when = getattr(check, "known_failure_when", None)
+        if when is not None and not when(st):
+            known = None
         if skipped is not None:
             print("SKIP   {} ({})".format(name, skipped))
         elif known is not None and error is not None:

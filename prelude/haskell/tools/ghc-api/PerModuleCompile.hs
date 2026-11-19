@@ -11,13 +11,12 @@
 module Main (main) where
 
 import Control.Exception (SomeException, displayException, fromException, handle, throwIO)
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import qualified Data.ByteString as B
-import qualified Data.ByteString.Char8 as B8
 import System.Directory (createDirectoryIfMissing)
-import System.Environment (getArgs)
+import System.Environment (getArgs, getEnvironment)
 import System.Exit (ExitCode (..), exitWith)
-import System.IO (Handle, hPutStr, hPutStrLn, hSetBinaryMode, stderr)
+import System.IO (Handle, hPutStrLn, hSetBinaryMode, stderr)
 import System.Process (CreateProcess (..), StdStream (..), createProcess, proc, waitForProcess)
 
 import GHC.Utils.Panic (GhcException (..))
@@ -32,32 +31,26 @@ main = handle failed $ do
   mapM_ (createDirectoryIfMissing True) (reqMkdirs r)
   -- With -fforce-recomp: buck2 decides when the module compiles, not GHC
   -- (see Note [Early cut-off by dep files] in compile_per_module.bzl).
-  (_, _, Just err, p) <- createProcess (proc (reqCompiler r) (reqSessionArgs r ++ ["-fforce-recomp"] ++ reqModuleArgs r)){std_err = CreatePipe}
-  unlinked <- relay err
+  -- GHC's interpreter runs the module's splices in GHC's own process, with
+  -- GHC's environment. So GHC gets the variables of the request's data dirs,
+  -- and its library paths on LD_LIBRARY_PATH (see Note [Data files of
+  -- splices] and Note [Template Haskell modules] in compile_per_module.bzl).
+  env <- withRequestEnv r <$> getEnvironment
+  (_, _, Just err, p) <- createProcess (proc (reqCompiler r) (reqSessionArgs r ++ ["-fforce-recomp"] ++ reqModuleArgs r)){std_err = CreatePipe, env = Just env}
+  relay err
   code <- exitCode <$> waitForProcess p
-  when (code /= 0) $ do
-    when unlinked $ hPutStr stderr (spliceHint r)
-    exitWith (ExitFailure code)
+  when (code /= 0) $ exitWith (ExitFailure code)
   case dropWhile (/= "-ohi") (reqModuleArgs r) of
     _ : hi : _ -> readInterface (reqLibdir r) hi >>= writeDepFiles r
     _ -> hPutStrLn stderr "per_module_compile: the request names no interface file (-ohi)" >> exitWith (ExitFailure 2)
 
--- | Copy GHC's diagnostics to stderr as they come, bytes unchanged, and say
--- whether they had the error of a splice that couldn't load the code it
--- runs. The error may straddle two reads, so each read is searched together
--- with the end of the one before.
-relay :: Handle -> IO Bool
-relay h = hSetBinaryMode h True >> hSetBinaryMode stderr True >> go False B.empty
+-- | Copy GHC's diagnostics to stderr as they come, bytes unchanged.
+relay :: Handle -> IO ()
+relay h = hSetBinaryMode h True >> hSetBinaryMode stderr True >> go
   where
-    marker = B8.pack unlinkedSplice
-    go seen previous = do
+    go = do
       chunk <- B.hGetSome h 65536
-      if B.null chunk
-        then pure seen
-        else do
-          B.hPut stderr chunk
-          let window = previous <> chunk
-          go (seen || marker `B.isInfixOf` window) (B.drop (B.length window - B.length marker) window)
+      unless (B.null chunk) (B.hPut stderr chunk >> go)
 
 -- | Fail with what went wrong, such as an interface that recorded no usages
 -- (see DepFile), rather than with an uncaught exception.

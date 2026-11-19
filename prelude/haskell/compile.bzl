@@ -36,6 +36,14 @@ load(
     "@prelude//linking:link_info.bzl",
     "LinkStyle",
 )
+load(
+    "@prelude//linking:shared_libraries.bzl",
+    "EMPTY_SHARED_LIBRARY_INFO",
+    "SharedLibraryInfo",
+    "create_shlib_symlink_tree",
+    "merge_shared_libraries",
+    "traverse_shared_library_info",
+)
 load("@prelude//utils:argfile.bzl", "at_argfile")
 
 # The type of the return value of the `_compile()` function.
@@ -229,7 +237,7 @@ def get_producing_indices(ctx: AnalysisContext) -> bool:
     toolchain_flags = ctx.attrs._haskell_toolchain[HaskellToolchainInfo].compiler_flags or []
     return "-fwrite-ide-info" in toolchain_flags + ctx.attrs.compiler_flags
 
-def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname = None, suffix: str = "", native_shared_libs_dir: [Artifact, None] = None, dynamic_too: bool = False) -> CompileArgsInfo:
+def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname = None, suffix: str = "", dynamic_too: bool = False) -> CompileArgsInfo:
     compile_cmd, compile_args = ghc_flags(ctx, link_style, enable_profiling, pkgname, dynamic_too)
 
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling, suffix)
@@ -278,21 +286,6 @@ def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: 
         arg_srcs,
         hidden = hidden_srcs,
     )
-
-    if native_shared_libs_dir != None:
-        # Template Haskell splices run *during* this compile action (not at
-        # final-link time), and GHC resolves them by dlopen()-ing the actual
-        # shared objects of every package involved - including, transitively,
-        # any native (cxx_library) shared libraries a Haskell dependency
-        # dynamically links against. The dynamic loader needs to find those
-        # on its own search path right now, in this sandboxed process, or
-        # dlopen fails with "cannot open shared object file" even though the
-        # eventual link of this target would have resolved them fine via an
-        # rpath. Pointing LD_LIBRARY_PATH at the same merged symlink tree
-        # used for the final binary's rpath (see haskell_binary_impl /
-        # _build_haskell_lib) covers this without needing to know in advance
-        # which dependency, if any, actually uses Template Haskell.
-        compile_args.add(cmd_args(hidden = native_shared_libs_dir))
 
     return CompileArgsInfo(
         result = CompileResultInfo(
@@ -373,6 +366,15 @@ def in_env(env, cmd: cmd_args) -> cmd_args:
 def has_modules(ctx: AnalysisContext) -> bool:
     return any([is_haskell_src(src) for _, src in srcs_to_pairs(ctx.attrs.srcs)])
 
+# A tree of the shared libraries in `sets`, named by soname, or None if there
+# are none. Each library appears once, however many of the sets have it. A
+# splice finds them from `LD_LIBRARY_PATH`.
+def native_libs_tree(ctx: AnalysisContext, name: str, sets: list[SharedLibraryInfo]) -> [Artifact, None]:
+    sos = traverse_shared_library_info(merge_shared_libraries(ctx.actions, deps = sets), transformation_provider = None)
+    if not sos:
+        return None
+    return create_shlib_symlink_tree(actions = ctx.actions, out = name, shared_libs = sos)
+
 # Compile all the context's sources with `ghc --make`.
 #
 # `dynamic_from`, for a profiled compile, is the non-profiled compile of the
@@ -382,11 +384,18 @@ def has_modules(ctx: AnalysisContext) -> bool:
 # p_o extension of the module's object for dyn_o), which is where they'd be if
 # both compiles shared a build directory, as they do in Cabal; here the two
 # compiles have -odirs of their own, so the objects are copied in first.
-def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, native_shared_libs_dir: [Artifact, None] = None, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None) -> CompileResultInfo:
+def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, native_libs: SharedLibraryInfo = EMPTY_SHARED_LIBRARY_INFO, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None) -> CompileResultInfo:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     compile_cmd = cmd_args(haskell_toolchain.compiler)
 
-    args = compile_args(ctx, link_style, enable_profiling, pkgname, native_shared_libs_dir = native_shared_libs_dir, dynamic_too = dynamic_too)
+    args = compile_args(ctx, link_style, enable_profiling, pkgname, dynamic_too = dynamic_too)
+    # The compile may load any of its dependencies' libraries, so it has
+    # all their native libraries.
+    native_dir = native_libs_tree(
+        ctx,
+        "native-libs-" + get_artifact_suffix(link_style, enable_profiling),
+        [native_libs] + [lib.native_libs for lib in dependency_libs(ctx, link_style, enable_profiling).traverse()],
+    )
 
     if not has_modules(ctx):
         result = args.result
@@ -397,6 +406,7 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
         return result
 
     compile_cmd.add(args.args_for_cmd)
+    compile_cmd.add(cmd_args(hidden = [native_dir] if native_dir != None else []))
 
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
 
@@ -433,7 +443,7 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
         # timestamps, so this is safe even though Buck doesn't preserve
         # timestamps on artifacts.
         no_outputs_cleanup = True,
-        env = data_dirs_env(ctx) | ({"LD_LIBRARY_PATH": cmd_args(native_shared_libs_dir)} if native_shared_libs_dir != None else {}),
+        env = data_dirs_env(ctx) | ({"LD_LIBRARY_PATH": cmd_args(native_dir)} if native_dir != None else {}),
     )
 
     return args.result
