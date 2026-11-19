@@ -18,13 +18,15 @@ import qualified Data.Set as Set
 import Data.Unique (hashUnique, newUnique)
 import System.Directory (createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removePathForcibly)
 import System.Posix.Process (getProcessID)
-import System.Environment (lookupEnv)
+import System.Environment (getEnvironment, lookupEnv)
 import System.FilePath (dropTrailingPathSeparator, joinPath, splitDirectories, takeDirectory, (<.>), (</>))
 import System.IO (hPutStrLn, stderr)
+import qualified System.Process as P
 
 import GHC
 import GHC.Data.StringBuffer (hGetStringBuffer)
-import GHC.Driver.Env (hscSetFlags, hsc_FC, hsc_NC, hsc_dflags, hsc_home_unit, hsc_interp, hsc_logger, hsc_mod_graph, hsc_tmpfs, hsc_type_env_vars, hsc_unit_env)
+import GHC.Driver.Env (hscSetFlags, hsc_FC, hsc_NC, hsc_dflags, hsc_home_unit, hsc_hooks, hsc_interp, hsc_logger, hsc_mod_graph, hsc_tmpfs, hsc_type_env_vars, hsc_unit_env)
+import GHC.Driver.Hooks (Hooks (..))
 import GHC.Driver.Env.KnotVars (knotVarsFromModuleEnv)
 import GHC.Types.TypeEnv (emptyTypeEnv)
 import GHC.Unit.Module.Env (mkModuleEnv)
@@ -127,6 +129,12 @@ newSession libdir files names shared mode r = do
     unless (null wholeProcess) $ do
       setUnsafeGlobalDynFlags dflags0
       throwGhcExceptionIO (CmdLineError (unwords wholeProcess ++ ": these set GHC's state for the whole worker process, not one session's; compile this target without the worker"))
+    -- GHC calls the hook only to start an external interpreter. The hook
+    -- must be set before the session's flags are, because setting the flags
+    -- makes the session's interpreter, which keeps the hook that is in place
+    -- at that moment.
+    unless (null (reqDataDirs r) && null (reqLibraryPaths r)) $
+      modifyIORef' ref (\hsc -> hsc{hsc_hooks = (hsc_hooks hsc){createIservProcessHook = Just (startInterpreter r)}})
     setFlags shared session dflags
     found <- concat <$> mapM sources (reqSrcRoots r)
     -- Only the modules' sources are given to GHC as targets, not the boot
@@ -169,6 +177,18 @@ newSession libdir files names shared mode r = do
         let path = dir </> e
         isDir <- doesDirectoryExist path
         if isDir then sources path else pure [path]
+
+-- | Start a session's external interpreter. The interpreter gets the
+-- environment that GHC would give it, plus the variables that the request's
+-- data dirs set and its library paths on LD_LIBRARY_PATH, so that the
+-- session's splices can find the data files and native libraries of the
+-- libraries they run (see Note [Data files of splices] and Note [Template
+-- Haskell modules] in compile_per_module.bzl).
+startInterpreter :: Request -> P.CreateProcess -> IO P.ProcessHandle
+startInterpreter r cp = do
+  env <- maybe getEnvironment pure (P.env cp)
+  (_, _, _, p) <- P.createProcess cp{P.env = Just (withRequestEnv r env)}
+  pure p
 
 -- | Decide whether a session compiles in one-shot mode, from the session
 -- mode and whether the session's target has boot files. In mode

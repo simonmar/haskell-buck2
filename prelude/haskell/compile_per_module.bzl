@@ -324,6 +324,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     base_cmd = s.base_cmd
     data_dirs = s.data_dirs
     worker_info = s.worker_info
+    external_interpreter = s.external_interpreter
     tools = s.tools
     compile_script = s.compile_script
 
@@ -469,9 +470,12 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         # the environment variables for the target's data dirs (see Note
         # [Data files of splices]), or an LD_LIBRARY_PATH for native
         # libraries that it loads (see Note [Template Haskell modules],
-        # section 4), must also compile outside the worker.
-        needs_data = runs_th[n] and len(data_dirs) > 0
-        needs_native = runs_th[n] and mod_packages.native_libs_dir != None
+        # section 4), must also compile outside the worker. The exception is
+        # a target whose splices run in external interpreters, because the
+        # worker starts each interpreter with the variables and the
+        # LD_LIBRARY_PATH.
+        needs_data = runs_th[n] and len(data_dirs) > 0 and not external_interpreter
+        needs_native = runs_th[n] and mod_packages.native_libs_dir != None and not external_interpreter
         script = in_env(env_with(module_tools), cmd_args(compile_script))
         category = "haskell_compile_module_" + suffix.replace("-", "_")
         in_worker = worker_info != None and not module_tools and not needs_data and not needs_native
@@ -506,7 +510,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     actions.write(out[s.advice["haskell_unused_build_tools"]], json.encode(_unused_build_tools(tools, runs_th, program_nodes, s.runs_tools)))
     actions.write(out[s.advice["haskell_template_haskell_from_flags"]], json.encode(_template_haskell_from_flags(th_nodes)))
     actions.write(out[s.advice["haskell_ann_pragmas"]], json.encode(_ann_pragmas(th_nodes)))
-    actions.write(out[s.advice["haskell_modules_outside_worker"]], json.encode(_modules_outside_worker(outside_worker, runs_th)))
+    actions.write(out[s.advice["haskell_modules_outside_worker"]], json.encode(_modules_outside_worker(outside_worker, runs_th, s.dynamic)))
     return [PerModuleClosures(by_module = closure_sets)]
 
 _register_modules = dynamic_actions(
@@ -567,7 +571,8 @@ def _outside_reason(why, runs_th: bool) -> str:
     return "data_dirs" if why.data_dirs else "native_libraries"
 
 # Identify modules that are forced to compile outside the worker.
-def _modules_outside_worker(outside: dict, runs_th: dict) -> dict:
+# `dynamic` says whether the compiles are dynamic, neither static nor profiled.
+def _modules_outside_worker(outside: dict, runs_th: dict, dynamic: bool) -> dict:
     findings = [
         {"module": _module_of(n), "tools": sorted(why.tools), "reason": _outside_reason(why, runs_th[n])}
         for n, why in sorted(outside.items())
@@ -579,6 +584,12 @@ def _modules_outside_worker(outside: dict, runs_th: dict) -> dict:
             return "{} (its splices may load native libraries)".format(f["module"])
         return "{} ({}{})".format(f["module"], ", ".join(f["tools"]), ", through Template Haskell" if f["reason"] == "template_haskell" else "")
     message = "{} module(s) compile without the persistent worker, which is slower, because they may run build tools, or their splices may read data files or load native libraries: {}. We assume that a module that runs Template Haskell may run any of the target's build tools.".format(len(findings), "; ".join([describe(f) for f in findings]))
+    # In a static or profiled compile, an external interpreter can't load a
+    # local library's native dependencies (see Note [Template Haskell
+    # modules], section 5), so it only helps those modules in a dynamic one.
+    helped = ["data_dirs", "native_libraries"] if dynamic else ["data_dirs"]
+    if any([f["reason"] in helped for f in findings]):
+        message += " The modules whose splices {} can compile in the worker if the target is compiled with -fexternal-interpreter, in its compiler_flags or the toolchain's (GHC ignores the flag in an OPTIONS_GHC pragma).".format("read data files or load native libraries" if dynamic else "read data files")
     return _advice(findings, message)
 
 # We special-case the build tools that we run in actions of their own, so they're never run as part of a module's
@@ -804,6 +815,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             base_cmd = base_cmd,
             data_dirs = data_dirs_env(ctx),
             worker_info = worker_info,
+            external_interpreter = "-fexternal-interpreter" in (haskell_toolchain.compiler_flags or []) + ctx.attrs.compiler_flags,
+            dynamic = link_style == LinkStyle("shared") and not enable_profiling,
             tools = build_tools(ctx),
             compile_env = haskell_toolchain.compile_env,
             advice = advice,
@@ -1082,7 +1095,10 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # the persistent worker can't give a compile action its own library path.
 # A module that needs a different library path (i.e. one which has to load
 # a buck2-built native library, rare without --source-deps) must compile
-# outside the worker.
+# outside the worker. If the target's splices run in external interpreters
+# (see section 5), the worker starts each session's interpreter with the
+# request's LD_LIBRARY_PATH instead, and keeps sessions with different
+# library paths apart, so the module compiles in the worker.
 #
 # A possible alternative: the package dbs could name the native libraries for
 # GHC's interpreter, in dependency order, in extra-ghci-libraries. GHC
@@ -1115,7 +1131,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #
 # Some modules really need a different environment (e.g. they need data
 # files, or need to load buck2-built native libraries). So these have to be
-# compiled outside the worker currently.
+# compiled outside the worker, unless the target's splices run in external
+# interpreters, as described next.
 #
 # A target compiled with -fexternal-interpreter (in its compiler_flags, or
 # the toolchain's) runs its splices in external interpreters instead. In the
@@ -1298,5 +1315,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # So a module that runs splices gets the data dirs in its request
 # (--data-dir=VAR=DIR), and has them as inputs. The compile tool gives their
 # variables to `ghc -c`, whose splices run in its own process. The worker
-# can't do that, because its environment is shared by all its sessions, so
-# such a module compiles outside the worker.
+# can't do that, because its environment is shared by all its sessions. If
+# the target's splices run in external interpreters (see Note [Template
+# Haskell modules], section 5), the worker starts each session's
+# interpreter with the variables, and keeps sessions with different data
+# dirs apart. Otherwise such a module compiles outside the worker.
