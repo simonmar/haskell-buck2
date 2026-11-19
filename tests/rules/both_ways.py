@@ -199,6 +199,15 @@ def check_external_interpreter_native_splices(st):
         buck2("build", "-c", "haskell.compiler_flags=-fexternal-interpreter", configured("//th-ffi-splice:th-ffi-splice", "make", mode))
 
 
+def check_external_interpreter_prof_library(st):
+    """With -fexternal-interpreter in the toolchain's compiler flags, a
+    profiled splice runs a local library's code: C.Splice's splice, which
+    runs TH.Gen of //th-gen:th-gen, compiles with --make in prof mode. The
+    profiled interpreter loads th-gen's profiled archive. Its non-profiled
+    shared library would crash the interpreter."""
+    buck2("build", "-c", "haskell.compiler_flags=-fexternal-interpreter", configured("//th-local-splice:th-local-splice", "make", "prof"))
+
+
 @known_failure("with --make, a splice isn't run again when only the code it runs changes")
 def check_native_library_change(st):
     """U.V's and U.W's splices run //c-lib:c-lib's code, through
