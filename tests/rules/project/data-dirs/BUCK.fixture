@@ -11,9 +11,10 @@ haskell_library(
     per_module = PER_MODULE,
 )
 
-# Another library of the package dd. It has dd's data dirs, as cabal-buck2
-# gives every component of a package, but no Paths_dd, so it can't read
-# them.
+# Another library of the package dd. It has the same data_dirs as :paths,
+# because a generator such as cabal-buck2 gives every component of a
+# package the package's data dirs. But it has no Paths_dd module, so its
+# code can't read the data files.
 haskell_library(
     name = "plain",
     srcs = {"DD.Plain": "DD/Plain.hs"},
@@ -33,8 +34,9 @@ haskell_binary(
     per_module = PER_MODULE,
 )
 
-# A splice that runs :plain's code, which can't read the data files.
-# Per-module, its module gets no data dirs.
+# A splice that runs :plain's code. That code can't read the data files, so
+# with per_module the module with the splice gets no data dirs, and it can
+# compile in the worker.
 haskell_binary(
     name = "no-data",
     srcs = {"Main": "NoData.hs"},
