@@ -1,0 +1,23 @@
+load("//buck2:haskell.bzl", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
+
+# A library that uses //c-lib:c-static, which has no shared library.
+haskell_library(
+    name = "static-c-user",
+    srcs = {"SC.Lib": "SC/Lib.hs"},
+    packages = ["base"],
+    deps = ["//c-lib:c-static"],
+    per_module = PER_MODULE,
+)
+
+# SC.Splice's splices only need static-c-user, which has no shared
+# library. The other dependency, //ffi-import:ffi-import, has one
+# (//c-lib:c-lib's), but the splices don't need it.
+haskell_library(
+    name = "th-static-c",
+    srcs = {"SC.Splice": "SC/Splice.hs"},
+    packages = ["base", "template-haskell"],
+    deps = [":static-c-user", "//ffi-import:ffi-import"],
+    splice_depends = [":static-c-user"],
+    per_module = PER_MODULE,
+)

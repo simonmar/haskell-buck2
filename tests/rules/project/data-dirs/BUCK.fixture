@@ -45,6 +45,15 @@ haskell_binary(
     per_module = PER_MODULE,
 )
 
+# A splice that reads a data file with the target's own Paths_own.
+haskell_binary(
+    name = "own-data",
+    srcs = {"Main": "OwnData.hs", "Paths_own": "Paths_own.hs"},
+    packages = ["base", "template-haskell"],
+    data_dirs = {"own_datadir": ":data"},
+    per_module = PER_MODULE,
+)
+
 filegroup(
     name = "data",
     srcs = {"greeting.txt": "data/greeting.txt"},

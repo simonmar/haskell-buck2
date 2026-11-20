@@ -24,6 +24,7 @@ from harness import (
     module_of,
     replace,
     short,
+    tail,
     what_ran,
     what_ran_entries,
 )
@@ -41,25 +42,42 @@ def check_make_build(st):
                | ({"eli:E.Gen", "eli:E.Lib", "eli:E.Mk", "eli-reexport:ER.M", "eli-persist:P.Persist"} if st.eli else set()))
 
 
-# How the checks of splices that run their own target's code compile their
-# fixtures. Those splices fail to compile per-module (see
-# check_local_splices), so they are checked with --make alone.
-OWN_SPLICE_COMPILES = ["make"]
-
-
 def check_local_splices(st):
     """A splice that runs code of another local library (C.Splice's runs
-    TH.Gen's, MK.Run's runs make-lib's Q.Lib) compiles either way. One that
-    runs code of its own target (P.Use's runs P.Gen's) fails to compile
-    per-module, which doesn't support that. With --make, it compiles, and //th-internal-splice:use prints
-    the value that P.Gen's splice made, in prof mode too."""
-    build(*[configured(t, c) for t in ["//th-local-splice:th-local-splice", "//th-make-dep:mkrun"] for c in COMPILES])
-    p = build("//th-internal-splice:th-internal-splice", keep_going=True)
-    expect("//th-internal-splice:th-internal-splice fails to build", p.returncode != 0)
-    expect_set("the modules whose compiles failed", failed_compiles(p.stderr), {"th-internal-splice:P.Use"})
+    TH.Gen's, MK.Run's runs make-lib's Q.Lib) or of its own target (P.Use's
+    runs P.Gen's) compiles either way, and //th-internal-splice:use prints
+    the value that P.Gen's splice made. With --make, it does so in prof mode
+    too. check_local_splices_in_modes checks the other modes per-module."""
+    build(*[configured(t, c) for t in ["//th-local-splice:th-local-splice", "//th-make-dep:mkrun", "//th-internal-splice:th-internal-splice"] for c in COMPILES])
+    for c, mode in [("per-module", None), ("make", None), ("make", "prof")]:
+        expect_output(configured("//th-internal-splice:use", c, mode), "compiled {}, in {} mode".format(c, mode or "dev"), "42")
 
-    for mode in [None, "prof"]:
-        expect_output(configured("//th-internal-splice:use", "make", mode), "with --make, in {} mode".format(mode or "dev"), "42")
+
+def check_own_module_libraries(st):
+    """//th-internal-splice:own-lib's splice runs P.LibGen, a module of the
+    same target that uses //lib:lib, so splice_depends lists //lib:lib. It
+    builds either way, and prints A.Mid's mid."""
+    for c in COMPILES:
+        expect_output(configured("//th-internal-splice:own-lib", c), "compiled {}".format(c), "2")
+
+
+def check_own_boot_splices(st):
+    """Splices that run code from a module of their own target that is behind
+    an hs-boot file. OB.A imports OB.B with {-# SOURCE #-}, and the splices
+    run OB.A's code, which runs OB.B's. Per-module, OB.T, which only reaches
+    OB.B through the boot file, fails to compile: outside the worker, the
+    dep file check fails it (see DepFile in tools/ghc-api), and in the
+    worker GHC's linker refuses OB.B, or with GHC 9.14 panics. With --make,
+    OB.T compiles. OB.U also imports OB.B normally, through OB.C, so it
+    compiles either way, except that in the worker it may fail too, since
+    its session only has OB.B's boot interface."""
+    p = build(configured("//th-own-boot:boot-only", "per-module"), keep_going=True)
+    expect_set("the modules whose compiles failed", failed_compiles(p.stderr), {"boot-only:OB.T"})
+    build(configured("//th-own-boot:boot-only", "make"))
+    build(configured("//th-own-boot:both", "make"))
+    p = build(configured("//th-own-boot:both", "per-module"), keep_going=True)
+    if not st.worker:
+        expect("//th-own-boot:both builds per-module (got:\n{})".format(tail(p.stderr, 15)), p.returncode == 0)
 
 
 def check_rts_flags(st):
@@ -208,8 +226,9 @@ def check_native_soname_for_splices(st):
 def check_own_native_libraries_for_splices(st):
     """Splices find the native libraries of their own targets: A.S's and
     B.S's splices run their targets' own modules, which call their targets'
-    own C libraries."""
-    for c in OWN_SPLICE_COMPILES:
+    own C libraries. This check runs with --make alone, and
+    check_own_native_libraries_per_module checks it per-module."""
+    for c in ["make"]:
         expect_output(configured("//th-own-native:show", c), "compiled {}".format(c), "(9,11)")
 
 
@@ -252,14 +271,14 @@ def check_native_library_change(st):
 
 
 def check_data_dirs(st):
-    """data-dirs's splice reads a data file through a library's Paths_dd,
-    which reads the variable that data_dirs sets. Per-module, the module with
-    the splice compiles outside the worker even when the project has one,
-    since the worker can't set the variable (see Note [Data files of
-    splices]). no-data's splice runs a library that has data_dirs but no
-    Paths module, so its module gets no variables and compiles in the
-    worker."""
-    for name, where in [("data-dirs", "Local"), ("no-data", "Worker" if st.worker else "Local")]:
+    """A splice reads a data file through a Paths_<pkg> module, which reads
+    the variable that data_dirs sets: in data-dirs, a library's Paths_dd, and
+    in own-data, the target's own Paths_own. Per-module, such a module
+    compiles outside the worker even when the project has one, since the
+    worker can't set the variable (see Note [Data files of splices]).
+    no-data's splice runs a library that has data_dirs but no Paths module,
+    so its module gets no variables and compiles in the worker."""
+    for name, where in [("data-dirs", "Local"), ("own-data", "Local"), ("no-data", "Worker" if st.worker else "Local")]:
         for c in COMPILES:
             target = configured("//data-dirs:" + name, c)
             build(target)
@@ -302,5 +321,5 @@ def check_configurations(st):
 def check_th_boot_cycles(st):
     """Tie.I and Tie.K run Template Haskell, and each one's boot file is
     below the other: the target builds."""
-    for c in OWN_SPLICE_COMPILES:
+    for c in COMPILES:
         build(configured("//th-boot-cycles:th-boot-cycles", c))

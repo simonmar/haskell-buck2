@@ -15,3 +15,11 @@ cxx_library(
     preferred_linkage = "shared",
     visibility = ["PUBLIC"],
 )
+
+# A C library linked only statically, so it has no shared library.
+cxx_library(
+    name = "c-static",
+    srcs = ["cs.c"],
+    preferred_linkage = "static",
+    visibility = ["PUBLIC"],
+)

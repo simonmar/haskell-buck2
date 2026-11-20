@@ -30,8 +30,7 @@ haskell_library(
     per_module = True,
 )
 
-# E.Own imports E.OwnGen, a module of its own target, at the splice level,
-# which per_module doesn't support, so the build fails.
+# E.Own imports E.OwnGen, a module of its own target, at the splice level.
 haskell_library(
     name = "eli-own",
     srcs = ["E/Own.hs", "E/OwnGen.hs"],

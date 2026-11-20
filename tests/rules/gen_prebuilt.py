@@ -117,6 +117,7 @@ def main():
             "    id = {!r},".format(uid),
             "    db = {!r},".format("ghc-{}/package.conf.d".format(version)),
             "    static_libs = {!r},".format(static),
+            "    pic_static_libs = {!r},".format(static),
             "    profiled_static_libs = {!r},".format(prof),
             "    pic_profiled_static_libs = {!r},".format(prof),
             "    shared_libs = {!r},".format(shared),
