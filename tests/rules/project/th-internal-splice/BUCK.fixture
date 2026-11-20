@@ -21,9 +21,9 @@ haskell_binary(
     per_module = PER_MODULE,
 )
 
-# The library again, linked statically only. Its static compile makes no
-# dynamic objects, so GHC's internal interpreter can't load P.Gen for P.Use's
-# splice (see check_own_splices_static).
+# The library again, linked statically only, so only its static compile
+# can make the dynamic object that GHC's internal interpreter loads for
+# P.Use's splice (see check_own_splices_static).
 haskell_library(
     name = "static",
     srcs = {
@@ -47,7 +47,7 @@ haskell_binary(
 )
 
 # A binary whose splice (in Main) runs a module of its own, P.Gen. In a
-# static build its compiles make no dynamic objects either.
+# static build, only its static compile can make P.Gen's dynamic object.
 haskell_binary(
     name = "own",
     srcs = {

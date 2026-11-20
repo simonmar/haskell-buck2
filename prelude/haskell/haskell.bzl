@@ -705,11 +705,10 @@ def _build_haskell_lib(
     # (confirmed directly: "unknown symbol `enterFunCCS'", a profiled-
     # RTS-only symbol its own unprofiled RTS never links in).
     non_profiling_shared_lib: [Artifact, None] = None,
-    # The compile of that same "shared" sibling, whose dynamic objects
-    # a profiled compile needs for a Template Haskell
-    # splice that uses a module of this same library (see
-    # `dynamic_from` on compile)
-    non_profiling_shared_compiled: [CompileResultInfo, None] = None,
+    # A non-profiled compile of this library with dynamic objects, which a
+    # profiled compile needs for a Template Haskell splice that uses modules
+    # from this library (see `dynamic_from` on compile)
+    non_profiling_compiled: [CompileResultInfo, None] = None,
     # When True (only meaningful when link_style != "shared", and never
     # combined with enable_profiling - shared doesn't support profiling),
     # additionally derive a "shared" sibling from this same compile's
@@ -737,7 +736,7 @@ def _build_haskell_lib(
         pkgname = pkgname,
         native_libs = native_libs,
         dynamic_too = dynamic_too,
-        dynamic_from = non_profiling_shared_compiled if enable_profiling else None,
+        dynamic_from = non_profiling_compiled,
     )
     solibs = {}
     artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
@@ -1150,6 +1149,19 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     # The non-profiling library is also needed to build the package with
     # profiling enabled, so we need to keep track of it for each link style.
     non_profiling_hlib = {}
+
+    # The non-profiled compile that a profiled compile takes its splices'
+    # dynamic objects from (see `dynamic_from` on compile). A static compile
+    # only makes them per-module, with -dynamic-too.
+    def non_profiling_compiled(enable_profiling, link_style, non_profiling_shared):
+        if not enable_profiling:
+            return None
+        if non_profiling_shared:
+            return non_profiling_shared.compiled
+        if compiles_per_module(ctx):
+            return non_profiling_hlib[link_style].compiled
+        return None
+
     for enable_profiling in [False, True]:
         for link_style in (prof_link_styles if enable_profiling else unprof_link_styles):
             if build_shared_too and link_style == LinkStyle("shared"):
@@ -1177,7 +1189,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 native_libs = native_libs,
                 non_profiling_hlib = non_profiling_hlib.get(non_profiling_style(link_style) if enable_profiling else link_style),
                 non_profiling_shared_lib = non_profiling_shared.libs[0] if (enable_profiling and non_profiling_shared) else None,
-                non_profiling_shared_compiled = non_profiling_shared.compiled if (enable_profiling and non_profiling_shared) else None,
+                non_profiling_compiled = non_profiling_compiled(enable_profiling, link_style, non_profiling_shared),
                 build_shared_too = (build_shared_too and link_style == consumed_static_link_style and not enable_profiling),
             )
             if not enable_profiling:
@@ -1417,11 +1429,20 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     )
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
 
+    # A profiled compile of a binary works just like a library: it takes the 
+    # dynamic objects that needs for splices from a non-profiled compile 
+    # (see `dynamic_from` on `compile`). A binary doesn't normally have one of
+    # these, so we make one here if we need it.
+    dynamic_from = None
+    if enable_profiling and compiles_per_module(ctx):
+        dynamic_from = compile_per_module(ctx, link_style, enable_profiling = False, native_libs = _native_libs(ctx))
+
     compiled = (compile_per_module if compiles_per_module(ctx) else compile)(
         ctx,
         link_style,
         enable_profiling = enable_profiling,
         native_libs = _native_libs(ctx),
+        dynamic_from = dynamic_from,
     )
 
     output = ctx.actions.declare_output(ctx.attrs.exe_name or ctx.attrs.name, has_content_based_path = False)
