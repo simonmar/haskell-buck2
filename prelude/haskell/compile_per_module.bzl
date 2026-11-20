@@ -309,9 +309,7 @@ def _splice_objects(ctx: AnalysisContext, out_dir: str, nodes: list, o_of: dict,
     if kind == "dynamic":
         return dynamic_objects
     if dynamic_from == None or dynamic_from.dynamic_objects == None:
-        # A binary, or a library that isn't also linked shared, has no
-        # non-profiled dynamic objects to use.
-        return {}
+        fail("a profiled per_module compile needs a non-profiled per_module compile to take its splices' dynamic objects from")
     links = {}
     for n, _ in nodes:
         if n in dynamic_from.dynamic_objects:
@@ -723,6 +721,12 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     variant = variant_name(link_style, enable_profiling)
     osuf, hisuf = output_extensions(link_style, enable_profiling)
     prefix = per_module_dir(link_style, enable_profiling)
+
+    # When GHC's internal interpreter loads dynamic objects, a static compile
+    # makes them too, in case a splice runs one of the target's own modules
+    # (see Note [Template Haskell modules], section 6).
+    if link_style != LinkStyle("shared") and not enable_profiling and splice_objects_kind(ctx, False) == "dynamic":
+        dynamic_too = True
 
     # The tag of every input a module's dep file may list: see Note [Early
     # cut-off by dep files].
@@ -1298,14 +1302,13 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # - With -fexternal-interpreter, the interpreter is built in the same way
 #   as the compile, so it loads the objects that the compile makes itself.
 #
-# The rules only add -dynamic-too to the static compile of a library that
-# is also linked shared. So with GHC's internal interpreter, a splice that
-# runs the target's own code fails in two cases. The first is a static
-# compile of a library that is only linked statically, or of a binary, as
-# in opt mode. The second is a profiled compile whose non-profiled compile
-# makes no dynamic objects either. --make avoids this, because GHC adds
-# -dynamic-too itself for the modules that splices need. Per-module
-# compiles could do the same, but they don't yet.
+# --make gets GHC to add -dynamic-too for just the modules that splices
+# need. A per-module compile can't do that, because it learns which modules
+# those are only after the deps tool has run. So when GHC's internal
+# interpreter loads dynamic objects, every non-profiled static compile uses
+# -dynamic-too, even in a target with no splices. That makes such a compile
+# cost about as much as two. A profiled compile takes its dynamic objects
+# from the non-profiled compile that its caller passes as `dynamic_from`.
 #
 # A splice can't call the target's own native libraries. That isn't
 # supported with --make either.
