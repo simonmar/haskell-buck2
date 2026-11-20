@@ -252,21 +252,24 @@ def check_native_library_change(st):
 
 
 def check_data_dirs(st):
-    """A splice runs code of a local library that reads a data file through
-    the variable data_dirs sets, as a package's Paths_<pkg> module does.
-    Per-module, the module with the splice compiles outside the worker even
-    when the project has one, since the worker can't give a compile the
-    variable (see Note [Data files of splices])."""
-    for c in COMPILES:
-        target = configured("//data-dirs:data-dirs", c)
-        build(target)
-        if c == "per-module":
-            ran = {module_of(e): e["reproducer"].get("executor", "") for e in what_ran_entries() if "haskell_compile_module_" in e["identity"]}
-            # The first compile that buck2 sends to a worker has the executor
-            # WorkerInit rather than Worker, because it also starts the worker.
-            executor = {"WorkerInit": "Worker"}.get(ran.get("data-dirs:Main"), ran.get("data-dirs:Main"))
-            expect_set("how //data-dirs:data-dirs's Main compiled", {executor}, {"Local"})
-        expect_output(target, "from its data file, compiled {}".format(c), "hello")
+    """data-dirs's splice reads a data file through a library's Paths_dd,
+    which reads the variable that data_dirs sets. Per-module, the module with
+    the splice compiles outside the worker even when the project has one,
+    since the worker can't set the variable (see Note [Data files of
+    splices]). no-data's splice runs a library that has data_dirs but no
+    Paths module, so its module gets no variables and compiles in the
+    worker."""
+    for name, where in [("data-dirs", "Local"), ("no-data", "Worker" if st.worker else "Local")]:
+        for c in COMPILES:
+            target = configured("//data-dirs:" + name, c)
+            build(target)
+            if c == "per-module":
+                ran = {module_of(e): e["reproducer"].get("executor", "") for e in what_ran_entries() if "haskell_compile_module_" in e["identity"]}
+                # The first compile that buck2 sends to a worker has the executor
+                # WorkerInit rather than Worker, because it also starts the worker.
+                executor = {"WorkerInit": "Worker"}.get(ran.get(name + ":Main"), ran.get(name + ":Main"))
+                expect_set("how //data-dirs:{}'s Main compiled".format(name), {executor}, {where})
+            expect_output(target, "{}, compiled {}".format(name, c), "hello")
 
 
 def check_configurations(st):

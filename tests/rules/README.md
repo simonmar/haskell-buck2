@@ -91,7 +91,8 @@ compile fails.
 | `//th-gen:th-gen` | `TH.Gen.gen`, a `Q Exp` |
 | `//th-local-splice:th-local-splice` | `splice_depends = ["//th-gen:th-gen"]`: `C.Splice`, a splice of `gen`; `C.Plain`, a module without Template Haskell; `C.Ann`, an `ANN` pragma |
 | `//th-local-splice:show` | prints `C.Splice`'s value, which comes from `gen` |
-| `//data-dirs:data-dirs` | a splice that runs `//data-dirs:paths`'s code, which reads a data file through the variable that `data_dirs` sets |
+| `//data-dirs:data-dirs` | a splice that reads a data file with `//data-dirs:paths`'s `Paths_dd`, which reads the variable that `data_dirs` sets |
+| `//data-dirs:no-data` | a splice that runs `//data-dirs:plain`, which has the same `data_dirs` as `:paths` but no `Paths_dd` to read them with |
 | `//th-prebuilt-splice:th-prebuilt-splice` | `splice_depends = []`: a splice that runs only `template-haskell` |
 | `//eli:eli`, `//eli:eli-unlisted`, `//eli:eli-own` | GHC 9.14: `import splice TH.Gen`, `import splice Q.Lib` (from `//make-lib`, built with --make) and `import splice Language.Haskell.TH`, in a target that lists `th-gen` and `make-lib` in `splice_depends`; `import splice TH.Gen` in one that doesn't list `th-gen`; and an `import splice` of a module of the target itself |
 | `//eli-reexport:eli-reexport`, `//eli-reexport:eli-reexport-wide` | GHC 9.14: `import splice A.Base`, which `//reexport:reexport` re-exports, and the same import in a target that also depends on `//lib`, without listing it |
