@@ -80,8 +80,9 @@ HaskellLibraryInfo = record(
     # splices may load the library has them on its LD_LIBRARY_PATH (see
     # native_libs_tree in compile.bzl).
     native_libs = field(SharedLibraryInfo, EMPTY_SHARED_LIBRARY_INFO),
-    # The data dirs that the library's own Paths_<pkg> modules use, keyed by
-    # environment variable.
+    # The data dirs that the library's own Paths_<pkg> modules read, keyed by
+    # environment variable. A splice that runs the library's code can only
+    # read these (see Note [Data files of splices] in compile_per_module.bzl).
     data_dirs = field(dict[str, Artifact], {}),
     # The remaining fields are only set for a library compiled per-module.
     #

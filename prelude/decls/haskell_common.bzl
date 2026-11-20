@@ -111,13 +111,17 @@ def _data_dirs_arg():
     variable that should point at it (for a Cabal package, `<pkg>_datadir`,
     which its Paths_<pkg> module reads).
 
-    When this rule's sources are compiled, only the variables that its
-    Template Haskell splices could read are set: those for the rule's own
-    Paths_<pkg> modules, and those for any library whose code the splices
-    can run. If the compile might run one of the rule's build tools, all of
-    them are set, since the tool might need its own. For a
-    haskell_binary they are also set whenever the binary is run through its
-    RunInfo: by `buck2 run`, as a test, or as a tool of another rule.
+    When this rule's sources are compiled, the compile sets only the
+    variables that its Template Haskell splices could read. These are the
+    variables for the rule's own Paths_<pkg> modules, and the variables for
+    the Paths_<pkg> modules of any library whose code the splices can run.
+    If the compile might run one of the rule's build tools, it sets all of
+    the rule's variables instead, because a build tool might read data files
+    of its own.
+
+    For a haskell_binary, all the variables are also set whenever the binary
+    is run through its RunInfo. That happens with `buck2 run`, when the
+    binary runs as a test, and when it runs as a tool of another rule.
 """,
         ),
     }
