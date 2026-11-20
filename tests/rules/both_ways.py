@@ -291,13 +291,17 @@ def check_haddock(st):
 
 
 def check_data_dirs(st):
-    """A splice reads a data file through a Paths_<pkg> module, which reads
-    the variable that data_dirs sets: in data-dirs, a library's Paths_dd, and
-    in own-data, the target's own Paths_own. Per-module, such a module
-    compiles outside the worker even when the project has one, since the
-    worker can't set the variable (see Note [Data files of splices]).
-    no-data's splice runs a library that has data_dirs but no Paths module,
-    so its module gets no variables and compiles in the worker."""
+    """A splice reads a data file with a Paths_<pkg> module, which finds
+    the file through the variable that data_dirs sets. In
+    //data-dirs:data-dirs, the module is Paths_dd, from a library. In
+    //data-dirs:own-data, it is Paths_own, a module of the target itself.
+    With per_module, the module that has the splice compiles outside the
+    worker, even when the project has a worker, because the worker can't set
+    the variable for one compile (see Note [Data files of splices]).
+
+    The splice of //data-dirs:no-data runs a library that has data_dirs but
+    no Paths_dd module. So the module that has the splice gets no
+    variables, and it compiles in the worker when there is one."""
     for name, where in [("data-dirs", "Local"), ("own-data", "Local"), ("no-data", "Worker" if st.worker else "Local")]:
         for c in COMPILES:
             target = configured("//data-dirs:" + name, c)

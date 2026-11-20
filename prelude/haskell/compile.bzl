@@ -417,26 +417,32 @@ done
 def data_dirs_env(ctx: AnalysisContext) -> dict[str, Artifact]:
     return {name: dep[DefaultInfo].default_outputs[0] for name, dep in ctx.attrs.data_dirs.items()}
 
-# The data dirs that the Paths_<pkg> modules in `modules` use. Paths_foo
-# reads foo_datadir.
+# The data dirs that the Paths_<pkg> modules among `modules` read, keyed by
+# environment variable. For example, if `modules` includes Paths_foo, the
+# result has data_dirs["foo_datadir"], if there is one.
 def paths_data_dirs(modules, data_dirs: dict[str, Artifact]) -> dict[str, Artifact]:
     vars = [m.removeprefix("Paths_") + "_datadir" for m in modules if m.startswith("Paths_")]
     return {var: data_dirs[var] for var in vars if var in data_dirs}
 
-# The data dirs that the rule's own Paths_<pkg> modules use.
+# The data dirs that the rule's own Paths_<pkg> modules read.
 def own_data_dirs(ctx: AnalysisContext) -> dict[str, Artifact]:
     return paths_data_dirs([m for m, _ in srcs_to_pairs(ctx.attrs.srcs)], data_dirs_env(ctx))
 
-# The data dirs to set for a compilation action.
+# The data dirs that a compile action sets, for splices that run code from
+# the libraries whose data dirs are `lib_dirs` and from the target's modules
+# `own_modules`. The compile needs the data dirs that the Paths_<pkg>
+# modules among those read. If the compile might run one of the target's
+# build tools (`runs_tools`), it gets all the target's data dirs
+# (`data_dirs`) instead, because a build tool might read data files of its
+# own. See Note [Data files of splices] in compile_per_module.bzl.
 def compile_data_dirs(data_dirs: dict[str, Artifact], lib_dirs: dict[str, Artifact], own_modules: list[str], runs_tools: bool) -> dict[str, Artifact]:
-    # A tool might read data files of its own.
     if runs_tools:
         return data_dirs
     return lib_dirs | paths_data_dirs(own_modules, data_dirs)
 
-# The data dirs to set for a compilaion action that builds all the target's modules, 
-# assuming that the splices can run code from the libraries in `final` (see
-# target_splice_libraries).
+# The data dirs that a --make compile of the target sets. Its splices can
+# run code from any of the target's own modules, and from the libraries in
+# `final` (see target_splice_libraries).
 def splice_data_dirs(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, final: dict[str, bool]) -> dict[str, Artifact]:
     libs = [lib for lib in dependency_libs(ctx, link_style, enable_profiling).traverse() if lib.name in final]
     return compile_data_dirs(
