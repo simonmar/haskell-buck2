@@ -252,13 +252,16 @@ def check_native_library_change(st):
 
 
 def check_data_dirs(st):
-    """data-dirs's splice reads a data file through a library's Paths_dd,
-    which reads the variable that data_dirs sets. Per-module, the module with
-    the splice compiles outside the worker even when the project has one,
-    since the worker can't set the variable (see Note [Data files of
-    splices]). no-data's splice runs a library that has data_dirs but no
-    Paths module, so its module gets no variables and compiles in the
-    worker."""
+    """The splice of //data-dirs:data-dirs reads a data file with the
+    Paths_dd module of a library. Paths_dd finds the file through the
+    variable that data_dirs sets. With per_module, the module that has the
+    splice compiles outside the worker, even when the project has a worker,
+    because the worker can't set the variable for one compile (see Note
+    [Data files of splices]).
+
+    The splice of //data-dirs:no-data runs a library that has data_dirs but
+    no Paths_dd module. So the module that has the splice gets no
+    variables, and it compiles in the worker when there is one."""
     for name, where in [("data-dirs", "Local"), ("no-data", "Worker" if st.worker else "Local")]:
         for c in COMPILES:
             target = configured("//data-dirs:" + name, c)

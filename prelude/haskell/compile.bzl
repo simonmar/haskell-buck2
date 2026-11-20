@@ -403,20 +403,24 @@ done
 def data_dirs_env(ctx: AnalysisContext) -> dict[str, Artifact]:
     return {name: dep[DefaultInfo].default_outputs[0] for name, dep in ctx.attrs.data_dirs.items()}
 
-# The data dirs that the Paths_<pkg> modules in `modules` use. Paths_foo
-# reads foo_datadir.
+# The data dirs that the Paths_<pkg> modules among `modules` read, keyed by
+# environment variable. For example, if `modules` includes Paths_foo, the
+# result has data_dirs["foo_datadir"], if there is one.
 def paths_data_dirs(modules, data_dirs: dict[str, Artifact]) -> dict[str, Artifact]:
     vars = [m.removeprefix("Paths_") + "_datadir" for m in modules if m.startswith("Paths_")]
     return {var: data_dirs[var] for var in vars if var in data_dirs}
 
-# The data dirs that the rule's own Paths_<pkg> modules use.
+# The data dirs that the rule's own Paths_<pkg> modules read.
 def own_data_dirs(ctx: AnalysisContext) -> dict[str, Artifact]:
     return paths_data_dirs([m for m, _ in srcs_to_pairs(ctx.attrs.srcs)], data_dirs_env(ctx))
 
-# The data dirs to set for a compile whose splices can run code from the
-# libraries in `final` (see target_splice_libraries): the ones those
-# libraries use, and the rule's own. If the rule has build tools, the
-# compile gets all of them, since a tool might need its own.
+# The data dirs that a --make compile of the rule sets. The compile's
+# splices can run code from the rule's own modules and from the libraries
+# in `final` (see target_splice_libraries). So the compile needs the data
+# dirs that the Paths_<pkg> modules of the rule and of those libraries
+# read. If the rule has any build tools, the compile gets all of the rule's
+# data dirs instead, because a build tool might read data files of its own.
+# See Note [Data files of splices] in compile_per_module.bzl.
 def splice_data_dirs(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, final: dict[str, bool]) -> dict[str, Artifact]:
     if build_tools(ctx):
         return data_dirs_env(ctx)
