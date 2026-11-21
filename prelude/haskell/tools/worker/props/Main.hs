@@ -692,7 +692,7 @@ workerBuild cfg h b mods lastOk libSeen stats = do
       , "--source", source node, "--outdir", outDir i, "--hisuf", "hi", "--srcroot=" ++ srcDir i
       ] ++ ["--boot" | boot] ++ ["--loadable=" ++ modName k | not boot, isJust (mSplice (mods M.! i)), k <- closureOf mods i]
       ++ ["--hidir=p=" ++ outDir pkgP | not (inP i)]
-      ++ ["--", cGhc cfg] ++ commonFlags h ++ nodeFlags mods node
+      ++ ["--", cGhc cfg] ++ commonFlags h ++ nodeFlags mods node ++ ["-fforce-recomp"] ++ ["-fobject-determinism" | cObjects cfg]
       ++ ["--", "-c", source node, "-o", outDir i </> modName i <.> ("o" ++ suffix node), "-ohi", outDir i </> modName i <.> ("hi" ++ suffix node)]
 
 -- | A clean build of the same sources, with one `ghc -c` per node.

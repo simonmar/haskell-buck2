@@ -238,6 +238,11 @@ def get_exposed_package_args(ctx: AnalysisContext, link_style: LinkStyle, specif
 
     return exposed_package_args
 
+# Whether the toolchain's GHC is at least the given version.
+def _ghc_at_least(haskell_toolchain: HaskellToolchainInfo, version: (int, int)) -> bool:
+    major_minor = [int(x) for x in haskell_toolchain.ghc_version.split(".")[:2]]
+    return (major_minor[0], major_minor[1]) >= version
+
 def ghc_flags(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname = None, dynamic_too: bool = False) -> (cmd_args, cmd_args):
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
 
@@ -291,6 +296,10 @@ def ghc_flags(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: boo
         # this matters enough to ask for explicitly rather than just
         # tolerating two compiles.
         compile_args.add("-dynamic-too")
+
+    # We want maximum determinism, so we turn this on when it's available.
+    if _ghc_at_least(haskell_toolchain, (9, 12)):
+        compile_args.add("-fobject-determinism")
 
     osuf, hisuf = output_extensions(link_style, enable_profiling)
     compile_args.add("-osuf", osuf, "-hisuf", hisuf)

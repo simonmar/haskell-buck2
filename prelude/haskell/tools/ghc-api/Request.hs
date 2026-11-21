@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 -- | The request that the rules send to compile each module, and the flags
 -- of the GHC session that compiles it.
 module Request (Request (..), parseRequest, moduleArg, sessionFlags, withRequestEnv, withoutRts) where
@@ -103,28 +102,14 @@ parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
 --   directory, at a path made from the module's name. That is where the
 --   rules expect the outputs.
 -- - The trees of the target's sources, on the import path.
--- - @-fforce-recomp@, so that GHC compiles the module whenever the worker
---   asks, whatever GHC's recompilation check would say (see Note
---   [Compiling whenever buck2 asks] in prelude/haskell/tools/worker/src/Session.hs).
--- - Flags that make object code deterministic, where GHC supports them
---   (see 'objectDeterminism').
+--
+-- Every other flag comes from the rules, so that the worker compiles with
+-- the same flags as the compile tool's @ghc -c@.
 sessionFlags :: Request -> [String]
 sessionFlags r =
   filter (not . ("-B" `isPrefixOf`)) (withoutRts (reqSessionArgs r))
-    ++ ["-odir", reqOutDir r, "-hidir", reqOutDir r, "-fforce-recomp"]
-    ++ objectDeterminism
+    ++ ["-odir", reqOutDir r, "-hidir", reqOutDir r]
     ++ ["-i" ++ d | d <- reqSrcRoots r]
-
--- | Flags that make object code deterministic, which GHC supports from
--- 9.12. Without them, the uniques in a module's object depend on what the
--- session compiled before. The object would then differ from one compile
--- to the next, and buck2 would link the library again after every edit.
-objectDeterminism :: [String]
-#if MIN_VERSION_ghc(9,12,0)
-objectDeterminism = ["-fobject-determinism"]
-#else
-objectDeterminism = []
-#endif
 
 -- | Add the variables of the request's data dirs to an environment, in place
 -- of any variables with the same names, and put the request's library paths

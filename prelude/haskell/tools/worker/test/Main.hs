@@ -77,6 +77,7 @@ main = do
              , testCase "never finishes a target whose analysis failed" $ getW >>= \w -> unanalysed w ghc
              , testCase "reads the interfaces a module imports as ghc -c does with its OPTIONS_GHC" $ getW >>= \w -> pragmaFlags w ghc
              , testCase "refuses to compile a module twice" $ getW >>= compilesOnce
+             , testCase "makes the same object as the compile tool's ghc -c" $ getW >>= \w -> sameAsTool w ghc libdir
              ]
     | mode <- ["make", "auto"]
     ]
@@ -266,7 +267,7 @@ argv pkg ghc libdir r =
   , "--outdir", out, "--hisuf", "hi"
   ] ++ ["--boot" | boot r] ++ ["--loadable=" ++ m | m <- loadable r]
   ++ ["--srcroot=" ++ pkg </> "src", "--mkdir=" ++ pkg </> "stubs" </> node r]
-  ++ ["--", fromMaybe ghc (compiler r), "-hide-all-packages", "-package", "base", "-package-db", pkg </> "db", "-package", "p"] ++ extraFlags r
+  ++ ["--", fromMaybe ghc (compiler r), "-hide-all-packages", "-package", "base", "-package-db", pkg </> "db", "-package", "p", "-fforce-recomp"] ++ determinism ++ extraFlags r
   ++ ["--", "-c", src, "-o", o, "-ohi", hi, "-stubdir", pkg </> "stubs" </> node r, "-i" ++ out]
   where
     out = pkg </> "out"
@@ -653,11 +654,15 @@ bootViews send restart dir ghc = do
   compiled (req "T.SI-boot" "T/SI"){boot = True, extraFlags = optSI ++ ["-DBOOT_INSTANCE_BOOT"]}
   compiled (req "T.SI" "T/SI"){extraFlags = optSI}
   compiled (req "T.SJ" "T/SJ"){extraFlags = optSI}
-  where
+
+-- | The flags that the rules give every module's compile for object code
+-- that doesn't depend on what the process compiled before (see ghc_flags in
+-- compile.bzl).
+determinism :: [String]
 #if MIN_VERSION_GLASGOW_HASKELL(9,12,0,0)
-    determinism = ["-fobject-determinism"]
+determinism = ["-fobject-determinism"]
 #else
-    determinism = []
+determinism = []
 #endif
 
 -- | One worker compiles two targets side by side, as the targets of a build
@@ -746,6 +751,28 @@ compilesOnce w = do
   compiledIn (sendOwn w) (twDir w) (req "T.E" "T/E")
   (code, err) <- sendOwn w (req "T.E" "T/E")
   assertBool ("a second compile of a module is refused: " ++ show code ++ " " ++ err) (code /= 0 && "already compiled" `isInfixOf` err)
+
+-- | The worker makes the same object as the compile tool, which runs `ghc`
+-- with the request's session and module flags (see PerModuleCompile), so
+-- that it doesn't matter which of them compiled a module. The worker has
+-- compiled other modules first. That only gives the same object with
+-- 'determinism', so before GHC 9.12 there is nothing to check.
+sameAsTool :: TestWorker -> String -> FilePath -> IO ()
+sameAsTool w ghc libdir = when (not (null determinism)) $ do
+  let dir = twDir w
+      r = req "T.DT" "T/DT"
+      o = dir </> "out" </> "T/DT.o"
+  writeFile (dir </> "src/T/DT.hs") "module T.DT where\ndata D = A Int | B String deriving (Eq, Show)\nclass C a where c :: a -> Int\ninstance C D where\n  c (A n) = n\n  c (B s) = length s\nds :: [D]\nds = [A 1, B \"two\"]\n"
+  compiledIn (sendOwn w) dir r
+  fromWorker <- B.readFile o
+  removeFile o
+  case break (== "--") (drop 1 (dropWhile (/= "--") (argv "" ghc libdir r))) of
+    (program : session, _ : moduleArgs) -> do
+      (code, _, err) <- readCreateProcessWithExitCode (proc program (session ++ moduleArgs)){cwd = Just dir} ""
+      assertBool ("ghc -c compiles T.DT: " ++ err) (code == ExitSuccess)
+    _ -> assertFailure "the request has no session and module flags"
+  fromTool <- B.readFile o
+  assertBool "the worker's object is byte for byte the same as ghc -c's" (fromWorker == fromTool)
 
 libdirFlag :: Send -> FilePath -> IO ()
 libdirFlag send libdir = do

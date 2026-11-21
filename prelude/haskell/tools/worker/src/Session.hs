@@ -857,9 +857,9 @@ the worker should compile every request it gets, and never let GHC decide
 that the module is up to date.
 
 buck2 already removes an action's previous outputs before running it, so
-GHC normally finds no old interface to compare with. The worker also passes
--fforce-recomp (see sessionFlags), so that GHC compiles the module whatever
-is on disk, as the compile tool does without the worker.
+GHC normally finds no old interface to compare with. The rules also pass
+-fforce-recomp, so that GHC compiles the module whatever is on disk, in the
+worker as in the compile tool.
 
 This matters for Template Haskell. A splice can read a file without
 recording it (with runIO, and without addDependentFile), so the module's

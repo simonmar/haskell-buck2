@@ -29,14 +29,12 @@ main :: IO ()
 main = handle failed $ do
   r <- either (\err -> hPutStrLn stderr ("per_module_compile: " ++ err) >> exitWith (ExitFailure 2)) pure . parseRequest =<< getArgs
   mapM_ (createDirectoryIfMissing True) (reqMkdirs r)
-  -- With -fforce-recomp: buck2 decides when the module compiles, not GHC
-  -- (see Note [Early cut-off by dep files] in compile_per_module.bzl).
   -- GHC's interpreter runs the module's splices in GHC's own process, with
   -- GHC's environment. So GHC gets the variables of the request's data dirs,
   -- and its library paths on LD_LIBRARY_PATH (see Note [Data files of
   -- splices] and Note [Template Haskell modules] in compile_per_module.bzl).
   env <- withRequestEnv r <$> getEnvironment
-  (_, _, Just err, p) <- createProcess (proc (reqCompiler r) (reqSessionArgs r ++ ["-fforce-recomp"] ++ reqModuleArgs r)){std_err = CreatePipe, env = Just env}
+  (_, _, Just err, p) <- createProcess (proc (reqCompiler r) (reqSessionArgs r ++ reqModuleArgs r)){std_err = CreatePipe, env = Just env}
   relay err
   code <- exitCode <$> waitForProcess p
   when (code /= 0) $ exitWith (ExitFailure code)

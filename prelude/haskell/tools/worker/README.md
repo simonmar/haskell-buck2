@@ -21,9 +21,7 @@ alternatives we tried.
 The worker links against the `ghc` library of the GHC that builds it, so it
 has to be built with the same GHC as the project. It uses GHC's API, which
 changes with each major release, so the code has some CPP and quirks for
-particular versions. For example, GHC before 9.12 has no
-`-fobject-determinism`, so a module's object may differ from one compile to
-the next, and buck2 then links again more often than it needs to.
+particular versions.
 
 The toolchain builds the worker itself, with the project's GHC, from the
 modules in `src` and `app` (some of which are links to modules of the rules'

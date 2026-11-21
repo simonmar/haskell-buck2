@@ -19,6 +19,7 @@ def _system_haskell_toolchain(ctx: AnalysisContext) -> list[Provider]:
             haddock = "haddock",
             compiler_flags = [],
             linker_flags = [],
+            ghc_version = ctx.attrs.ghc_version,
         ),
         HaskellPlatformInfo(
             name = host_info().arch,
@@ -30,6 +31,8 @@ system_haskell_toolchain = rule(
     attrs = {
         "compiler": attrs.string(default = "ghc"),
         "packager": attrs.string(default = "ghc-pkg"),
+        # The version of `compiler`, as `ghc --numeric-version` prints it.
+        "ghc_version": attrs.string(),
     },
     is_toolchain_rule = True,
 )
