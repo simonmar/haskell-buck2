@@ -1,7 +1,7 @@
 {-# LANGUAGE CPP #-}
 -- | The request that the rules send to compile each module, and the flags
 -- of the GHC session that compiles it.
-module Request (Request (..), parseRequest, sessionFlags, withRequestEnv, withoutRts) where
+module Request (Request (..), parseRequest, moduleArg, sessionFlags, withRequestEnv, withoutRts) where
 
 import Data.List (intercalate, isPrefixOf, stripPrefix)
 
@@ -46,6 +46,13 @@ data Request = Request
   , reqSessionArgs :: [String] -- the session flags, which are the same for every module of the target
   , reqModuleArgs :: [String] -- the module flags: `ghc -c`'s source and output files, -hiedir and -stubdir
   }
+
+-- | The value that the request's module flags give `flag`, such as the
+-- interface file that @-ohi@ names.
+moduleArg :: String -> Request -> Maybe FilePath
+moduleArg flag r = case dropWhile (/= flag) (reqModuleArgs r) of
+  _ : v : _ -> Just v
+  _ -> Nothing
 
 -- | Parse the request from an action's command line. buck2 sends the whole
 -- command line, so it starts with the program and the program's own

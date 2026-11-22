@@ -20,6 +20,7 @@ import Control.Exception (IOException, SomeException, catch, finally)
 import Control.Monad (forM, forM_, unless, void, when)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as B8
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
 import Data.Maybe (fromMaybe)
 import System.Directory
@@ -54,28 +55,30 @@ main = do
   libdir <- trim <$> readProcess ghc ["--print-libdir"] ""
   -- The tests in a group run in order, because each builds on what the
   -- earlier ones compiled. The first group is run twice, once in session
-  -- mode make and once in one-shot (see Note [One-shot sessions] in
-  -- Session). The groups after it use auto, the default mode.
+  -- mode make and once in auto, the default, which compiles the targets
+  -- without boot files one-shot (see Note [One-shot sessions] in Session).
+  -- The groups after it use auto.
   defaultMain . dependentTestGroup "buck2-ghc-worker" AllFinish $
     [ withTestWorker ("one worker, over its socket, in session mode " ++ mode) mode worker ghc libdir $ \getW ->
-        [testCase "compiles a package, and again after edits" $ getW >>= \w -> scenarios (sendOwn w) (twDir w) ghc]
-          ++ bootTests ghc mode getW
+        [testCase "compiles a package, and again after edits" $ getW >>= \w -> scenarios (sendOwn w) (twRestart w) (twDir w) ghc]
+          ++ bootTests ghc getW
           ++ [ testCase "each compile removes its temporary files" $ do
                  w <- getW
                  asm <- filter (".s" `isSuffixOf`) <$> filesUnder (twDir w </> "tmp")
                  assertBool ("assembly files left: " ++ show asm) (null asm)
-             , testCase "compiles another target's modules beside the first's" $ getW >>= \w -> otherTarget (twSendIn w) (twDir w) ghc
-             , testCase "fails each request for a session that can't be made" $ getW >>= failedSessions . sendOwn
+             , testCase "compiles another target's modules beside the first's" $ getW >>= \w -> twRestart w >> otherTarget (twSendIn w) (twDir w) ghc
+             , testCase "fails each request for a session that can't be made" $ getW >>= \w -> twRestart w >> failedSessions (sendOwn w)
              , testCase "refuses a request for another GHC" $ getW >>= otherCompiler . sendOwn
              , testCase "refuses a request for another libdir" $ getW >>= otherLibdir . sendOwn
-             , testCase "ignores the ghc program's -B flag" $ getW >>= \w -> libdirFlag (sendOwn w) libdir
+             , testCase "ignores the ghc program's -B flag" $ getW >>= \w -> twRestart w >> libdirFlag (sendOwn w) libdir
              , testCase "runs a splice in an external interpreter" $ getW >>= \w -> externalInterpreter w ghc
              , testCase "drops the least recently used idle session, and compiles in new ones" $ getW >>= \w -> idleDrop w ghc
              , testCase "drops a target's session once its modules are all compiled" $ getW >>= \w -> finishedDrop w ghc
              , testCase "never finishes a target whose analysis failed" $ getW >>= \w -> unanalysed w ghc
              , testCase "reads the interfaces a module imports as ghc -c does with its OPTIONS_GHC" $ getW >>= \w -> pragmaFlags w ghc
+             , testCase "refuses to compile a module twice" $ getW >>= compilesOnce
              ]
-    | mode <- ["make", "one-shot"]
+    | mode <- ["make", "auto"]
     ]
       ++ [ withTestWorker "one worker in session mode auto" "auto" worker ghc libdir $ \getW ->
              [testCase "compiles a target one-shot, and one with boot files with --make" $ getW >>= \w -> autoModes w ghc]
@@ -87,15 +90,12 @@ main = do
          ]
   where
     trim = reverse . dropWhile (`elem` ("\r\n" :: String)) . reverse
-    -- The tests of a target with boot files (see cyclePackage). One-shot
-    -- sessions can't compile such a target, so in that mode we only check
-    -- that the worker refuses it.
-    bootTests ghc mode getW
-      | mode == "one-shot" = [testCase "refuses a target with boot files" $ getW >>= \w -> refusesBoots w ghc]
-      | otherwise =
-          [ testCase "compiles a cycle through a boot file, and again after edits" $ getW >>= \w -> cycles w ghc
-          , testCase "sees the home modules around boot files as ghc -c does" $ getW >>= \w -> bootViews (sendCycle w) (twDir w </> "cycle") ghc
-          ]
+    -- The tests of a target with boot files (see cyclePackage), which
+    -- gets a --make session in either mode.
+    bootTests ghc getW =
+      [ testCase "compiles a cycle through a boot file, and again after edits" $ getW >>= \w -> cycles w ghc
+      , testCase "sees the home modules around boot files as ghc -c does" $ getW >>= \w -> bootViews (sendCycle w) (twRestart w) (twDir w </> "cycle") ghc
+      ]
 
 -- | A splice runs in an external interpreter (-fexternal-interpreter), and
 -- the interpreter's process keeps running as long as its session does.
@@ -369,8 +369,8 @@ listsIn dir r files = do
   forM_ files $ \f -> assertBool (node r ++ ".dep lists " ++ f ++ ": " ++ show deps) (any (f `isInfixOf`) deps)
   assertBool (node r ++ ".dep lists only the package's own files: " ++ show deps) (all ("out/T/" `isInfixOf`) deps)
 
-scenarios :: Send -> FilePath -> String -> IO ()
-scenarios send dir ghc = do
+scenarios :: Send -> IO () -> FilePath -> String -> IO ()
+scenarios send restart dir ghc = do
   let out = dir </> "out"
       compiled = compiledIn send dir
       lists = listsIn dir
@@ -398,10 +398,13 @@ scenarios send dir ghc = do
   -- A comment-only edit must leave the module's ABI hash unchanged, so that
   -- buck2 doesn't compile its importers again. From GHC 9.12, whose objects
   -- are deterministic, the object must be unchanged too.
+  -- Each compile of a module after the first is in a build of its own, so
+  -- in a new worker.
   abi <- readFile (out </> "T/C.abi")
 #if MIN_VERSION_GLASGOW_HASKELL(9,12,0,0)
   obj <- B.readFile (out </> "T/C.o")
 #endif
+  restart
   appendFile (dir </> "src/T/C.hs") "\n-- an edit\n"
   compiled (req "T.C" "T/C")
   abi' <- readFile (out </> "T/C.abi")
@@ -412,6 +415,7 @@ scenarios send dir ghc = do
 #endif
 
   -- A new exported definition must change the ABI hash.
+  restart
   appendFile (dir </> "src/T/C.hs") "\nanother :: Int\nanother = 2\n"
   compiled (req "T.C" "T/C")
   abi'' <- readFile (out </> "T/C.abi")
@@ -421,6 +425,7 @@ scenarios send dir ghc = do
   -- A request with different flags is compiled in a new session. That
   -- session has to read T.C's and T.D's interfaces from disk, since another
   -- session compiled them.
+  restart
   compiled (req "T.B" "T/B"){extraFlags = ["-DOTHER_FLAGS"]}
   lists (req "T.B" "T/B") ["out/T/C.abi", "out/T/D.abi"]
 
@@ -453,6 +458,7 @@ scenarios send dir ghc = do
   compiled rfReq
   rfBefore <- B.readFile (out </> "T/RF.o")
   writeFile (dir </> "rf-input") "three"
+  restart
   compiled rfReq
   rfAfter <- B.readFile (out </> "T/RF.o")
   assertBool "a module is compiled whenever it is asked to be, whatever GHC's own check" (rfBefore /= rfAfter)
@@ -475,11 +481,13 @@ scenarios send dir ghc = do
   -- The toolchain's compiler_flags may contain RTS options for the ghc
   -- program, such as +RTS -A64m -RTS. They mean nothing to a session, and
   -- the worker must accept them.
+  restart
   compiled (req "T.E" "T/E"){extraFlags = ["+RTS", "-A64m", "-RTS"]}
 
   -- A flag that sets state for the whole GHC process can't apply to one
   -- session alone, so the worker must refuse it and name the flag (see
   -- Note [Flags of the whole process] in Session).
+  restart
   forM_ ["-fno-state-hack", "-dppr-debug"] $ \flag -> do
     (gCode, gErr) <- send (req "T.E" "T/E"){extraFlags = [flag]}
     assertBool ("a flag of the whole process is refused: " ++ show gCode ++ " " ++ gErr) (gCode /= 0 && flag `isInfixOf` gErr)
@@ -509,20 +517,12 @@ cycles w ghc = do
 
   -- Edit the boot file, then compile it and every module that reads it,
   -- in order.
+  twRestart w
   appendFile (dir </> "src/T/C.hs-boot") "\n-- an edit\n"
   compiled (req "T.C-boot" "T/C"){boot = True}
   compiled (req "T.D" "T/D")
   compiled (req "T.C" "T/C")
   compiled (req "T.B" "T/B")
-
--- | In session mode one-shot, the worker refuses a request for a target with
--- boot files (see cyclePackage), and says that hs-boot files are the
--- reason.
-refusesBoots :: TestWorker -> String -> IO ()
-refusesBoots w ghc = do
-  _ <- cyclePackage w ghc
-  (code, err) <- sendCycle w (req "T.D" "T/D")
-  assertBool ("a target with boot files is refused: " ++ show code ++ " " ++ err) (code /= 0 && "hs-boot" `isInfixOf` err)
 
 -- | In session mode auto, the worker makes a one-shot session for a target
 -- without boot files, and a --make session for a target with them (see
@@ -569,8 +569,8 @@ firstSplices send dir = do
 -- module), whatever the session compiled before (see Note [Each compile's
 -- home modules] in Session). The modules are written into the cycle package
 -- (see cyclePackage), and the given Send sends their requests.
-bootViews :: Send -> FilePath -> String -> IO ()
-bootViews send dir ghc = do
+bootViews :: Send -> IO () -> FilePath -> String -> IO ()
+bootViews send restart dir ghc = do
   let out = dir </> "out"
       compiled r = do
         (code, err) <- send r
@@ -596,6 +596,7 @@ bootViews send dir ghc = do
   compiled (req "T.SA" "T/SA"){extraFlags = th}
   compiled (req "T.SB" "T/SB"){extraFlags = th}
   sb 2
+  restart
   compiled (req "T.SB" "T/SB"){extraFlags = th}
   sbIface <- showIface (out </> "T/SB.hi")
   assertBool "a module compiled again is checked against its boot file" ("$fxShowT" `isInfixOf` sbIface)
@@ -737,6 +738,15 @@ otherLibdir send = do
 -- | A toolchain whose GHC is built from source gives its compiler command
 -- the GHC's libdir with -B. The worker isn't the ghc program, and takes the
 -- libdir from the request, so it must accept the flag and ignore it.
+-- | A worker lives for one build, in which buck2 compiles each module once,
+-- so it refuses to compile a module of a target a second time.
+compilesOnce :: TestWorker -> IO ()
+compilesOnce w = do
+  twRestart w
+  compiledIn (sendOwn w) (twDir w) (req "T.E" "T/E")
+  (code, err) <- sendOwn w (req "T.E" "T/E")
+  assertBool ("a second compile of a module is refused: " ++ show code ++ " " ++ err) (code /= 0 && "already compiled" `isInfixOf` err)
+
 libdirFlag :: Send -> FilePath -> IO ()
 libdirFlag send libdir = do
   (code, err) <- send (req "T.E" "T/E"){extraFlags = ["-B" ++ libdir]}
@@ -764,8 +774,9 @@ filesUnder d = do
 -- group see it.
 data TestWorker = TestWorker
   { twDir :: FilePath
-  , twProcess :: ProcessHandle
+  , twProcess :: IORef ProcessHandle
   , twSendIn :: FilePath -> Send -- for the package in the given subdirectory
+  , twRestart :: IO () -- end the worker and start a new one, as buck2 does for each build
   }
 
 -- | Send a request for the package in the worker's own directory.
@@ -781,6 +792,9 @@ sendOwn w = twSendIn w ""
 -- drops sessions. It runs verbosely, logging to worker.log in its
 -- directory, which some tests read.
 --
+-- A worker lives for one build, in which it compiles each module once, so
+-- a test that compiles a module again after an edit restarts it first.
+--
 -- The last test ends the worker with SIGTERM, as buck2 does. The worker must
 -- exit successfully and leave no temporary files behind.
 withTestWorker :: String -> String -> FilePath -> String -> FilePath -> (IO TestWorker -> [TestTree]) -> TestTree
@@ -794,19 +808,29 @@ withTestWorker name mode worker ghc libdir tests =
       -- limits a socket's path to 104 bytes, of which $TMPDIR takes about
       -- 50.
       dir <- newPackage ghc [c | c : _ <- words name]
-      logH <- openFile (dir </> "worker.log") WriteMode
-      (ph, sock) <- startWorkerProcess worker [] dir [("BUCK2_GHC_WORKER_SESSIONS", "1"), ("BUCK2_GHC_WORKER_VERBOSE", "1"), ("BUCK2_GHC_WORKER_SESSION_MODE", mode), ("TMPDIR", dir </> "tmp")] (UseHandle logH)
-      pure (TestWorker dir ph (\pkg -> grpc sock . argv pkg ghc libdir))
+      let launch logMode = do
+            logH <- openFile (dir </> "worker.log") logMode
+            startWorkerProcess worker [] dir [("BUCK2_GHC_WORKER_SESSIONS", "1"), ("BUCK2_GHC_WORKER_VERBOSE", "1"), ("BUCK2_GHC_WORKER_SESSION_MODE", mode), ("TMPDIR", dir </> "tmp")] (UseHandle logH)
+      (ph, sock) <- launch WriteMode
+      ref <- newIORef ph
+      let restart = do
+            old <- readIORef ref
+            terminateProcess old
+            _ <- waitForProcess old
+            launch AppendMode >>= writeIORef ref . fst
+      pure (TestWorker dir ref (\pkg -> grpc sock . argv pkg ghc libdir) restart)
     end w = do
-      terminateProcess (twProcess w)
-      code <- waitForProcess (twProcess w)
+      ph <- readIORef (twProcess w)
+      terminateProcess ph
+      code <- waitForProcess ph
       code @?= ExitSuccess
       left <- listDirectory (twDir w </> "tmp")
       assertBool ("temporary files left: " ++ show left) (null left)
     -- Clean up, whether or not the tests ended the worker.
     stop w = do
-      terminateProcess (twProcess w)
-      _ <- waitForProcess (twProcess w)
+      ph <- readIORef (twProcess w)
+      terminateProcess ph
+      _ <- waitForProcess ph
       removePathForcibly (twDir w)
 
 -- | What the worker is doing when its parent goes away.

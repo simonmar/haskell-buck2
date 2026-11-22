@@ -387,13 +387,10 @@ table of its own (Note [The session's state] in `src/Session.hs`).
 
 - `auto`, the default, uses one-shot sessions for the targets that can
   have them, and `--make` sessions for the others;
-- `make` uses `--make` sessions for every target;
-- `one-shot` uses one-shot sessions, and refuses targets with boot files.
-  Compiling such a target in one-shot mode wouldn't always fail; it could
-  silently produce the wrong result.
+- `make` uses `--make` sessions for every target.
 
-The tests run every target in both `make` and `one-shot` modes, so that
-each kind of session is tested on every target it can compile.
+The tests run every target in both modes, so that each kind of session is
+tested on every target it can compile.
 
 ## 7. Concurrency and garbage collection
 

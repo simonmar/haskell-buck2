@@ -45,12 +45,10 @@ import System.IO (hPutStrLn, stderr)
 import Text.Printf (printf)
 
 import GHC
-import GHC.Data.StringBuffer (StringBuffer (..), lexemeToString)
+import GHC.Data.StringBuffer (StringBuffer (..), hGetStringBuffer, lexemeToString)
 import GHC.Driver.Env (hsc_dflags, hsc_home_unit, hsc_units)
 import GHC.Driver.Ppr (showSDoc)
-import GHC.Driver.Config.Parser (initParserOpts)
 import GHC.Driver.Session (defaultFatalMessager, defaultFlushOut, parseDynamicFilePragma, pgm_F, pgm_L, pgm_P, pgm_a, pgm_c, pgm_i, pgm_lc, pgm_lo, xopt)
-import GHC.Parser.Header (getOptionsFromFile)
 import GHC.Iface.Errors (cannotFindModule)
 import qualified GHC.LanguageExtensions as LangExt
 import GHC.Unit.Finder (FindResult (..))
@@ -64,14 +62,8 @@ import GHC.Utils.Outputable (ppr)
 import GHC.Driver.Config.Diagnostic (initIfaceMessageOpts)
 import GHC.Iface.Errors.Ppr (missingInterfaceErrorDiagnostic)
 #endif
-#if MIN_VERSION_ghc(9,14,0)
-import GHC.Driver.Session (supportedLanguagesAndExtensions)
-import GHC.Platform (platformArchOS)
-#endif
-#if MIN_VERSION_ghc(10,0,0)
-import GHC.Types.SourceError (initSourceErrorContext)
-#endif
 
+import Pragmas (optionsPragmas)
 import Imports (findImport, importLocated, importName, ordinaryImports, sourceImports, spliceImport, textualImports)
 import Libdir (takeLibdir)
 import Request (withoutRts)
@@ -192,20 +184,15 @@ pathPrograms base opts = nub [p opts | p <- programs, p opts /= p base, '/' `not
 -- | The flags, with those of the OPTIONS_GHC pragmas of the source file
 -- added.
 withSourcePragmas :: Logger -> DynFlags -> FilePath -> IO DynFlags
-#if MIN_VERSION_ghc(10,0,0)
+#if MIN_VERSION_ghc(9,14,0)
 withSourcePragmas logger dflags src = do
-  (_, pragmas) <- getOptionsFromFile (initParserOpts dflags) (initSourceErrorContext dflags) (supportedLanguagesAndExtensions (platformArchOS (targetPlatform dflags))) src
-  (flags, _, _) <- parseDynamicFilePragma logger dflags pragmas
-  pure flags
-#elif MIN_VERSION_ghc(9,14,0)
-withSourcePragmas logger dflags src = do
-  (_, pragmas) <- getOptionsFromFile (initParserOpts dflags) (supportedLanguagesAndExtensions (platformArchOS (targetPlatform dflags))) src
-  (flags, _, _) <- parseDynamicFilePragma logger dflags pragmas
+  buf <- hGetStringBuffer src
+  (flags, _, _) <- parseDynamicFilePragma logger dflags (optionsPragmas dflags buf src)
   pure flags
 #else
 withSourcePragmas _ dflags src = do
-  (_, pragmas) <- getOptionsFromFile (initParserOpts dflags) src
-  (flags, _, _) <- parseDynamicFilePragma dflags pragmas
+  buf <- hGetStringBuffer src
+  (flags, _, _) <- parseDynamicFilePragma dflags (optionsPragmas dflags buf src)
   pure flags
 #endif
 

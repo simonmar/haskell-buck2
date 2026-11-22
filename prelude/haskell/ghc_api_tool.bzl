@@ -74,7 +74,7 @@ GHC_API_TOOLS = {
 }
 
 # The modules that the tools share.
-_SHARED_MODULES = ["Contract", "DepFile", "Imports", "Interface", "Libdir", "Request"]
+_SHARED_MODULES = ["Contract", "DepFile", "Imports", "Interface", "Libdir", "Pragmas", "Request"]
 
 def ghc_api_tool_srcs(tool: str) -> dict[str, str]:
     """The `srcs` of a haskell_binary() that builds one of GHC_API_TOOLS,

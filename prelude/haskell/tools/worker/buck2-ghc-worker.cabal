@@ -16,12 +16,12 @@ build-type:         Simple
 tested-with:        GHC==9.14.1, GHC==9.12.4, GHC==9.10.3, GHC==9.8.4, GHC==9.6.7
 
 -- The worker's modules, in a library so that the test suites and the
--- benchmark can use them too. Contract, DepFile, Imports, Interface and
--- Request are symlinks to modules of the rules' own GHC API tools
+-- benchmark can use them too. Contract, DepFile, Imports, Interface,
+-- Pragmas and Request are symlinks to modules of the rules' own GHC API tools
 -- (prelude/haskell/tools/ghc-api), so that the worker and those tools share
 -- the same code.
 library
-  exposed-modules:  Compat, Contract, DepFile, Grpc, Imports, Interface, Proto, Request, Session, Worker
+  exposed-modules:  Compat, Contract, DepFile, Grpc, Imports, Interface, Pragmas, Proto, Request, Session, Worker
   hs-source-dirs:   src
   default-language: GHC2021
   ghc-options:      -Wall

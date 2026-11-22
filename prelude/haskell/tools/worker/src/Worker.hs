@@ -17,13 +17,14 @@ import System.Environment (lookupEnv)
 import System.IO (hPutStrLn, stderr)
 import Text.Read (readMaybe)
 
-import GHC (getSession, runGhc)
+import GHC (getSession, mkModuleName, runGhc)
 import GHC.Driver.Env (hsc_NC)
 import GHC.Types.Name.Cache (NameCache)
 import GHC.Clock (getMonotonicTime)
 import GHC.Stats (RTSStats (..), getRTSStats, getRTSStatsEnabled)
 import GHC.Types.SourceError (SourceError)
 import GHC.Unit.Finder.Types (FinderCache)
+import GHC.Unit.Types (IsBootInterface (..))
 import Control.Monad.IO.Class (liftIO)
 
 import Compat (sharedFileHashes)
@@ -40,7 +41,7 @@ data Worker = Worker
   , wLibdir :: FilePath -- the libdir that the requests name
   , wSessions :: MVar (M.Map [String] Entry) -- the sessions, keyed by their session flags
   , wMaxSessions :: Int -- how many sessions to keep, counting those in use and those idle (BUCK2_GHC_WORKER_SESSIONS)
-  , wCompiled :: MVar (M.Map FilePath (Set.Set Node)) -- for each target not yet finished, keyed by its output directory, the modules compiled so far
+  , wCompiled :: MVar (M.Map FilePath (Set.Set Node)) -- for each target, keyed by its output directory, the modules compiled so far
   , wVerbose :: Bool -- whether to log each compile and each session made or dropped (BUCK2_GHC_WORKER_VERBOSE)
   , wFiles :: FinderCache -- holds the file hashes that the sessions share (see Note [Hashing the libraries] in Session)
   , wNames :: NameCache -- the name cache that the sessions share (see Note [One name cache for all the sessions] in Session)
@@ -73,8 +74,7 @@ withWorker first k = do
     Nothing -> pure AutoSessions
     Just "auto" -> pure AutoSessions
     Just "make" -> pure MakeSessions
-    Just "one-shot" -> pure OneShotSessions
-    Just other -> fail ("buck2-ghc-worker: BUCK2_GHC_WORKER_SESSION_MODE is " ++ other ++ ", not auto, make or one-shot")
+    Just other -> fail ("buck2-ghc-worker: BUCK2_GHC_WORKER_SESSION_MODE is " ++ other ++ ", not auto or make")
   -- See Note [Starting the object linker once].
   initLinker 1
   -- The session that `runGhc` makes is never used to compile anything. It
@@ -104,18 +104,15 @@ dropIdle w m = (foldr M.delete m (map fst gone), map snd gone)
 
 -- | Record that the session has compiled a module of its target. Once every
 -- module of the target has been compiled, mark all the target's sessions
--- finished, so that they are dropped when idle, and forget the modules
--- counted so far, so that the count starts again if the target is built
--- again. A target whose dependency analysis failed is never finished, since
--- there is no list of its modules to count against.
+-- finished, so that they are dropped when idle. A target whose dependency
+-- analysis failed is never finished, since there is no list of its modules
+-- to count against.
 compiledIn :: Worker -> GhcSession -> Node -> IO ()
 compiledIn w s n = mask_ $ do
   let target = gsOutDir s
   finished <- modifyMVar (wCompiled w) $ \m -> do
     let done = Set.insert n (M.findWithDefault Set.empty target m)
-    pure $ case gsModules s of
-      Just modules | modules `Set.isSubsetOf` done -> (M.delete target m, True)
-      _ -> (M.insert target done m, False)
+    pure (M.insert target done m, maybe False (`Set.isSubsetOf` done) (gsModules s))
   when finished $ do
     uninterruptibleMask_ $ modifyMVar_ (wSessions w) $ traverse $ \e -> do
       made <- tryReadMVar (eSession e)
@@ -232,26 +229,38 @@ compileRequest w r
   | reqLibdir r /= wLibdir w =
       pure (2, "buck2-ghc-worker: this worker uses the libdir " ++ wLibdir w ++ ", the request names " ++ reqLibdir r ++ "\n")
   | otherwise = do
-      diagnostics <- newIORef []
-      t0 <- getMonotonicTime
-      result <- tryNonAsync (withSession w r (\s -> compile s (\d -> modifyIORef' diagnostics (d :)) r >>= compiledIn w s))
-      t1 <- getMonotonicTime
-      ds <- reverse <$> readIORef diagnostics
-      when (wVerbose w) $ hPutStrLn stderr ("buck2-ghc-worker: " ++ reqModPath r ++ " " ++ show (round ((t1 - t0) * 1000) :: Int) ++ "ms")
-      let text = map diagText ds
-      pure $ case result of
-        Right () | not (any diagIsError ds) -> (0, unlines text)
-        Right () -> (1, unlines text)
-        -- compileOne throws a compile's errors as a SourceError rather than
-        -- logging them. (In --make mode, GHC's driver catches and logs them
-        -- after the compile.) The errors from summarising the source arrive
-        -- the same way.
-        Left e -> case fromException e :: Maybe SourceError of
-          Just se -> (1, unlines (text ++ [show se]))
-          -- Other failures, such as a splice that couldn't load the code
-          -- it runs, come with no location, so they get the source's, as
-          -- GHC's errors have.
-          Nothing -> (1, unlines (text ++ [reqSource r ++ ": error:"] ++ map ("    " ++) (lines (dropWhile (== '\n') (show e)))))
+      -- The worker lives for one build, in which buck2 compiles each module
+      -- once. Its sessions rely on that: what they keep of a module is
+      -- never replaced (see 'Homes' in Session).
+      done <- M.findWithDefault Set.empty (reqOutDir r) <$> readMVar (wCompiled w)
+      if requestNode r `Set.member` done
+        then pure (2, "buck2-ghc-worker: this worker has already compiled " ++ reqModPath r ++ " in " ++ reqOutDir r ++ ", and a worker lives for one build\n")
+        else do
+          diagnostics <- newIORef []
+          t0 <- getMonotonicTime
+          result <- tryNonAsync (withSession w r (\s -> compile s (\d -> modifyIORef' diagnostics (d :)) r >>= compiledIn w s))
+          t1 <- getMonotonicTime
+          ds <- reverse <$> readIORef diagnostics
+          when (wVerbose w) $ hPutStrLn stderr ("buck2-ghc-worker: " ++ reqModPath r ++ " " ++ show (round ((t1 - t0) * 1000) :: Int) ++ "ms")
+          let text = map diagText ds
+          pure $ case result of
+            Right () | not (any diagIsError ds) -> (0, unlines text)
+            Right () -> (1, unlines text)
+            -- compileOne throws a compile's errors as a SourceError rather than
+            -- logging them. (In --make mode, GHC's driver catches and logs them
+            -- after the compile.) The errors from summarising the source arrive
+            -- the same way.
+            Left e -> case fromException e :: Maybe SourceError of
+              Just se -> (1, unlines (text ++ [show se]))
+              -- Other failures, such as a splice that couldn't load the code
+              -- it runs, come with no location, so they get the source's, as
+              -- GHC's errors have.
+              Nothing -> (1, unlines (text ++ [reqSource r ++ ": error:"] ++ map ("    " ++) (lines (dropWhile (== '\n') (show e)))))
+
+-- | The node that the request compiles: its module, or its module's boot
+-- interface.
+requestNode :: Request -> Node
+requestNode r = (mkModuleName [if c == '/' then '.' else c | c <- reqModPath r], if reqBoot r then IsBoot else NotBoot)
 
 {- Note [How the worker works]
 
