@@ -6,8 +6,8 @@
 # of this source tree. You may select, at your option, one of the
 # above-listed licenses.
 
-load("@prelude//haskell:compile.bzl", "compile_args", "ghc_file_args", "run_ghc", "target_splice_env")
-load("@prelude//haskell:link_info.bzl", "cxx_toolchain_link_style")
+load("@prelude//haskell:compile.bzl", "CompileResultInfo", "compile_args", "ghc_file_args", "haddock_from_interfaces", "run_ghc", "target_splice_env")
+load("@prelude//linking:link_info.bzl", "LinkStyle")
 load(
     "@prelude//haskell:toolchain.bzl",
     "HaskellToolchainInfo",
@@ -25,18 +25,24 @@ HaskellHaddockInfo = provider(
     },
 )
 
-# The documentation of a library. `native_libs` are the library's own native
-# libraries, as for compile().
-def haskell_haddock_lib(ctx: AnalysisContext, pkgname: str, native_libs: SharedLibraryInfo) -> Provider:
+# The documentation of a library. `compiled` is the library's compile in
+# `link_style`, and `native_libs` are its own native libraries, as for
+# compile().
+def haskell_haddock_lib(ctx: AnalysisContext, pkgname: str, link_style: LinkStyle, compiled: CompileResultInfo, native_libs: SharedLibraryInfo) -> Provider:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
 
     iface = ctx.actions.declare_output("haddock-interface", has_content_based_path = False)
     odir = ctx.actions.declare_output("haddock-html", dir = True, has_content_based_path = False)
 
-    # Haddock compiles the library's modules as `ghc --make` would, so its
-    # splices see what the compile's do.
-    link_style = cxx_toolchain_link_style(ctx)
-    splices = target_splice_env(ctx, link_style, False, native_libs)
+    # From the compile's interfaces, where haddock can, it runs no splices,
+    # so it needs no dependency's library. Otherwise it compiles the
+    # library's modules as `ghc --make` would, so its splices see what the
+    # compile's do.
+    from_interfaces = haddock_from_interfaces(ctx)
+    if from_interfaces:
+        splices = struct(final = {}, native_libs = [], data_dirs = {})
+    else:
+        splices = target_splice_env(ctx, link_style, False, native_libs)
     args = compile_args(
         ctx,
         link_style,
@@ -77,7 +83,10 @@ def haskell_haddock_lib(ctx: AnalysisContext, pkgname: str, native_libs: SharedL
     if args.args_for_file:
         cmd.add(ghc_file_args(ctx, "args-" + args.variant + ".haskell_haddock_argsfile", cmd_args(args.args_for_file, format = "--optghc={}"), args.srcs))
 
-    # Haddock compiles in a temporary directory of its own.
+    if from_interfaces:
+        cmd.add("--no-compilation", "--optghc=-hidir", cmd_args(compiled.hi, format = "--optghc={}"))
+
+    # Otherwise haddock compiles in a temporary directory of its own.
     run_ghc(ctx, cmd, splices, args.variant, "haddock-" + args.variant, "", [], "haskell_haddock")
 
     return HaskellHaddockInfo(interface = iface, html = odir)

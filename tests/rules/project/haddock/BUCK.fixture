@@ -1,0 +1,36 @@
+load("//buck2:haskell.bzl", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
+
+# A library with doc comments, and its documentation.
+haskell_library(
+    name = "doc",
+    srcs = {
+        "D.A": "D/A.hs",
+        "D.B": "D/B.hs",
+    },
+    packages = ["base"],
+    per_module = PER_MODULE,
+)
+
+haskell_haddock(
+    name = "docs",
+    deps = [":doc"],
+)
+
+# The library again, compiled with -haddock, so that its interfaces keep the
+# docs and haddock can read them from there.
+haskell_library(
+    name = "doc-kept",
+    srcs = {
+        "D.A": "D/A.hs",
+        "D.B": "D/B.hs",
+    },
+    packages = ["base"],
+    compiler_flags = ["-haddock"],
+    per_module = PER_MODULE,
+)
+
+haskell_haddock(
+    name = "docs-kept",
+    deps = [":doc-kept"],
+)

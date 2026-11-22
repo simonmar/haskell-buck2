@@ -247,6 +247,19 @@ def get_exposed_package_args(ctx: AnalysisContext, link_style: LinkStyle, specif
 
     return exposed_package_args
 
+# Whether the target's compiles get `flag`, from the toolchain's or the
+# target's compiler_flags. A flag in a module's OPTIONS_GHC isn't seen.
+def has_compiler_flag(ctx: AnalysisContext, flag: str) -> bool:
+    toolchain_flags = ctx.attrs._haskell_toolchain[HaskellToolchainInfo].compiler_flags or []
+    return flag in toolchain_flags + ctx.attrs.compiler_flags
+
+# Whether haddock documents the target from the interfaces of its compile,
+# rather than compiling its modules again. It does if the compiles keep the
+# docs in their interfaces (-haddock).
+def haddock_from_interfaces(ctx: AnalysisContext) -> bool:
+    # Haddock can read them from GHC 9.12 (--no-compilation).
+    return has_compiler_flag(ctx, "-haddock") and _ghc_at_least(ctx.attrs._haskell_toolchain[HaskellToolchainInfo], (9, 12))
+
 # Whether the toolchain's GHC is at least the given version.
 def _ghc_at_least(haskell_toolchain: HaskellToolchainInfo, version: (int, int)) -> bool:
     major_minor = [int(x) for x in haskell_toolchain.ghc_version.split(".")[:2]]
@@ -333,8 +346,7 @@ def ghc_flags(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: boo
     return compile_cmd, compile_args
 
 def get_producing_indices(ctx: AnalysisContext) -> bool:
-    toolchain_flags = ctx.attrs._haskell_toolchain[HaskellToolchainInfo].compiler_flags or []
-    return "-fwrite-ide-info" in toolchain_flags + ctx.attrs.compiler_flags
+    return has_compiler_flag(ctx, "-fwrite-ide-info")
 
 def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname = None, dynamic_too: bool = False, final: [dict[str, bool], None] = None) -> CompileArgsInfo:
     compile_cmd, compile_args = ghc_flags(ctx, link_style, enable_profiling, pkgname, dynamic_too)
@@ -483,8 +495,7 @@ def has_modules(ctx: AnalysisContext) -> bool:
 #   make dynamic objects, so it uses the ones from the non-profiled compile.
 def splice_objects_kind(ctx: AnalysisContext, enable_profiling: bool) -> str:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
-    flags = (haskell_toolchain.compiler_flags or []) + ctx.attrs.compiler_flags
-    if "-fexternal-interpreter" in flags or not haskell_toolchain.dynamic_ghc:
+    if has_compiler_flag(ctx, "-fexternal-interpreter") or not haskell_toolchain.dynamic_ghc:
         return "own"
     return "from_non_profiled" if enable_profiling else "dynamic"
 

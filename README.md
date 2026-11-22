@@ -30,6 +30,12 @@ There are other build options that can be selected in a similar way, such as `-m
 `buck2 build my-package:my-program[interfaces]` compiles a target without
 linking it, which is enough to see its type errors.
 
+# Documentation
+
+`haskell_haddock` builds the haddock for libraries libraries. A library compiled 
+with `-haddock` (in its `compiler_flags` or the toolchain's) will build the documentation 
+from the interfaces on GHC 9.12+, which is more efficient.
+
 # Splice dependencies
 
 A Template Haskell splice, quasiquote or `ANN` pragma needs the linked libraries

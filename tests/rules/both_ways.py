@@ -3,6 +3,7 @@ fixtures both per-module and with --make (see COMPILES), and says how the
 two differ where they should."""
 
 import json
+import os
 import re
 import sys
 
@@ -269,6 +270,24 @@ def check_native_library_change(st):
     replace("c-lib/cl.c", "return 7", "return 8")
     for c in ["make"]:
         expect_output(configured("//th-ffi-splice:show", c), "after the edit to //c-lib:c-lib, compiled {}".format(c), "(8,8)")
+
+
+def check_haddock(st):
+    """The documentation of //haddock:doc and //haddock:doc-kept has their
+    modules' doc comments, compiled either way. doc-kept is compiled with
+    -haddock, so from GHC 9.12 haddock reads the docs from the interfaces of
+    its compile (--no-compilation) rather than compiling it again. doc isn't,
+    so haddock compiles it."""
+    for docs in ["docs", "docs-kept"]:
+        for c in COMPILES:
+            out = buck2("build", "--show-full-output", configured("//haddock:" + docs, c)).stdout.split()[-1]
+            with open(os.path.join(out, "D-A.html")) as f:
+                html = f.read()
+            expect("//haddock:{}, compiled {}, has a's doc comment".format(docs, c), "The documentation of a." in html)
+    for lib, from_interfaces in [("doc", False), ("doc-kept", st.haddock_reads_interfaces)]:
+        cmd = buck2("aquery", "attrfilter(category, haskell_haddock, all_actions(//haddock:{}))".format(lib), "--output-attribute", "cmd").stdout
+        expect("haddock {} //haddock:{}'s interfaces".format("reads" if from_interfaces else "doesn't read", lib),
+               ("--no-compilation" in cmd) == from_interfaces)
 
 
 def check_data_dirs(st):
