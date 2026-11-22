@@ -9,6 +9,7 @@ import sys
 from harness import (
     DEV_STYLE,
     OPT_STATIC_STYLE,
+    is_module_compile,
     append,
     buck2,
     build,
@@ -73,7 +74,7 @@ def check_workers(st):
     whole life, which is only safe if it lives for a single command (see
     Note [Hashing the libraries] in the worker's Session.hs)."""
     def executors(entries):
-        compiles = [e for e in entries if "haskell_compile_module_" in e["identity"]]
+        compiles = [e for e in entries if is_module_compile(e)]
         return [(module_of(e), e["reproducer"].get("executor", "")) for e in compiles], [e for e in compiles if e["reproducer"].get("executor") == "WorkerInit"]
 
     ran, inits = executors(st.entries)
@@ -206,7 +207,7 @@ def check_cross_package_dep_file(st):
     A.Base, but nothing buck2 shows lists a dynamic action's inputs, so
     that isn't checked here; unrelated_modules checks that a closure
     leaves out what a module doesn't import.)"""
-    tagged, untagged = dep_file("//lib-user:lib-user", "haskell_compile_module_" + DEV_STYLE, "B.M")
+    tagged, untagged = dep_file("//lib-user:lib-user", "haskell_compile", DEV_STYLE + "/B.M")
     expect_set("B.M's dep file", tagged, {"lib:A.Mid.abi"})
     expect_set("lib's package dbs among B.M's untagged inputs", {u for u in untagged if u.startswith("lib:")}, {"lib:early"})
 
@@ -217,7 +218,7 @@ def check_module_name_clash(st):
     lists second's Utils, which GHC recorded the usage of, not another unit's
     module of the same name."""
     build("//module-name-clash:user")
-    tagged, _ = dep_file("//module-name-clash:user", "haskell_compile_module_" + DEV_STYLE, "X")
+    tagged, _ = dep_file("//module-name-clash:user", "haskell_compile", DEV_STYLE + "/X")
     expect_set("X's dep file", tagged, {"second:Re.abi", "second:Utils.abi"})
 
 
@@ -284,7 +285,7 @@ def check_static_native_libraries(st):
     is one, even though the target's other dependency,
     //ffi-import:ffi-import, has a shared C library."""
     build("//th-static-c:th-static-c")
-    ran = {module_of(e): e["reproducer"].get("executor", "") for e in what_ran_entries() if "haskell_compile_module_" in e["identity"]}
+    ran = {module_of(e): e["reproducer"].get("executor", "") for e in what_ran_entries() if is_module_compile(e)}
     # The first compile that buck2 sends to a worker has the executor
     # WorkerInit rather than Worker, because it also starts the worker.
     executor = {"WorkerInit": "Worker"}.get(ran.get("th-static-c:SC.Splice"), ran.get("th-static-c:SC.Splice"))
@@ -429,7 +430,7 @@ def check_own_boot(st):
     p = build("//ownboot:ownboot", keep_going=True)
     replace("ownboot/OB/U.hs-boot", "y :: Int\n", "")
     expect("the build of ownboot fails in OB.U's compile after y is added to its boot file",
-           p.returncode != 0 and "haskell_compile_module_{} OB.U".format(DEV_STYLE) in p.stderr)
+           p.returncode != 0 and "haskell_compile {}/OB.U".format(DEV_STYLE) in p.stderr)
 
 
 def check_main_file(st):
@@ -443,11 +444,11 @@ def check_boot(st):
     {-# SOURCE #-} importer) and Cyc.B (checked against it) depend on; its
     own dep file doesn't list its own output, and Cyc.A's lists the boot
     file's, even once Cyc.B's own is there too."""
-    tagged, _ = dep_file("//boot-cycle:boot-cycle", "haskell_compile_module_" + DEV_STYLE, "Cyc.B-boot")
+    tagged, _ = dep_file("//boot-cycle:boot-cycle", "haskell_compile", DEV_STYLE + "/Cyc.B-boot")
     expect_set("Cyc.B-boot's dep file", tagged, set())
-    tagged, _ = dep_file("//boot-cycle:boot-cycle", "haskell_compile_module_" + DEV_STYLE, "Cyc.A")
+    tagged, _ = dep_file("//boot-cycle:boot-cycle", "haskell_compile", DEV_STYLE + "/Cyc.A")
     expect_set("Cyc.A's dep file", tagged, {"boot-cycle:Cyc.B.abi-boot"})
-    tagged, _ = dep_file("//boot-cycle:boot-cycle", "haskell_compile_module_" + DEV_STYLE, "Cyc.B")
+    tagged, _ = dep_file("//boot-cycle:boot-cycle", "haskell_compile", DEV_STYLE + "/Cyc.B")
     expect_set("Cyc.B's dep file", tagged, {"boot-cycle:Cyc.A.abi", "boot-cycle:Cyc.B.abi-boot"})
     # Compiled again, with Cyc.B's whole interface there now too, Cyc.A's
     # dep file still lists the boot file's .abi, which is what Cyc.A
@@ -609,9 +610,9 @@ def check_local_splices_in_modes(st):
             ran = compiled_modules(what_ran())
             expect("the splicing modules compiled per-module in {} mode (ran: {})".format(mode, sorted(ran)),
                    {"th-local-splice:C.Splice", "th-internal-splice:P.Use"} <= ran)
-            category = "haskell_compile_module_" + OPT_STATIC_STYLE + ("_prof" if mode == "prof" else "")
+            variant = OPT_STATIC_STYLE + ("-prof" if mode == "prof" else "")
             obj = ("P.Gen.o" if mode == "opt" else "P.Gen.p_o") if st.external_interpreter else "P.Gen.dyn_o"
-            tagged, _ = dep_file("//th-internal-splice:th-internal-splice", category, "P.Use", mode=mode)
+            tagged, _ = dep_file("//th-internal-splice:th-internal-splice", "haskell_compile", variant + "/P.Use", mode=mode)
             expect_set("the objects that P.Use's splice loaded in {} mode".format(mode),
                        {e.split(":", 1)[1] for e in tagged if not e.endswith(".abi")}, {obj})
             expect_output("//th-local-splice:show", "in {} mode".format(mode), shown, mode)
@@ -692,7 +693,7 @@ def check_cutoff_instances(st):
         p = build("//instances:high", keep_going=True)
         replace(path, new, old)
         expect("I.High fails to compile after an edit to {} (got:\n{})".format(path, tail(p.stderr, 15)),
-               p.returncode != 0 and "haskell_compile_module_{} I.High".format(DEV_STYLE) in p.stderr and error in p.stderr)
+               p.returncode != 0 and "haskell_compile {}/I.High".format(DEV_STYLE) in p.stderr and error in p.stderr)
         build("//instances:high")
 
 
@@ -710,7 +711,7 @@ def check_opt_static(st):
     """opt mode (static, -dynamic-too): B.M's dep file lists A.Mid, as in
     dev mode."""
     build("//main:main", mode="opt")
-    tagged, _ = dep_file("//lib-user:lib-user", "haskell_compile_module_" + OPT_STATIC_STYLE, "B.M", mode="opt")
+    tagged, _ = dep_file("//lib-user:lib-user", "haskell_compile", OPT_STATIC_STYLE + "/B.M", mode="opt")
     expect_set("B.M's dep file in opt mode", tagged, {"lib:A.Mid.abi"})
 
 
@@ -719,6 +720,6 @@ def check_opt_shared_consumer(st):
     package, which comes from lib-user's -dynamic-too compile; Main's dep file
     lists B.M, which it imports."""
     build("//main:main-shared", mode="opt")
-    tagged, _ = dep_file("//main:main-shared", "haskell_compile_module_shared", "Main", mode="opt")
+    tagged, _ = dep_file("//main:main-shared", "haskell_compile", "shared/Main", mode="opt")
     expect_set("lib-user's files in Main's dep file (main-shared, opt mode)",
                {t for t in tagged if t.startswith("lib-user:")}, {"lib-user:B.M.abi"})

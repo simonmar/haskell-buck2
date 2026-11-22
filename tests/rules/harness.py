@@ -114,12 +114,30 @@ def what_ran(entries=None):
 def module_of(entry):
     """The module of a what-ran entry, as "target-name:Module"."""
     m = IDENTITY.match(entry["identity"])
-    return target_name(m.group(1)) + ":" + m.group(3)
+    return target_name(m.group(1)) + ":" + module_name(m.group(3))
+
+
+def module_name(identifier):
+    """The module of a per-module compile's identifier, which is
+    "variant/Module"."""
+    return identifier.rsplit("/", 1)[-1]
+
+
+def is_module_compile(entry):
+    """Whether a what-ran entry is a per-module compile."""
+    m = IDENTITY.match(entry["identity"])
+    return m is not None and compiles_module(m.group(2), m.group(3))
+
+
+def compiles_module(category, identifier):
+    """Whether an action is a per-module compile: a compile whose identifier
+    names a module as well as the variant, as "variant/Module"."""
+    return category == "haskell_compile" and "/" in (identifier or "")
 
 
 def compiled_modules(actions):
     """The per-module compiles that ran, as "target-name:Module"."""
-    return {target_name(t) + ":" + i for t, c, i, _ in actions if c.startswith("haskell_compile_module_")}
+    return {target_name(t) + ":" + module_name(i) for t, c, i, _ in actions if compiles_module(c, i)}
 
 
 def compiled(actions):
@@ -127,9 +145,9 @@ def compiled(actions):
     with --make as "target-name"."""
     names = set()
     for t, c, i, _ in actions:
-        if c.startswith("haskell_compile_module_"):
-            names.add(target_name(t) + ":" + i)
-        elif c.startswith("haskell_compile_"):
+        if compiles_module(c, i):
+            names.add(target_name(t) + ":" + module_name(i))
+        elif c == "haskell_compile":
             names.add(target_name(t))
     return names
 
@@ -141,7 +159,7 @@ def target_name(target):
 def failed_compiles(output):
     """The modules whose compiles failed in a build, as "target-name:Module",
     from the "Action failed" lines of buck2's output."""
-    return {target_name(t) + ":" + m for t, m in re.findall(r"Action failed: (\S+) \(cfg:[^)]*\) \(haskell_compile_module_\S+ (\S+)\)", output)}
+    return {target_name(t) + ":" + m for t, m in re.findall(r"Action failed: (\S+) \(cfg:[^)]*\) \(haskell_compile \S+/(\S+)\)", output)}
 
 
 def dep_file(target, category, identifier, mode=None):
@@ -226,7 +244,7 @@ def parse_compile(cmd):
 
 def find_compile(actions, target, module):
     for t, c, i, cmd in actions:
-        if target_name(t) == target and c.startswith("haskell_compile_module_") and i == module:
+        if target_name(t) == target and compiles_module(c, i) and module_name(i) == module:
             return parse_compile(cmd)
     raise CheckFailed("no compile of {}:{} in the build".format(target, module))
 

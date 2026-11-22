@@ -11,7 +11,7 @@ import tempfile
 import time
 import urllib.request
 
-from harness import IDENTITY, LOG_DIR, COMPILES, append, buck2, build, compiled_modules, configured, expect, expect_output, expect_set, replace, tail, target_name, what_ran, write
+from harness import IDENTITY, LOG_DIR, COMPILES, append, buck2, build, compiled_modules, configured, expect, expect_output, expect_set, compiles_module, module_name, replace, tail, target_name, what_ran, write
 
 
 def check_test_build_tools(st):
@@ -202,18 +202,18 @@ def check_cache(st):
                    {"{} {} {}".format(t, c, i or "") for t, c, i, _ in what_ran()}, set())
         out = buck2("log", "what-ran", "--format", "json").stdout
         entries = [json.loads(line) for line in out.splitlines() if line.startswith("{")]
-        cached = {IDENTITY.match(e["identity"]).group(2) for e in entries
+        cached = {IDENTITY.match(e["identity"]).group(2, 3) for e in entries
                   if IDENTITY.match(e["identity"]) and e["reproducer"].get("executor", "").endswith("Cache")}
         kinds = {
-            "per-module compile": lambda c: c.startswith("haskell_compile_module_"),
-            "--make compile": lambda c: c.startswith("haskell_compile_") and not c.startswith("haskell_compile_module_"),
-            "module graph": lambda c: c.startswith("haskell_deps_"),
-            "GHC API tool": lambda c: c.startswith("haskell_ghc_api_tool"),
-            "package db": lambda c: c.startswith("haskell_package_"),
-            "link": lambda c: c.startswith("haskell_link"),
+            "per-module compile": lambda c, i: compiles_module(c, i),
+            "--make compile": lambda c, i: c == "haskell_compile" and not compiles_module(c, i),
+            "module graph": lambda c, i: c == "haskell_deps",
+            "GHC API tool": lambda c, i: c.startswith("haskell_ghc_api_tool"),
+            "package db": lambda c, i: c == "haskell_package",
+            "link": lambda c, i: c == "haskell_link",
         }
         expect_set("kinds of action found in the cache",
-                   {k for k, is_kind in kinds.items() if any(is_kind(c) for c in cached)}, set(kinds))
+                   {k for k, is_kind in kinds.items() if any(is_kind(c, i) for c, i in cached)}, set(kinds))
 
         buck2("clean")
         # Earlier checks may have edited A.Base's exports already.
@@ -230,7 +230,7 @@ def check_cache(st):
             entry = json.loads(line)
             m = IDENTITY.match(entry["identity"])
             if m and entry["reproducer"].get("executor") == "ReDepFileCache":
-                by_dep_file.add(target_name(m.group(1)) + ":" + (m.group(3) or ""))
+                by_dep_file.add(target_name(m.group(1)) + ":" + module_name(m.group(3) or ""))
         expect("B.M found in the cache by its dep file (found so: {})".format(sorted(by_dep_file)), "lib-user:B.M" in by_dep_file)
     finally:
         if os.path.exists(".buckconfig.local"):

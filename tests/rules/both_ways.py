@@ -10,6 +10,7 @@ from harness import (
     COMPILES,
     CheckFailed,
     DEV_STYLE,
+    is_module_compile,
     Skipped,
     buck2,
     build,
@@ -148,9 +149,9 @@ def make_compile_dbs(target):
     """The package dbs of `target`'s --make compile in dev mode, by short
     name. aquery doesn't take a target's modifiers, so --make's is passed
     with -m, and it prints the command as one string."""
-    out = buck2("aquery", "-m", "//compile:make", "all_actions({})".format(target), "--output-attribute", "category", "--output-attribute", "cmd", "--json").stdout
+    out = buck2("aquery", "-m", "//compile:make", "all_actions({})".format(target), "--output-attribute", "category", "--output-attribute", "identifier", "--output-attribute", "cmd", "--json").stdout
     for action in json.loads(out).values():
-        if action.get("category") == "haskell_compile_" + DEV_STYLE:
+        if action.get("category") == "haskell_compile" and action.get("identifier") == DEV_STYLE:
             cmd = action["cmd"].strip("[]").split(", ")
             return {short(cmd[n + 1]) for n, a in enumerate(cmd) if a == "-package-db"}
     raise CheckFailed("no --make compile of {}".format(target))
@@ -283,7 +284,7 @@ def check_data_dirs(st):
             target = configured("//data-dirs:" + name, c)
             build(target)
             if c == "per-module":
-                ran = {module_of(e): e["reproducer"].get("executor", "") for e in what_ran_entries() if "haskell_compile_module_" in e["identity"]}
+                ran = {module_of(e): e["reproducer"].get("executor", "") for e in what_ran_entries() if is_module_compile(e)}
                 # The first compile that buck2 sends to a worker has the executor
                 # WorkerInit rather than Worker, because it also starts the worker.
                 executor = {"WorkerInit": "Worker"}.get(ran.get(name + ":Main"), ran.get(name + ":Main"))
@@ -312,8 +313,8 @@ def check_configurations(st):
         if c == "per-module" and st.worker:
             inits = {}
             for e in entries:
-                m = re.match(r"^(\S+) \(cfg:([^)]*)\) \((\S+)", e["identity"])
-                if m and m.group(3).startswith("haskell_compile_module_") and e["reproducer"].get("executor") == "WorkerInit":
+                m = re.match(r"^(\S+) \(cfg:([^)]*)\) \(", e["identity"])
+                if m and is_module_compile(e) and e["reproducer"].get("executor") == "WorkerInit":
                     inits[m.group(2)] = inits.get(m.group(2), 0) + 1
             expect("a worker for each configuration (started: {})".format(inits), sorted(inits.values()) == [1, 1])
 
