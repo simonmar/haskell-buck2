@@ -1,0 +1,37 @@
+load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
+load("//compile:defs.bzl", "PER_MODULE")
+
+# A library that is only linked statically, whose code splices run.
+haskell_library(
+    name = "gen",
+    srcs = {"SO.Gen": "SO/Gen.hs"},
+    packages = ["base"],
+    preferred_linkage = "static",
+    per_module = PER_MODULE,
+)
+
+# Another library that is only linked statically, whose code calls gen's.
+haskell_library(
+    name = "gen2",
+    srcs = {"SO.Gen2": "SO/Gen2.hs"},
+    packages = ["base"],
+    deps = [":gen"],
+    preferred_linkage = "static",
+    per_module = PER_MODULE,
+)
+
+# Binaries whose splices run gen2's code, and through it gen's, compiling
+# against their packages of each static style. They print the splice's
+# value.
+[
+    haskell_binary(
+        name = name,
+        srcs = {"Main": "Main.hs"},
+        packages = ["base", "template-haskell"],
+        deps = [":gen2"],
+        splice_depends = [":gen2"],
+        link_style = style,
+        per_module = PER_MODULE,
+    )
+    for name, style in [("static", "static"), ("static-pic", "static_pic")]
+]

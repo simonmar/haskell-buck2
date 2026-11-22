@@ -23,6 +23,7 @@ from harness import (
     find_compile,
     known_failure,
     module_of,
+    parse_conf,
     raw_dep_file,
     replace,
     tail,
@@ -188,16 +189,6 @@ def check_native_libraries_outside_worker(st):
     found = advice("haskell_modules_outside_worker", "//th-ffi-splice:th-ffi-splice")
     expected = {("U.V", "native_libraries"), ("U.W", "native_libraries")} if st.worker else set()
     expect_set("the modules of th-ffi-splice compiled outside the worker", {(f["module"], f["reason"]) for f in found["th-ffi-splice"]}, expected)
-
-
-def parse_conf(text):
-    fields, key = {}, None
-    for line in text.splitlines():
-        m = re.match(r"^([\w-]+):\s*(.*)$", line)
-        if m:
-            key = m.group(1)
-            fields[key] = [v.strip() for v in m.group(2).split(",") if v.strip()]
-    return fields
 
 
 def check_cross_package_dep_file(st):
