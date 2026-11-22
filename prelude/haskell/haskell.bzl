@@ -1299,7 +1299,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
             shared_libs,
             shared_library_infos,
         ),
-        haskell_haddock_lib(ctx, pkgname),
+        haskell_haddock_lib(ctx, pkgname, _native_libs(ctx)),
     ]
 
     if indexing_tsets:

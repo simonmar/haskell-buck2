@@ -146,16 +146,15 @@ def output_extensions(link_style: LinkStyle, profiled: bool) -> (str, str):
     else:
         return (osuf, hisuf)
 
-# The name of a 'variant', one way of building a target's code, such as "static-prof", 
-# followed by `extra`. 
+# The name of a 'variant', one way of building a target's code, such as "static-prof".
 #
 # Targets often build things in several variants, so the rules use the variant to distinguish 
 # the different actions and outputs:
 # - Actions: 'category' is something useful to match on like 'haskell_compile', the variant 
 #   (and any other context, like the module in per-module compilation) goes into 'identifier'
 # - Outputs: only have a path, so we build the path out of what it is and the variant
-def variant_name(link_style: LinkStyle, enable_profiling: bool, extra: str = "") -> str:
+def variant_name(link_style: LinkStyle, enable_profiling: bool) -> str:
     variant = link_style.value
     if enable_profiling:
         variant += "-prof"
-    return variant + extra
+    return variant

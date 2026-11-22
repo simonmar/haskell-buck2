@@ -12,6 +12,13 @@ haskell_library(
     per_module = PER_MODULE,
 )
 
+# The documentation of the library. Haddock runs P.Use's splice, which runs
+# P.Gen, as the compile does.
+haskell_haddock(
+    name = "docs",
+    deps = [":th-internal-splice"],
+)
+
 # Prints P.Use's use, in each build mode.
 haskell_binary(
     name = "use",
