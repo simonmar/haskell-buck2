@@ -24,6 +24,7 @@ from harness import (
     index_files,
     known_failure,
     module_of,
+    parse_conf,
     replace,
     short,
     tail,
@@ -222,6 +223,23 @@ def check_native_soname_for_splices(st):
         raise Skipped("macOS's libraries have no sonames")
     for c in COMPILES:
         expect_output(configured("//th-native-soname:show", c), "compiled {}".format(c), "5")
+
+
+def check_static_only_splices(st):
+    """Splices run the code of two libraries that are only linked
+    statically, gen2 and gen, which gen2 calls, from binaries linked with
+    either static style. The libraries' packages of both styles name their
+    shared libraries, so that GHC loads those rather than archives."""
+    for c in COMPILES:
+        for binary in ["static", "static-pic"]:
+            expect_output(configured("//th-static-only:" + binary, c), "compiled {}".format(c), "7")
+    for lib in ["gen", "gen2"]:
+        out = buck2("aquery", "all_actions(root//th-static-only:{})".format(lib), "--output-all-attributes").stdout
+        confs = {v.get("identifier"): v.get("contents", "") for v in json.loads(out).values() if v.get("kind") == "write"}
+        for style in ["static", "static_pic"]:
+            conf = parse_conf(confs.get("pkg-{}.conf".format(style), ""))
+            expect("{}'s {} package names its shared library (dynamic-library-dirs: {})".format(lib, style, conf.get("dynamic-library-dirs")),
+                   conf.get("dynamic-library-dirs") == ['"${pkgroot}/./lib-shared"'])
 
 
 @known_failure("with --make, a splice can't call its own target's C libraries")

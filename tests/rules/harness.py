@@ -252,6 +252,18 @@ def find_compile(actions, target, module):
 # --- Assertions ----------------------------------------------------------------
 
 
+def parse_conf(text):
+    """The fields of a package's .conf, each a list of its comma-separated
+    values."""
+    fields, key = {}, None
+    for line in text.splitlines():
+        m = re.match(r"^([\w-]+):\s*(.*)$", line)
+        if m:
+            key = m.group(1)
+            fields[key] = [v.strip() for v in m.group(2).split(",") if v.strip()]
+    return fields
+
+
 def expect_set(what, actual, expected):
     actual, expected = set(actual), set(expected)
     if actual != expected:
