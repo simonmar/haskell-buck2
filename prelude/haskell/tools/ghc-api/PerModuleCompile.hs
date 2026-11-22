@@ -40,9 +40,9 @@ main = handle failed $ do
   relay err
   code <- exitCode <$> waitForProcess p
   when (code /= 0) $ exitWith (ExitFailure code)
-  case dropWhile (/= "-ohi") (reqModuleArgs r) of
-    _ : hi : _ -> readInterface (reqLibdir r) hi >>= writeDepFiles r
-    _ -> hPutStrLn stderr "per_module_compile: the request names no interface file (-ohi)" >> exitWith (ExitFailure 2)
+  case moduleArg "-ohi" r of
+    Just hi -> readInterface (reqLibdir r) hi >>= writeDepFiles r
+    Nothing -> hPutStrLn stderr "per_module_compile: the request names no interface file (-ohi)" >> exitWith (ExitFailure 2)
 
 -- | Copy GHC's diagnostics to stderr as they come, bytes unchanged.
 relay :: Handle -> IO ()

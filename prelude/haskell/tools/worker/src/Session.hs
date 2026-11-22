@@ -31,9 +31,8 @@ import GHC.Unit.Module.Env (mkModuleEnv)
 import GHC.Driver.Monad (Ghc (..), Session (..))
 import GHC.Driver.Pipeline (compileOne)
 import qualified GHC.Data.EnumSet as EnumSet
-import GHC.Driver.Session (PackageDBFlag (..), PkgDbRef (..), fFlags, flagSpecName, globalPackageDatabasePath, hasNoDebugOutput, hasPprDebug, setUnsafeGlobalDynFlags, targetProfile, ways)
+import GHC.Driver.Session (PackageDBFlag (..), PkgDbRef (..), fFlags, flagSpecName, globalPackageDatabasePath, hasNoDebugOutput, hasPprDebug, setUnsafeGlobalDynFlags, ways)
 import GHC.Platform.Ways (Way (..))
-import GHC.Iface.Binary (CheckHiWay (..), TraceBinIFace (..), readBinIface)
 import GHC.Runtime.Interpreter (stopInterp)
 import GHC.Types.Error (MessageClass (..))
 import GHC.Types.SourceFile (HscSource (..))
@@ -56,8 +55,9 @@ import GHC.Utils.TmpFs (cleanCurrentModuleTempFiles, cleanTempDirs, cleanTempFil
 
 import Compat
 import DepFile (writeDepFiles)
+import Pragmas (optionsPragmas)
 import Imports (findImport, findModuleByName, importName, sourceImports, textualImports)
-import Interface (directDep, usages)
+import Interface (directDep, readInterfaceIn, usages)
 import Request
 
 -- | A GHC session, and what the worker keeps with it.
@@ -76,7 +76,6 @@ data GhcSession = GhcSession
 data SessionMode
   = AutoSessions -- one-shot for a target without boot files, and --make for a target with them
   | MakeSessions -- --make for every target
-  | OneShotSessions -- one-shot for every target, refusing one with boot files
 
 -- | What the sessions share, for the whole life of the worker.
 data Shared = Shared
@@ -135,7 +134,7 @@ newSession libdir files names shared mode r = do
     -- module graph without the boot interfaces, and a compile needs them
     -- in the graph to find the instances of the boot interfaces it imports.
     let srcs = filter (\f -> any (`isSuffixOf` f) [".hs", ".lhs"]) found
-    oneShot <- isOneShot mode (any (\f -> any (`isSuffixOf` f) [".hs-boot", ".lhs-boot"]) found)
+    let oneShot = isOneShot mode (any (\f -> any (`isSuffixOf` f) [".hs-boot", ".lhs-boot"]) found)
     -- Make the target's module graph with GHC's own dependency analysis of
     -- the source tree. If the analysis fails, the graph is left empty, and
     -- the compiles of the modules at fault report the errors.
@@ -170,16 +169,11 @@ newSession libdir files names shared mode r = do
         isDir <- doesDirectoryExist path
         if isDir then sources path else pure [path]
 
--- | Decide whether a session compiles in one-shot mode, from the session
--- mode and whether the session's target has boot files. In mode
--- OneShotSessions, a target with boot files is an error.
-isOneShot :: SessionMode -> Bool -> IO Bool
-isOneShot mode boots = case mode of
-  AutoSessions -> pure (not boots)
-  MakeSessions -> pure False
-  OneShotSessions
-    | boots -> throwGhcExceptionIO (CmdLineError "this target has hs-boot files, which one-shot sessions can't compile: set the worker's session mode to auto or make")
-    | otherwise -> pure True
+-- | Whether a session compiles in one-shot mode, from the session mode and
+-- whether the session's target has boot files.
+isOneShot :: SessionMode -> Bool -> Bool
+isOneShot AutoSessions boots = not boots
+isOneShot MakeSessions _ = False
 
 -- | Set the session's flags. If every package database that the flags name
 -- has been read already, the session is given the shared copies, so that
@@ -256,8 +250,8 @@ interfaceKey r dflags pragmas =
     -- Whether the flag's whole effect is among the general flags or the ways
     -- above. An -O flag sets the general flags of its level. GHC parses
     -- -fPIC apart from its other general flags, so fFlags doesn't name it.
-    -- (-fexternal-interpreter is a general flag too, but readingFlags has
-    -- left it out, and so does the key's set of general flags.)
+    -- (-fexternal-interpreter is a general flag too, so this drops it, and
+    -- the key's set of general flags leaves it out.)
     recorded f =
       f `elem` ["-dynamic", "-prof", "-debug", "-eventlog", "-fPIC", "-fno-PIC"]
         || (f == "-O" || ("-O" `isPrefixOf` f && all isDigit (drop 2 f)))
@@ -278,9 +272,9 @@ readingFlags flags = case flags of
     -- packages it may import, where the outputs go, how to link, and what
     -- to tell Haddock.
     withArgument = ["-this-unit-id", "-package", "-package-id", "-package-db", "-odir", "-hidir", "-dumpdir", "-pgml", "-haddock-opts"]
-    -- Flags that turn warnings off, choose the runtime system that a binary
-    -- is linked with, or run splices in an external interpreter.
-    alone = ["-w", "-threaded", "-fexternal-interpreter"]
+    -- Flags that turn warnings off, or choose the runtime system that a
+    -- binary is linked with.
+    alone = ["-w", "-threaded"]
     -- Flags with these prefixes say where sources and headers are, give
     -- options to the preprocessor, the C compiler and the linker, control
     -- warnings, language extensions and what GHC dumps, or set a binary's
@@ -293,7 +287,7 @@ readingFlags flags = case flags of
 pragmaFlags :: DynFlags -> ModSummary -> IO [String]
 pragmaFlags dflags ms = do
   buf <- maybe (hGetStringBuffer file) pure (ms_hspp_buf ms)
-  pure (optionsPragmas dflags buf file)
+  pure (map unLoc (optionsPragmas dflags buf file))
   where
     file = msHsFilePath ms
 
@@ -355,27 +349,24 @@ compileHeld s report r = do
   -- directories that the request's module flags give. The session's flags
   -- don't set these directories, so GHC would otherwise put the files next
   -- to the source.
-  withHie <- case dropWhile (/= "-hiedir") (reqModuleArgs r) of
-    _ : dir : _ -> do
+  withHie <- case moduleArg "-hiedir" r of
+    Just dir -> do
       let file = dir </> reqModPath r <.> (if reqBoot r then "hie-boot" else "hie")
       createDirectoryIfMissing True (takeDirectory file)
       pure ms0{ms_location = setLocationFile HieFile file (ms_location ms0)}
-    _ -> pure ms0
+    Nothing -> pure ms0
   -- Likewise, use the object and interface files that the request names.
   -- They are where GHC would put them anyway, given the module's name and
   -- the session's -odir and -hidir, except for a Main module whose file has
   -- another name.
-  let arg flag = case dropWhile (/= flag) (reqModuleArgs r) of
-        _ : v : _ -> Just v
-        _ -> Nothing
-      outputs = [(ObjFile, "-o"), (HiFile, "-ohi"), (DynObjFile, "-dyno"), (DynHiFile, "-dynohi")]
+  let outputs = [(ObjFile, "-o"), (HiFile, "-ohi"), (DynObjFile, "-dyno"), (DynHiFile, "-dynohi")]
       withOutputs =
         withHie
-          { ms_location = foldr (\(file, flag) loc -> maybe loc (\v -> setLocationFile file v loc) (arg flag)) (ms_location withHie) outputs
+          { ms_location = foldr (\(file, flag) loc -> maybe loc (\v -> setLocationFile file v loc) (moduleArg flag r)) (ms_location withHie) outputs
           }
-  let ms = case dropWhile (/= "-stubdir") (reqModuleArgs r) of
-        _ : dir : _ -> withOutputs{ms_hspp_opts = (ms_hspp_opts withOutputs){stubDir = Just dir}}
-        _ -> withOutputs
+  let ms = case moduleArg "-stubdir" r of
+        Just dir -> withOutputs{ms_hspp_opts = (ms_hspp_opts withOutputs){stubDir = Just dir}}
+        Nothing -> withOutputs
   -- The compile reads interfaces into the external package state for its
   -- flags, including those of its module's pragmas. The entries of a
   -- --make compile's home package table are cached by the same key (see
@@ -387,9 +378,9 @@ compileHeld s report r = do
   -- its home package table is empty. It must be a new empty table for each
   -- compile, because from GHC 9.14 compileOne adds the module it has
   -- compiled to the table. Its module graph is the one `ghc -c` would have.
-  (hsc, below) <-
+  (hsc, boots) <-
     if gsOneShot s
-      then (\e -> (e, Below Set.empty Set.empty)) <$> (emptyHome keyed >>= (`withOneShotModuleGraph` ms))
+      then (\e -> (e, Set.empty)) <$> (emptyHome keyed >>= (`withOneShotModuleGraph` ms))
       else homeView s r key (hscSetFlags (ms_hspp_opts ms) keyed) ms
   -- The compile's own temporary files (its assembly code, for example) are
   -- removed when it finishes. The temporary files that must last as long as
@@ -400,13 +391,13 @@ compileHeld s report r = do
   hmi <- compileOne hsc{hsc_tmpfs = tmpfs, hsc_logger = logger} ms 1 1 Nothing emptyHomeModInfoLinkable
     `finally` (cleanCurrentModuleTempFiles (hsc_logger hsc) tmpfs >> mergeTmpFsInto tmpfs (hsc_tmpfs hsc))
   let n = (ms_mod_name ms, if reqBoot r then IsBoot else NotBoot)
-  unless (gsOneShot s) $ modifyMVar_ (gsHomes s) (pure . compiled key n below hmi)
+  unless (gsOneShot s) $ modifyMVar_ (gsHomes s) (pure . compiled key n boots hmi)
   -- The dep file comes from the usages that the interface records. When
   -- GHC compiles its primitive module, GHC.Internal.Prim, it writes the
   -- module's interface to disk, but returns its built-in interface for the
   -- module, which records no usages. In that case, the worker reads the
   -- interface that GHC wrote, as the compile tool does for every module.
-  iface <- if isJust (usages (hm_iface hmi)) then pure (hm_iface hmi) else readIface hsc (ml_hi_file (ms_location ms))
+  iface <- if isJust (usages (hm_iface hmi)) then pure (hm_iface hmi) else readInterfaceIn hsc (ml_hi_file (ms_location ms))
   writeDepFiles r iface
   pure n
   where
@@ -426,24 +417,24 @@ type Node = (ModuleName, IsBootInterface)
 --   from the session's own compile of the node.
 -- - hEntries: the home package table entries made from those interfaces.
 --   An entry is keyed by the 'interfaceKey' of the compiles it was made for,
---   its node, and the set of boot interfaces below it. It is stored with
---   the set of nodes below it, so that it can be dropped when one of those
---   nodes is compiled again.
+--   its node, and the set of boot interfaces below it.
+--
+-- Nothing here goes stale: the worker lives for one build, in which each
+-- module is compiled once, so no interface is replaced after entries have
+-- been made from it.
 data Homes = Homes
   { hIfaces :: M.Map Node (ModIface, HomeModLinkable)
-  , hEntries :: M.Map ([String], Node, Set.Set ModuleName) (HomeModInfo, Set.Set Node)
+  , hEntries :: M.Map ([String], Node, Set.Set ModuleName) HomeModInfo
   }
 
 -- | Record a module that the session has just compiled, with the
--- 'interfaceKey' of the compile and what was below the module in the
--- compile's view. The module's interface and home package table entry
--- replace those from any earlier compile of it. The entries of the modules
--- above it are dropped, since they were made from its old interface.
-compiled :: [String] -> Node -> Below -> HomeModInfo -> Homes -> Homes
-compiled key n below hmi h =
+-- 'interfaceKey' of the compile and the boot interfaces below the module in
+-- the compile's view.
+compiled :: [String] -> Node -> Set.Set ModuleName -> HomeModInfo -> Homes -> Homes
+compiled key n boots hmi h =
   Homes
     { hIfaces = M.insert n (hm_iface hmi, hm_linkable hmi) (hIfaces h)
-    , hEntries = M.insert (key, n, bootsBelow below) (hmi, nodesBelow below) (M.filterWithKey (\(_, m, _) (_, nodes) -> m /= n && not (n `Set.member` nodes)) (hEntries h))
+    , hEntries = M.insert (key, n, boots) hmi (hEntries h)
     }
 
 -- | Give the environment the home package table that the compile of the
@@ -452,9 +443,9 @@ compiled key n below hmi h =
 -- the 'interfaceKey' of those flags. The table holds the home modules below
 -- the module's imports, each in the form that `ghc -c` would see (the whole
 -- module, or its boot interface), and the module's own boot interface if it
--- has one. It also returns what is below the module's imports, for
--- 'compiled'.
-homeView :: GhcSession -> Request -> [String] -> HscEnv -> ModSummary -> IO (HscEnv, Below)
+-- has one. It also returns the boot interfaces below the module's imports,
+-- for 'compiled'.
+homeView :: GhcSession -> Request -> [String] -> HscEnv -> ModSummary -> IO (HscEnv, Set.Set ModuleName)
 homeView s r key hsc ms = modifyMVar (gsHomes s) $ \homes0 -> do
   let unit = homeUnitId (hsc_home_unit hsc)
       own = ms_mod_name ms
@@ -509,7 +500,7 @@ homeView s r key hsc ms = modifyMVar (gsHomes s) $ \homes0 -> do
       ownBootNode = [(own, IsBoot) | ownBoot]
   env0 <- emptyHome hsc
   (homes3, env, below) <- foldM (addScc key graph ownBootNode withKnot) (homes2, env0, M.empty) (stronglyConnComp [(n, n, deps) | (n, deps) <- M.toList graph])
-  pure (homes3, (withKnot env, Below (Set.unions [bootsBelow (below M.! n) | n <- roots]) (Set.unions [nodesBelow (below M.! n) | n <- roots])))
+  pure (homes3, (withKnot env, Set.unions [bootsBelow (below M.! n) | n <- roots]))
 
 -- | What is below a node in a compile's view of the home modules, including
 -- the node itself: the modules seen as boot interfaces, and all the nodes.
@@ -533,23 +524,20 @@ addScc key graph ownBoot withKnot (h, env, below) scc = do
       selfBelow m = Below (Set.fromList [fst m | snd m == IsBoot] <> bootsBelow under) (Set.fromList members <> nodesBelow under)
       below' = foldr (\m -> M.insert m (selfBelow m)) below members
       aboveOwnBoot = any (`Set.member` nodesBelow under) ownBoot
-  case mapM (\m -> fst <$> M.lookup (key, m, bootsBelow under) (hEntries h)) members of
-    _ | aboveOwnBoot -> do
-      (env', _) <- addHomes (withKnot env) [hIfaces h M.! m | m <- members]
-      pure (h, env'{hsc_type_env_vars = hsc_type_env_vars env}, below')
+      -- Entries above the compile's own boot interface are typechecked with
+      -- the compile's knot, and the entry for the boot interface itself is
+      -- made in the compile's table (see Note [The compile's own boot
+      -- interface]). Neither is cached for other compiles.
+      cacheable = not aboveOwnBoot && members /= ownBoot
+      cachedEntries = if cacheable then mapM (\m -> M.lookup (key, m, bootsBelow under) (hEntries h)) members else Nothing
+  case cachedEntries of
     Just hmis -> do
       env' <- foldM (\e (m, hmi) -> insertHome e (fst m) hmi) env (zip members hmis)
       pure (h, env', below')
-    -- The entry for the compile's own boot interface is made in the
-    -- compile's table, but isn't cached for other compiles (see Note [The
-    -- compile's own boot interface]).
-    Nothing | members == ownBoot -> do
-      (env', _) <- addHomes env [hIfaces h M.! m | m <- members]
-      pure (h, env', below')
     Nothing -> do
-      (env', hmis) <- addHomes env [hIfaces h M.! m | m <- members]
-      let entries = foldr (\(m, hmi) -> M.insert (key, m, bootsBelow under) (hmi, nodesBelow under <> Set.fromList members)) (hEntries h) (zip members hmis)
-      pure (h{hEntries = entries}, env', below')
+      (env', hmis) <- addHomes (if aboveOwnBoot then withKnot env else env) [hIfaces h M.! m | m <- members]
+      let entries = if cacheable then foldr (\(m, hmi) -> M.insert (key, m, bootsBelow under) hmi) (hEntries h) (zip members hmis) else hEntries h
+      pure (h{hEntries = entries}, env'{hsc_type_env_vars = hsc_type_env_vars env}, below')
 
 -- | Read the node's interface and object from disk into 'hIfaces', unless
 -- they are there already.
@@ -561,13 +549,10 @@ ifaceOf hsc h n
       case found of
         Found loc0 m -> do
           let loc = if snd n == IsBoot then addBootSuffixLocn loc0 else loc0
-          iface <- readIface hsc (ml_hi_file loc)
+          iface <- readInterfaceIn hsc (ml_hi_file loc)
           obj <- if snd n == IsBoot then pure Nothing else findObjectLinkableMaybe m loc
           pure h{hIfaces = M.insert n (iface, emptyHomeModInfoLinkable{homeMod_object = obj}) (hIfaces h)}
         _ -> throwGhcExceptionIO (ProgramError ("buck2-ghc-worker: no interface for home module " ++ moduleNameString (fst n)))
-
-readIface :: HscEnv -> FilePath -> IO ModIface
-readIface hsc = readBinIface (targetProfile (hsc_dflags hsc)) (hsc_NC hsc) IgnoreHiWay QuietBinIFace
 
 -- | Like `try`, except that asynchronous exceptions (a cancelled request,
 -- or the worker ending) are rethrown rather than caught.
@@ -649,10 +634,8 @@ no home package table, and its compiles write exactly what `ghc -c` writes.
 
 This is the worker's default session mode, `auto`. The session mode is set
 by BUCK2_GHC_WORKER_SESSION_MODE. Mode `make` uses --make sessions for every
-target, which turns the sharing off. Mode `one-shot` uses one-shot sessions
-for every target, and refuses targets with boot files. The tests use both
-of these modes, so that each kind of session is tested on every target it
-can compile.
+target, which turns the sharing off. The tests use both modes, so that each
+kind of session is tested on every target it can compile.
 
 3. What the shared state keeps alive
 

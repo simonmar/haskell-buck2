@@ -15,7 +15,6 @@ module Compat
   , insertHome
   , addHomes
   , interpreterLock
-  , optionsPragmas
   , useUnitDbs
   , unitDbsRead
   , LocationFile (..)
@@ -62,12 +61,9 @@ import GHC.Unit.External.Index (cacheExternalUnitDatabase, readExternalUnitDatab
 import GHC.Unit.Env (HomeUnitEnv (..), ue_currentUnit, ue_unit_dbs, ue_updateHomeUnitEnv)
 #endif
 import GHC.Types.Error (isEmptyMessages)
-import GHC.Data.StringBuffer (StringBuffer)
-import GHC.Parser.Header (getOptions)
 #if MIN_VERSION_ghc(9,14,0)
 import GHC.Types.Error (mkUnknownDiagnostic)
 import GHC.Driver.Downsweep (downsweepThunk)
-import GHC.Driver.Config.Parser (initParserOpts, supportedLanguagePragmas)
 import GHC.Driver.Env (hscUpdateHPT, hsc_HPT, setModuleGraph)
 import GHC.Unit.Home.PackageTable (addHomeModInfoToHpt, emptyHomePackageTable)
 import Control.Monad (forM)
@@ -76,7 +72,6 @@ import GHC.Types.SourceError (initSourceErrorContext)
 #endif
 #else
 import GHC.Driver.Env (hscUpdateHPT, hsc_mod_graph)
-import GHC.Driver.Config.Parser (initParserOpts)
 import GHC.Unit.Home.ModInfo (addListToHpt, addToHpt, emptyHomePackageTable)
 import System.IO (fixIO)
 #endif
@@ -200,20 +195,6 @@ interpreterLock _ = pure Nothing
 #else
 interpreterLock :: DynFlags -> IO (Maybe (MVar ()))
 interpreterLock dflags = if gopt Opt_ExternalInterpreter dflags then Just <$> newMVar () else pure Nothing
-#endif
-
--- | Read the flags that the OPTIONS_GHC and LANGUAGE pragmas at the head of
--- a module's source give, parsing the source with the given flags. The file
--- name is only used in GHC's messages. (From GHC 9.14, the parser also needs
--- the list of supported extensions, and from GHC 10.0 the context in which
--- to report errors.)
-optionsPragmas :: DynFlags -> StringBuffer -> FilePath -> [String]
-#if MIN_VERSION_ghc(10,0,0)
-optionsPragmas dflags buf file = map unLoc (snd (getOptions (initParserOpts dflags) (initSourceErrorContext dflags) (supportedLanguagePragmas dflags) buf file))
-#elif MIN_VERSION_ghc(9,14,0)
-optionsPragmas dflags buf file = map unLoc (snd (getOptions (initParserOpts dflags) (supportedLanguagePragmas dflags) buf file))
-#else
-optionsPragmas dflags buf file = map unLoc (snd (getOptions (initParserOpts dflags) buf file))
 #endif
 
 -- | Give a new session's unit environment the package databases that the

@@ -76,7 +76,7 @@ _WORKER_MODULES = ["Compat", "Grpc", "Proto", "Session", "Worker"]
 
 # The modules that the worker shares with the tools of the per-module
 # compiles. worker/src has symlinks to them in prelude//haskell/tools/ghc-api.
-_WORKER_SHARED_MODULES = ["Contract", "DepFile", "Imports", "Interface", "Request"]
+_WORKER_SHARED_MODULES = ["Contract", "DepFile", "Imports", "Interface", "Pragmas", "Request"]
 
 def per_module_worker_srcs() -> dict[str, str]:
     """The `srcs` of a haskell_binary() that builds the worker, keyed by
@@ -158,8 +158,6 @@ def per_module_worker_sessions() -> str:
 #   read. The other targets get sessions in GHC's --make mode.
 # - make. Every target gets a --make session, which reads its interfaces
 #   for itself.
-# - one-shot. Every target gets a one-shot session, and the compiles of a
-#   target with hs-boot files fail.
 #
 # See Note [One-shot sessions] in prelude/haskell/tools/worker/src/Session.hs.
 def per_module_worker_session_mode() -> str:

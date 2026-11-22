@@ -615,7 +615,9 @@ workerBuild cfg h b mods lastOk libSeen stats = do
   -- Each build overwrites the worker's log, so after a failure the log of
   -- the failing build is left to look at.
   logH <- openFile (wdir </> "worker.log") WriteMode
-  let mode = if cOneShot cfg then "one-shot" else "make"
+  -- A one-shot history has no boot files, so auto gives every target a
+  -- one-shot session.
+  let mode = if cOneShot cfg then "auto" else "make"
   withWorkerProcess (cWorker cfg) [] wdir ([("TMPDIR", wdir </> "tmp"), ("BUCK2_GHC_WORKER_VERBOSE", "1"), ("BUCK2_GHC_WORKER_SESSION_MODE", mode)] ++ [("BUCK2_GHC_WORKER_SESSIONS", "0") | bEagerDrop b]) (UseHandle logH) $ \sock -> do
       skippedRef <- newIORef []
       -- p's library is linked at most once in each build, by the first

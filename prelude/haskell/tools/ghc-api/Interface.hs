@@ -3,6 +3,7 @@
 -- each GHC version (9.6 to 10.1) keeps it.
 module Interface
   ( readInterface
+  , readInterfaceIn
   , abiHash
   , usages
   , usageFile
@@ -13,7 +14,7 @@ module Interface
 import Control.Monad.IO.Class (liftIO)
 
 import GHC (getSession, runGhc)
-import GHC.Driver.Env (hsc_NC, hsc_dflags)
+import GHC.Driver.Env (HscEnv, hsc_NC, hsc_dflags)
 import GHC.Driver.Session (targetProfile)
 import GHC.Iface.Binary (CheckHiWay (..), TraceBinIFace (..), readBinIface)
 import GHC.Unit.Module.Deps (Usage (..))
@@ -33,7 +34,11 @@ import GHC.Utils.Fingerprint (Fingerprint)
 readInterface :: FilePath -> FilePath -> IO ModIface
 readInterface libdir path = runGhc (Just libdir) $ do
   hsc <- getSession
-  liftIO (readBinIface (targetProfile (hsc_dflags hsc)) (hsc_NC hsc) IgnoreHiWay QuietBinIFace path)
+  liftIO (readInterfaceIn hsc path)
+
+-- | Read the interface file, with the session's flags and name cache.
+readInterfaceIn :: HscEnv -> FilePath -> IO ModIface
+readInterfaceIn hsc = readBinIface (targetProfile (hsc_dflags hsc)) (hsc_NC hsc) IgnoreHiWay QuietBinIFace
 
 -- | The interface's ABI hash and usages. From GHC 9.14 an interface may
 -- record no usages (-fno-write-if-self-recomp).
