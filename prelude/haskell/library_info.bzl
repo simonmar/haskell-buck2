@@ -43,8 +43,8 @@ HaskellLibraryInfo = record(
     db = Artifact,
     # e.g. "base-4.13.0.0"
     id = str,
-    # The directories that hold the library's interfaces. A profiled library
-    # also has those of the non-profiled build it is registered with.
+    # The directories that hold the library's interfaces, and those of its
+    # splice variant (see Note [Link styles and profiling] in haskell.bzl).
     import_dirs = list[Artifact],
     stub_dirs = list[Artifact],
     # This field is only used as hidden inputs to compilation, to
