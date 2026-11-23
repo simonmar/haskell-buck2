@@ -289,9 +289,12 @@ def write(path, text):
 # --- What the checks share -------------------------------------------------------
 
 class State:
-    def __init__(self, bazel_remote=None, eli=False, worker=False, external_interpreter=False):
+    def __init__(self, bazel_remote=None, eli=False, worker=False, external_interpreter=False, haddock_reads_interfaces=False):
         self.bazel_remote = bazel_remote
         self.eli = eli
+        # Whether haddock can read docs from interfaces (--no-compilation),
+        # which it can from GHC 9.12.
+        self.haddock_reads_interfaces = haddock_reads_interfaces
         self.worker = worker
         self.external_interpreter = external_interpreter
         self.targets = MAIN_TARGETS + (ELI_TARGETS if eli else [])

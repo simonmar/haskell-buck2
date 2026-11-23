@@ -21,6 +21,7 @@ import traceback
 from both_ways import (
     check_configurations,
     check_data_dirs,
+    check_haddock,
     check_discovered_module,
     check_external_interpreter_native_splices,
     check_external_interpreter_prof_library,
@@ -155,6 +156,7 @@ CHECKS = [
     check_own_native_libraries_per_module,
     check_configurations,
     check_data_dirs,
+    check_haddock,
     check_test_build_tools,
     check_haddock_build_tools,
     check_data_files,
@@ -180,7 +182,7 @@ def main():
     if unknown:
         ap.error("no such check: " + " ".join(sorted(unknown)))
     major, minor = (int(x) for x in args.ghc_version.split(".")[:2])
-    st = State(bazel_remote=args.bazel_remote, eli=(major, minor) >= (9, 14), worker=args.worker, external_interpreter=args.external_interpreter)
+    st = State(bazel_remote=args.bazel_remote, eli=(major, minor) >= (9, 14), worker=args.worker, external_interpreter=args.external_interpreter, haddock_reads_interfaces=(major, minor) >= (9, 12))
     failed = []
     for check in CHECKS:
         name = check.__name__[len("check_"):]
