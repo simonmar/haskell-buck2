@@ -297,7 +297,7 @@ def _assembleSolution(ctx, linkStyle, result):
 
         ctx.output.ensure_multiple(hli.stub_dirs)
         ctx.output.ensure_multiple(hli.libs)
-        ctx.output.ensure_multiple(hli.import_dirs.values())
+        ctx.output.ensure_multiple(hli.import_dirs)
         package_dbs[hli.db] = ()
     for pkgdb in ctx.output.ensure_multiple(package_dbs.keys()):
         flags.append("-package-db")

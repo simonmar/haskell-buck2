@@ -246,7 +246,7 @@ def haskell_prebuilt_library_impl(ctx: AnalysisContext) -> list[Provider]:
         hlibinfo = HaskellLibraryInfo(
             name = ctx.attrs.name,
             db = ctx.attrs.db,
-            import_dirs = {},
+            import_dirs = [],
             stub_dirs = [],
             id = ctx.attrs.id,
             libs = libs,
@@ -257,7 +257,7 @@ def haskell_prebuilt_library_impl(ctx: AnalysisContext) -> list[Provider]:
         prof_hlibinfo = HaskellLibraryInfo(
             name = ctx.attrs.name,
             db = ctx.attrs.db,
-            import_dirs = {},
+            import_dirs = [],
             stub_dirs = [],
             id = ctx.attrs.id,
             libs = prof_libs,
@@ -435,8 +435,8 @@ def _make_package(
     pkgname: str,
     libname: str,
     hlis: list[HaskellLibraryInfo],
-    hi: dict[bool, Artifact],
-    lib: dict[bool, Artifact],
+    hi: list[Artifact],
+    lib: list[Artifact],
     enable_profiling: bool,
     # The directory, relative to the target's outputs, that the interfaces are
     # written to (see import_dir on CompileResultInfo). 
@@ -495,8 +495,8 @@ def _make_package(
     if early:
         import_dirs = cmd_args('"${pkgroot}/' + import_dir + '"')
     else:
-        import_dirs = cmd_args([pkgroot_path(d) for d in hi.values()], delimiter = ", ")
-    library_dirs = cmd_args([pkgroot_path(l, parent = 1) for l in lib.values()], delimiter = ", ")
+        import_dirs = cmd_args([pkgroot_path(d) for d in hi], delimiter = ", ")
+    library_dirs = cmd_args([pkgroot_path(l, parent = 1) for l in lib], delimiter = ", ")
 
     # Reexports are identified by the unit ID they come from, and are sorted
     # by module name to match Cabal's behaviour.
@@ -566,7 +566,7 @@ def _make_package(
                 haskell_toolchain.packager,
             ],
             # needs hi, because ghc-pkg checks that the .hi files exist
-            hidden = [] if early else hi.values() if library_less else hi.values() + lib.values() + ([own_shared_lib] if own_shared_lib != None else []),
+            hidden = [] if early else hi if library_less else hi + lib + ([own_shared_lib] if own_shared_lib != None else []),
         ),
         category = "haskell_package",
         identifier = db_variant,
@@ -807,25 +807,16 @@ def _build_haskell_lib(
         if not non_profiling_hlib:
             fail("Non-profiling HaskellLibBuildOutput wasn't provided when building profiling lib")
 
-        import_artifacts = {
-            True: compiled.hi,
-            False: non_profiling_hlib.compiled.hi,
-        }
+        import_artifacts = [compiled.hi, non_profiling_hlib.compiled.hi]
         # Only the profiled library: GHC's internal interpreter finds the
         # non-profiled one through dynamic-library-dirs (own_shared_lib).
         # Listing both can confuse a profiled external interpreter.
-        library_artifacts = {
-            True: lib,
-        }
+        library_artifacts = [lib]
         all_libs = libs + non_profiling_hlib.libs
         stub_dirs = [compiled.stubs] + [non_profiling_hlib.compiled.stubs]
     else:
-        import_artifacts = {
-            False: compiled.hi,
-        }
-        library_artifacts = {
-            False: lib,
-        }
+        import_artifacts = [compiled.hi]
+        library_artifacts = [lib]
         all_libs = libs
         stub_dirs = [compiled.stubs]
 
@@ -899,8 +890,8 @@ def _build_haskell_lib(
             pkgname,
             libname,
             uniq_infos,
-            {False: compiled.hi},
-            {False: shared_lib},
+            [compiled.hi],
+            [shared_lib],
             enable_profiling = False,
             import_dir = compiled.import_dir,
             all_hlis = all_hlis,
@@ -909,7 +900,7 @@ def _build_haskell_lib(
             name = pkgname,
             db = shared_db,
             id = pkgname,
-            import_dirs = {False: compiled.hi},
+            import_dirs = [compiled.hi],
             stub_dirs = [compiled.stubs],
             libs = [shared_lib],
             native_libs = native_libs,
@@ -917,7 +908,7 @@ def _build_haskell_lib(
             version = ctx.attrs.package_version or "1.0.0",
             is_prebuilt = False,
             profiling_enabled = False,
-            **_per_module_fields(ctx, LinkStyle("shared"), pkgname, libname, uniq_infos, compiled, all_hlis = all_hlis, shared_of_dynamic_too = True, hi = {False: compiled.hi}, below = below)
+            **_per_module_fields(ctx, LinkStyle("shared"), pkgname, libname, uniq_infos, compiled, all_hlis = all_hlis, shared_of_dynamic_too = True, hi = [compiled.hi], below = below)
         )
         shared_output = HaskellLibBuildOutput(
             hlib = shared_hlib,
@@ -988,20 +979,20 @@ def _per_module_fields(
         enable_profiling: bool = False,
         all_hlis: list[HaskellLibraryInfo] = [],
         shared_of_dynamic_too: bool = False,
-        hi: dict[bool, Artifact] = {},
+        hi: list[Artifact] = [],
         below: [TransitiveSet, None] = None) -> dict:
     if compiled.modules == None:
         # Built with --make: the library-less db its per-module dependents
         # compile against, and its dependencies.
         return {
             "below": below,
-            "early_db": _make_package(ctx, link_style, pkgname, libname, hlis, hi, {}, enable_profiling = enable_profiling, import_dir = compiled.import_dir, all_hlis = all_hlis, library_less = True),
+            "early_db": _make_package(ctx, link_style, pkgname, libname, hlis, hi, [], enable_profiling = enable_profiling, import_dir = compiled.import_dir, all_hlis = all_hlis, library_less = True),
         }
     modules = compiled.modules
     if shared_of_dynamic_too:
         modules = {m: HaskellModuleFiles(hi = files.dyn_hi, abi = files.abi) for m, files in modules.items()}
     return {
-        "early_db": _make_package(ctx, link_style, pkgname, libname, hlis, {}, {}, enable_profiling = enable_profiling, import_dir = compiled.import_dir, all_hlis = all_hlis, early = True),
+        "early_db": _make_package(ctx, link_style, pkgname, libname, hlis, [], [], enable_profiling = enable_profiling, import_dir = compiled.import_dir, all_hlis = all_hlis, early = True),
         "modules": modules,
         "closures": compiled.closures,
     }

@@ -108,10 +108,10 @@ def _package_dbs(libs: list, final: dict[str, bool], below_make: dict[str, bool]
                 # A library built with --make depends on this one, and its
                 # interfaces refer to this one's: see Note [Compiling against
                 # dependencies module by module].
-                packagedb_args.add(import_dirs_tag.tag_artifacts(cmd_args(hidden = list(lib.import_dirs.values()))))
+                packagedb_args.add(import_dirs_tag.tag_artifacts(cmd_args(hidden = lib.import_dirs)))
             continue
         packagedb_set[lib.early_db if library_less else lib.db] = None
-        import_dirs = list(lib.import_dirs.values())
+        import_dirs = lib.import_dirs
         local_import_dirs += [(lib.name, d) for d in import_dirs if not d.is_source]
         # The interfaces are tagged, so that a compile's dep file can list
         # the ones it read. The libraries that a Template Haskell module
