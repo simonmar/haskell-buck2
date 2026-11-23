@@ -1,4 +1,4 @@
-load("@third-party-haskell//:tools.bzl", "CC", "CC_FINGERPRINT", "CC_TYPE", "CXX", "GHC", "GHC_DYNAMIC", "GHC_FINGERPRINT", "GHC_PKG", "HADDOCK", "HSC2HS", "LINKER")
+load("@third-party-haskell//:tools.bzl", "CC", "CC_FINGERPRINT", "CC_TYPE", "CXX", "GHC", "GHC_DYNAMIC", "GHC_FINGERPRINT", "GHC_PKG", "GHC_VERSION", "HADDOCK", "HSC2HS", "LINKER")
 load("@prelude//haskell:per_module_worker.bzl", "toolchain_per_module_worker")
 load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
 load("@prelude//toolchains:cxx.bzl", "system_cxx_toolchain")
@@ -41,6 +41,7 @@ def default_haskell_toolchain(name, **kwargs):
     # GHC_DYNAMIC is what `ghc --info` says of the configured GHC
     # (`("GHC Dynamic", ...)`), so it follows a change of GHC too.
     kwargs.setdefault("dynamic_ghc", GHC_DYNAMIC)
+    kwargs.setdefault("ghc_version", GHC_VERSION)
     # Under asan, GHC's own process needs the ASAN runtime already loaded
     # before Template Haskell dlopen's an asan-instrumented dependency
     # mid-compile (confirmed empirically - see buck2/prelude/haskell/

@@ -324,7 +324,7 @@ def _splice_objects(ctx: AnalysisContext, out_dir: str, nodes: list, o_of: dict,
 # of the rules reports the mismatch rather than misreading the request. When
 # either the request or the worker's outputs change, bump this and the
 # version in tools/ghc-api/Contract.hs.
-_WORKER_CONTRACT = "4"
+_WORKER_CONTRACT = "5"
 
 # The dynamic output of a per-module compile. It runs once the deps tool has
 # written the module graph. It registers a compile action for each node,
@@ -777,7 +777,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     # the dep file. Instead, every module's compile has all of them as plain
     # inputs, as the --make compile does.
     other_srcs = [src for _, src in srcs_to_pairs(ctx.attrs.srcs) if not is_haskell_src(src) and not src.short_path.endswith(_BOOT)]
-    ghc_args = cmd_args(cmd_flags, file_flags, hidden = other_srcs)
+    # -fforce-recomp, because with per-module buck2 is deciding when a module compiles, 
+    # we don't ever want GHC to reuse compilation results (see Note [Early cut-off by dep files]). 
+    ghc_args = cmd_args(cmd_flags, file_flags, "-fforce-recomp", hidden = other_srcs)
     base_cmd = cmd_args(haskell_toolchain.compiler, ghc_args)
     env = ghc_env(ctx, prefix + "build-tool-depends")
 

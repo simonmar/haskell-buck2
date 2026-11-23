@@ -82,6 +82,9 @@ HaskellToolchainInfo = provider(
         # (not shell-evaluated).
         "link_env": provider_field(typing.Any, default = {}),
         "dynamic_ghc": provider_field(bool, default = True),
+        # The version of `compiler`, such as "9.12.2", so that the rules can
+        # use the flags that it supports.
+        "ghc_version": provider_field(str),
         # A file that holds the libdir of `compiler`, as print_libdir writes
         # it. Targets that compile per-module need it.
         "libdir": provider_field(Artifact | None, default = None),

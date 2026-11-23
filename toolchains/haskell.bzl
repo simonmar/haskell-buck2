@@ -24,6 +24,7 @@ def _haskell_toolchain_impl(ctx):
             compile_env = ctx.attrs.compile_env,
             link_env = ctx.attrs.link_env,
             dynamic_ghc = ctx.attrs.dynamic_ghc,
+            ghc_version = ctx.attrs.ghc_version,
             libdir = print_libdir(ctx.actions, "libdir", compiler, ctx.attrs.compile_env),
             # The WorkerInfo is made once, here, so that every target names
             # the same worker. buck2 starts a process for each distinct
@@ -70,6 +71,9 @@ haskell_toolchain = rule(
         # code needs to be compiled. It can be found by running `ghc
         # --info`: look for the "GHC Dynamic" value.
         "dynamic_ghc": attrs.bool(default = True),
+        # The version of the `compiler` above, as `ghc --numeric-version`
+        # prints it (see HaskellToolchainInfo).
+        "ghc_version": attrs.string(),
         # See HaskellToolchainInfo.
         "per_module_worker": attrs.enum(["builtin", "none"], default = "builtin"),
         "per_module_worker_rts_options": attrs.list(attrs.string(), default = per_module_worker_rts_options()),
