@@ -405,12 +405,11 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             tools_envs[key] = tools_env(actions, s.compile_env, {t: tools[t] for t in names}, prefix + "build-tools/" + str(len(tools_envs)))
         return tools_envs[key]
 
-    # The package flags of a module with explicit level imports (see Note
-    # [Explicit level imports]). 
-    #
-    # Of the target's normal splice dependencies, the module gets the final dbs of
-    # those whose modules it imports at the splice level (and their
-    # closures). For other local dependencies it gets library-less dbs .
+    # The package flags of each module that has explicit level imports (see
+    # Note [Explicit level imports]). Of the target's splice dependencies,
+    # the module gets the final dbs of the ones whose modules it imports at
+    # the splice level, and of their closures. For its other local
+    # dependencies, it gets library-less dbs.
     narrowed_splice_packages = {}
 
     # A splice can run code of any prebuilt package, since all their
@@ -786,8 +785,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     # the dep file. Instead, every module's compile has all of them as plain
     # inputs, as the --make compile does.
     other_srcs = [src for _, src in srcs_to_pairs(ctx.attrs.srcs) if not is_haskell_src(src) and not src.short_path.endswith(_BOOT)]
-    # -fforce-recomp, because with per-module buck2 is deciding when a module compiles, 
-    # we don't ever want GHC to reuse compilation results (see Note [Early cut-off by dep files]). 
+    # With per_module, buck2 decides when a module compiles, so GHC must
+    # never reuse an earlier result. -fforce-recomp stops it from doing that
+    # (see Note [Early cut-off by dep files]).
     ghc_args = cmd_args(cmd_flags, file_flags, "-fforce-recomp", hidden = other_srcs)
     base_cmd = cmd_args(haskell_toolchain.compiler, ghc_args)
     env = ghc_env(ctx, prefix + "build-tool-depends")

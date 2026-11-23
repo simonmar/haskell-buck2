@@ -148,11 +148,15 @@ def output_extensions(link_style: LinkStyle, profiled: bool) -> (str, str):
 
 # The name of a 'variant', one way of building a target's code, such as "static-prof".
 #
-# Targets often build things in several variants, so the rules use the variant to distinguish 
-# the different actions and outputs:
-# - Actions: 'category' is something useful to match on like 'haskell_compile', the variant 
-#   (and any other context, like the module in per-module compilation) goes into 'identifier'
-# - Outputs: only have a path, so we build the path out of what it is and the variant
+# A target often builds the same thing in several variants, so the rules
+# use the variant to tell the actions and outputs apart.
+#
+# - An action's category says what kind of action it is, such as
+#   'haskell_compile', which is useful to match on. The variant goes in the
+#   action's identifier, along with any other context, such as the module
+#   of a per-module compile.
+# - An output only has a path, so its path is made from what the output is
+#   and the variant.
 def variant_name(link_style: LinkStyle, enable_profiling: bool) -> str:
     variant = link_style.value
     if enable_profiling:
