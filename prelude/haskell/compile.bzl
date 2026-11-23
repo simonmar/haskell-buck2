@@ -92,16 +92,14 @@ def _package_flag(toolchain: HaskellToolchainInfo) -> str:
     else:
         return "-package"
 
-# For a given target, this gives the names of the libraries which may be used 
-# by the target's Template Haskell splices. 
+# The names of the libraries whose code the target's Template Haskell
+# splices may run. These are the dependencies that splice_depends lists,
+# the dependencies that are neither local nor prebuilt Haskell libraries,
+# and the closures of both.
 #
-# That is: the dependencies that splice_depends lists; the
-# dependencies that are neither local nor prebuilt Haskell libraries; and
-# the closures of both. 
-#
-# A compile action gets the final dbs and the libraries of
-# these, as opposed to other dependencies where it only gets interfaces. That means
-# that we must wait for these dependencies to be linked.
+# A compile action gets the final dbs and the linked libraries of these
+# dependencies. For its other dependencies it only gets the interfaces. So
+# the compile has to wait until these dependencies are linked.
 #
 # The closures are included because a
 # library's code needs the libraries it was linked against.
@@ -148,16 +146,15 @@ def splice_dep_infos(ctx: AnalysisContext, link_style: LinkStyle, enable_profili
             named[lib.name] = info
     return struct(base = base, listed = named)
 
-# Given a compilation action whose splices may load the libraries in `finalDbs` (see
-# target_splice_libraries), should it compile against `lib`'s library-less db, or 
-# does it need the full db?
-#
-# If `finalDbs` is None that means that the splices may load every library.
+# Whether a compile action can use `lib`'s library-less db, rather than its
+# full db. The action's splices may load the libraries in `finalDbs` (see
+# target_splice_libraries). If `finalDbs` is None, the splices may load
+# every library, so every library needs its full db.
 def uses_library_less_db(lib, finalDbs: [dict[str, bool], None]) -> bool:
     return finalDbs != None and lib.early_db != None and lib.name not in finalDbs
 
-# The `final` argument, names the libraries whose final dbs and libraries
-# the compile uses (see target_splice_libraries()). 
+# The `final` argument names the libraries whose final dbs and linked
+# libraries the compile uses (see target_splice_libraries).
 def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_version: bool, enable_profiling: bool, final: [dict[str, bool], None] = None) -> PackagesInfo:
     # Collect library dependencies. Note that these don't need to be in a
     # particular order.
@@ -574,9 +571,11 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
 
     return result
 
-# The environment for splices in a compilation action. That is: the libraries 
-# in `final` (see target_splice_libraries), the native libraries of those and of the target
-# (`native_libs`), and their data dirs (see splice_data_dirs).
+# What the splices need in an action that runs GHC on all the target's
+# modules at once, such as the --make compile or haddock. This is the set of
+# libraries that the splices may run (`final`, see target_splice_libraries),
+# the native libraries of those libraries and of the target (`native_libs`),
+# and the data dirs that the splices may read (see splice_data_dirs).
 def target_splice_env(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, native_libs: SharedLibraryInfo):
     final = target_splice_libraries(ctx, link_style, enable_profiling)
     return struct(
@@ -585,15 +584,18 @@ def target_splice_env(ctx: AnalysisContext, link_style: LinkStyle, enable_profil
         data_dirs = splice_data_dirs(ctx, link_style, enable_profiling, final),
     )
 
-# Run `cmd`, a GHC program, with its splice environment (`splices`, from target_splice_env) 
-# and the target's build tools (see ghc_env). First the shell runs `steps`, shell
-# commands which take `step_args` from the front of the positional parameters and
-# shift them off. `variant` is the action's identifier (see variant_name), and
-# `name` names the directories it makes, unique among the target's run_ghc
-# actions.
+# Run `cmd`, a GHC program, with what its splices need (`splices`, from
+# target_splice_env) and with the target's build tools (see ghc_env).
 #
-# The action does not clean up its outputs, as we sometimes want GHC to reuse them; set `-fforce-recomp` 
-# if you don't want that. 
+# Before `cmd`, the shell runs `steps`, which are shell commands. They take
+# `step_args` from the front of the positional parameters and shift them
+# off. `variant` is the action's identifier (see variant_name). `name` names
+# the directories that the action makes, and has to be unique among the
+# target's run_ghc actions.
+#
+# The action doesn't clean up its outputs before it runs, because GHC can
+# sometimes reuse them. Pass -fforce-recomp in `cmd` to stop GHC from doing
+# that.
 def run_ghc(ctx: AnalysisContext, cmd: cmd_args, splices, variant: str, name: str, steps: str, step_args: list, category: str):
     env = ghc_env(ctx, "build-tool-depends-" + name)
     native_dir = native_libs_tree(ctx, "native-libs-" + name, splices.native_libs)
