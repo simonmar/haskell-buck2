@@ -54,6 +54,7 @@ CompileResultInfo = record(
     hi = field(Artifact),
     stubs = field(Artifact),
     producing_indices = field(bool),
+    import_dir = field(str),
     # These are only set when the target is compiled per-module:
     modules = field(dict[str, HaskellModuleFiles] | None, None),
     closures = field(typing.Any, None),
@@ -526,9 +527,11 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
 
     splices = target_splice_env(ctx, link_style, enable_profiling, native_libs)
     args = compile_args(ctx, link_style, enable_profiling, pkgname, dynamic_too = dynamic_too, final = splices.final)
+    import_dir = "hi-" + args.variant
     result = CompileResultInfo(
         objects = ctx.actions.declare_output("objects-" + args.variant, dir = True, has_content_based_path = False),
-        hi = ctx.actions.declare_output("hi-" + args.variant, dir = True, has_content_based_path = False),
+        hi = ctx.actions.declare_output(import_dir, dir = True, has_content_based_path = False),
+        import_dir = import_dir,
         stubs = ctx.actions.declare_output("stubs-" + args.variant, dir = True, has_content_based_path = False),
         producing_indices = get_producing_indices(ctx),
     )

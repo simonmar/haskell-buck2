@@ -66,7 +66,6 @@ load(
     "advice_validations",
     "compile_per_module",
     "compiles_per_module",
-    "per_module_out_dir",
 )
 load(
     "@prelude//haskell:haskell_haddock.bzl",
@@ -439,6 +438,9 @@ def _make_package(
     hi: dict[bool, Artifact],
     lib: dict[bool, Artifact],
     enable_profiling: bool,
+    # The directory, relative to the target's outputs, that the interfaces are
+    # written to (see import_dir on CompileResultInfo). 
+    import_dir: str,
     # This same target's own "shared" variant (built alongside any other
     # link style whenever Linkage allows it - see haskell_library_impl).
     # Referenced here (for non-shared link styles) via `dynamic-library-dirs:`
@@ -455,12 +457,6 @@ def _make_package(
     # package the module is defined in may be one that the dependency re-exports it
     # from, and ghc-pkg has to find it.
     all_hlis: list[HaskellLibraryInfo] = [],
-    # Only used for an early db (see `early`): the link style of the compile
-    # whose output directory the interfaces are written to, if it isn't
-    # link_style. This is needed for the "shared" package of a library
-    # compiled with -dynamic-too. There is no separate shared compile: the
-    # static compile writes the .dyn_hi files, into its own output directory.
-    hi_link_style: [LinkStyle, None] = None,
     # See HaskellLibraryInfo.early_db
     early: bool = False,
     library_less: bool = False,
@@ -484,12 +480,20 @@ def _make_package(
     def pkgroot_path(artifact: Artifact, parent: int = 0) -> cmd_args:
         return cmd_args(artifact, parent = parent, relative_to = (db, 1), format = '"${pkgroot}/{}"')
 
+    # An early db mustn't depend on the target's interfaces. It is registered
+    # before any of the target's modules compile, so that a dependent's module
+    # can compile as soon as the interfaces it imports exist. So it refers to 
+    # the directory that the interfaces are written to by its path (`import_dir`),
+    # rather than by an artifact.
+    #
+    # It also has to use only that one directory, because GHC's dependency
+    # analysis accepts interfaces that don't exist yet _only_ when a package has
+    # a single import directory.
+    #
+    # Every other db names its interfaces using the `hi` artifacts, which is
+    # a lot simpler. 
     if early:
-        # The directory the interfaces will be written to, which doesn't
-        # exist yet. Only this one: GHC's dependency analysis accepts
-        # interfaces that don't exist yet only when a package has a single
-        # import directory.
-        import_dirs = cmd_args('"${pkgroot}/' + per_module_out_dir(ctx, hi_link_style or link_style, enable_profiling) + '"')
+        import_dirs = cmd_args('"${pkgroot}/' + import_dir + '"')
     else:
         import_dirs = cmd_args([pkgroot_path(d) for d in hi.values()], delimiter = ", ")
     library_dirs = cmd_args([pkgroot_path(l, parent = 1) for l in lib.values()], delimiter = ", ")
@@ -898,6 +902,7 @@ def _build_haskell_lib(
             {False: compiled.hi},
             {False: shared_lib},
             enable_profiling = False,
+            import_dir = compiled.import_dir,
             all_hlis = all_hlis,
         )
         shared_hlib = HaskellLibraryInfo(
@@ -912,7 +917,7 @@ def _build_haskell_lib(
             version = ctx.attrs.package_version or "1.0.0",
             is_prebuilt = False,
             profiling_enabled = False,
-            **_per_module_fields(ctx, LinkStyle("shared"), pkgname, libname, uniq_infos, compiled, hi_link_style = link_style, all_hlis = all_hlis, shared_of_dynamic_too = True, hi = {False: compiled.hi}, below = below)
+            **_per_module_fields(ctx, LinkStyle("shared"), pkgname, libname, uniq_infos, compiled, all_hlis = all_hlis, shared_of_dynamic_too = True, hi = {False: compiled.hi}, below = below)
         )
         shared_output = HaskellLibBuildOutput(
             hlib = shared_hlib,
@@ -931,6 +936,7 @@ def _build_haskell_lib(
         import_artifacts,
         library_artifacts,
         enable_profiling = enable_profiling,
+        import_dir = compiled.import_dir,
         own_shared_lib = own_shared_lib,
         all_hlis = all_hlis,
     )
@@ -980,7 +986,6 @@ def _per_module_fields(
         hlis: list[HaskellLibraryInfo],
         compiled: CompileResultInfo,
         enable_profiling: bool = False,
-        hi_link_style: [LinkStyle, None] = None,
         all_hlis: list[HaskellLibraryInfo] = [],
         shared_of_dynamic_too: bool = False,
         hi: dict[bool, Artifact] = {},
@@ -990,13 +995,13 @@ def _per_module_fields(
         # compile against, and its dependencies.
         return {
             "below": below,
-            "early_db": _make_package(ctx, link_style, pkgname, libname, hlis, hi, {}, enable_profiling = enable_profiling, hi_link_style = hi_link_style, all_hlis = all_hlis, library_less = True),
+            "early_db": _make_package(ctx, link_style, pkgname, libname, hlis, hi, {}, enable_profiling = enable_profiling, import_dir = compiled.import_dir, all_hlis = all_hlis, library_less = True),
         }
     modules = compiled.modules
     if shared_of_dynamic_too:
         modules = {m: HaskellModuleFiles(hi = files.dyn_hi, abi = files.abi) for m, files in modules.items()}
     return {
-        "early_db": _make_package(ctx, link_style, pkgname, libname, hlis, {}, {}, enable_profiling = enable_profiling, hi_link_style = hi_link_style, all_hlis = all_hlis, early = True),
+        "early_db": _make_package(ctx, link_style, pkgname, libname, hlis, {}, {}, enable_profiling = enable_profiling, import_dir = compiled.import_dir, all_hlis = all_hlis, early = True),
         "modules": modules,
         "closures": compiled.closures,
     }

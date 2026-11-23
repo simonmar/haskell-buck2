@@ -939,7 +939,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
         artifacts = all_outputs,
         outputs = [a.as_output() for a in all_outputs],
     ))
-    return CompileResultInfo(objects = objects, hi = hi, stubs = stubs, producing_indices = producing_indices, modules = modules, closures = closures, advice = advice, dynamic_objects = dynamic_objects)
+    return CompileResultInfo(objects = objects, hi = hi, stubs = stubs, producing_indices = producing_indices, modules = modules, closures = closures, import_dir = out_dir, advice = advice, dynamic_objects = dynamic_objects)
 
 # Note [Advice]
 #
