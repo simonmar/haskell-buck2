@@ -298,9 +298,10 @@ def _declare_module_outputs(ctx: AnalysisContext, out_dir: str, nodes: list, osu
 # For each node, the object that a splice loads to run that module's code
 # (see Note [Template Haskell modules], section 6).
 #
-# GHC looks for a dynamic object as <module>.dyn_o in the output directory,
-# so a profiled compile links the non-profiled compile's (`dynamic_from`)
-# there, as compile() copies them for --make.
+# GHC looks for a module's dynamic object as <module>.dyn_o in the output
+# directory. A profiled compile makes no dynamic objects, so it puts links
+# there to the dynamic objects of the non-profiled compile, `dynamic_from`.
+# compile() copies the same objects in for --make.
 def _splice_objects(ctx: AnalysisContext, out_dir: str, nodes: list, o_of: dict, dynamic_objects: dict, enable_profiling: bool, dynamic_from: [CompileResultInfo, None]) -> dict:
     kind = splice_objects_kind(ctx, enable_profiling)
     if kind == "own":
@@ -1272,52 +1273,60 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #
 # 6. Splices that run the target's own modules
 #
-# A splice can run code of the target's own modules, as with --make. GHC
-# loads their objects from the output directory, so a Template Haskell
-# module's compile action has to have the objects of its module closure as tagged
-# inputs. Its dep file lists the ones that were actually loaded by a splice
-# (see Note [Early cut-off by dep files]).
+# A splice can run code of the target's own modules, as it can with --make.
+# GHC loads the objects of those modules from the output directory. So the
+# compile action of a Template Haskell module has the objects of all the
+# modules in its closure as tagged inputs. Its dep file lists only the
+# objects that a splice actually loaded (see Note [Early cut-off by dep
+# files]).
 #
-# GHC also loads the libraries that those modules use, even when the splice
-# only reads a value from one of them, because it links whole modules and
-# their imports. So splice_depends has to list those libraries too, as it
-# does with --make.
+# When GHC loads one of the target's modules, it also loads the libraries
+# that the module uses. It does this even when the splice only reads a
+# value from one of those libraries, because GHC links whole modules along
+# with their imports. So splice_depends has to list those libraries too,
+# as it does with --make.
 #
-# Which objects are actually needed depends on the interpreter, as with --make (see
-# _splice_objects). GHC's internal interpreter, in a dynamically linked GHC,
-# loads dynamic objects: a shared compile's own objects, or the .dyn_o files
-# of a static compile with -dynamic-too. A profiled compile has none of these, so
-# the interpreter instead takes the objects from the non-profiled compile,
-# as compile() does for --make. With -fexternal-interpreter, the interpreter is
-# built the same way as the compile, so it loads the compile's own objects.
+# Which objects GHC loads depends on the interpreter that runs the splice,
+# as it does with --make (see _splice_objects):
 #
-# A static compilation makes dynamic objects only with -dynamic-too. The rules
-# set this for a library that is also linked shared. So with GHC's internal
-# interpreter, such a splice fails in a static compile of a library that is
-# _only_ linked statically, or of a binary (in the opt mode, say). Such a
-# splice similarly fails in a profiled compilation, since the non-profiled
-# compile it would take dynamic objects from doesn't produce any. --make gets
-# around this by having GHC add -dynamic-too for the modules that are needed by
-# splices. We could do this for per-module compilations, but we don't yet.
+# - The internal interpreter of a dynamically linked GHC loads dynamic
+#   objects. A shared compile's own objects are dynamic. A static compile
+#   makes dynamic objects, its .dyn_o files, only with -dynamic-too.
+# - A profiled compile makes no dynamic objects. So the internal
+#   interpreter loads the dynamic objects of the non-profiled compile
+#   instead, which compile() also arranges for --make.
+# - With -fexternal-interpreter, the interpreter is built in the same way
+#   as the compile, so it loads the objects that the compile makes itself.
 #
-# A splice can't call the target's own native libraries. That isn't supported
-# with --make either.
+# The rules only add -dynamic-too to the static compile of a library that
+# is also linked shared. So with GHC's internal interpreter, a splice that
+# runs the target's own code fails in two cases. The first is a static
+# compile of a library that is only linked statically, or of a binary, as
+# in opt mode. The second is a profiled compile whose non-profiled compile
+# makes no dynamic objects either. --make avoids this, because GHC adds
+# -dynamic-too itself for the modules that splices need. Per-module
+# compiles could do the same, but they don't yet.
+#
+# A splice can't call the target's own native libraries. That isn't
+# supported with --make either.
 #
 # 7. Modules behind boot files
 #
-# Say the Template Haskell module T imports A, and A imports B with
-# {-# SOURCE #-}. T's closure has A and B's boot file, but not B itself,
-# which may not be compiled yet. If a splice in T runs A's code, it may
-# reach B's code, and then GHC has to link B. B's object isn't an input of
-# T's compile, so a splice can't run code of a module that T reaches only
-# through boot files. GHC _may_ still find B's object in the output
-# directory, left by an earlier build, but we don't even want that to happen.
+# Say that the Template Haskell module T imports A, and that A imports B
+# with {-# SOURCE #-}. T's closure has A and B's boot file, but not B
+# itself, because B may not be compiled yet. If a splice in T runs A's
+# code, that code may call B's, and then GHC has to link B. But B's object
+# isn't an input of T's compile. So with per_module, a splice can't run
+# code of a module that T reaches only through boot files. GHC might still
+# find B's object in the output directory, left there by an earlier build,
+# but then T's compile would depend on a file that buck2 doesn't know
+# about. So the compile fails if a splice loaded such an object (see
+# DepFile in tools/ghc-api).
 #
-# At the moment we don't support this kind of thing with per_module.
-#
-# In the persistent worker, such a splice can fail even when T also imports
-# B normally. T's session sees B the way T's imports record it, and if one
-# of them records only B's boot interface, GHC's linker won't load B.
+# In the persistent worker, a splice like this can fail even when T also
+# imports B normally. T's session sees B in the way that T's imports record
+# it, and if one of those imports records only B's boot interface, GHC's
+# linker won't load B.
 #
 # 8. Finding the Template Haskell modules
 #
