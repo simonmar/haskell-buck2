@@ -34,7 +34,7 @@ load(
 load(
     "@prelude//haskell:util.bzl",
     "attr_deps",
-    "get_artifact_suffix",
+    "variant_name",
     "haskell_library_unit_id",
     "is_haskell_src",
     "module_name_to_file",
@@ -155,7 +155,7 @@ def _node_file(node: str, ext: str) -> str:
 # and profiling (static, shared, profiled and so on). The modules' own
 # outputs are in a subdirectory of it (see per_module_out_dir).
 def per_module_dir(link_style: LinkStyle, enable_profiling: bool) -> str:
-    return "per-module-" + get_artifact_suffix(link_style, enable_profiling) + "/"
+    return "per-module-" + variant_name(link_style, enable_profiling) + "/"
 
 # The directory, relative to the target's outputs, where the target's
 # modules write their objects and interfaces, for one combination of link
@@ -355,7 +355,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     hi = s.hi
     stubs = s.stubs
     prefix = s.prefix
-    suffix = s.suffix
+    variant = s.variant
     osuf = s.osuf
     hisuf = s.hisuf
     tag = s.tag
@@ -561,15 +561,16 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         needs_data = len(module_data_dirs) > 0
         needs_native = runs_th[n] and splice_native_libs_dir != None
         script = in_env(env_with(module_tools), cmd_args(compile_script))
-        category = "haskell_compile_module_" + suffix.replace("-", "_")
+        category = "haskell_compile"
+        identifier = variant + "/" + n
         in_worker = worker_info != None and not module_tools and not needs_data and not needs_native
         if worker_info != None and not in_worker:
             outside_worker[n] = struct(tools = module_tools, data_dirs = needs_data, native_libraries = needs_native)
         # For allow_dep_file_cache_upload, see Note [Early cut-off by dep files], section 5.
         if in_worker:
-            actions.run(request, exe = WorkerRunInfo(worker = worker_info, exe = script), category = category, identifier = n, dep_files = {"hs": tag}, allow_dep_file_cache_upload = True)
+            actions.run(request, exe = WorkerRunInfo(worker = worker_info, exe = script), category = category, identifier = identifier, dep_files = {"hs": tag}, allow_dep_file_cache_upload = True)
         else:
-            actions.run(cmd_args(script, request), category = category, identifier = n, dep_files = {"hs": tag}, allow_dep_file_cache_upload = True)
+            actions.run(cmd_args(script, request), category = category, identifier = identifier, dep_files = {"hs": tag}, allow_dep_file_cache_upload = True)
 
     obj_map = {}
     hi_map = {}
@@ -712,7 +713,7 @@ def compiles_per_module(ctx: AnalysisContext) -> bool:
 # _splice_objects).
 def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, native_libs: SharedLibraryInfo = EMPTY_SHARED_LIBRARY_INFO, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None) -> CompileResultInfo:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
-    suffix = get_artifact_suffix(link_style, enable_profiling)
+    variant = variant_name(link_style, enable_profiling)
     osuf, hisuf = output_extensions(link_style, enable_profiling)
     prefix = per_module_dir(link_style, enable_profiling)
 
@@ -816,9 +817,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     dyn_hi_of = module_outputs.dyn_hi
     dynamic_objects = o_of if link_style == LinkStyle("shared") else dyn_o_of
     splice_objects = _splice_objects(ctx, out_dir, nodes, o_of, dynamic_objects, enable_profiling, dynamic_from)
-    objects = ctx.actions.declare_output("objects-" + suffix, dir = True, has_content_based_path = False)
-    hi = ctx.actions.declare_output("hi-" + suffix, dir = True, has_content_based_path = False)
-    stubs = ctx.actions.declare_output("stubs-" + suffix, dir = True, has_content_based_path = False)
+    objects = ctx.actions.declare_output("objects-" + variant, dir = True, has_content_based_path = False)
+    hi = ctx.actions.declare_output("hi-" + variant, dir = True, has_content_based_path = False)
+    stubs = ctx.actions.declare_output("stubs-" + variant, dir = True, has_content_based_path = False)
     producing_indices = get_producing_indices(ctx)
 
     # The libdir of the GHC that compiles the target. The tools need it to
@@ -855,7 +856,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             # of, so we add a dependency on it
             hidden = haskell_toolchain.compiler,
         )),
-        category = "haskell_deps_" + suffix.replace("-", "_"),
+        category = "haskell_deps",
+        identifier = variant,
     )
 
     # The output directory of each dependency compiled per-module, where the
@@ -909,7 +911,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             hi = hi,
             stubs = stubs,
             prefix = prefix,
-            suffix = suffix,
+            variant = variant,
             osuf = osuf,
             hisuf = hisuf,
             tag = tag,

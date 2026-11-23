@@ -96,7 +96,7 @@ load(
     "attr_deps_haskell_link_infos_sans_template_deps",
     "attr_deps_merged_link_infos",
     "attr_deps_shared_library_infos",
-    "get_artifact_suffix",
+    "variant_name",
     "haskell_library_name",
     "haskell_library_unit_id",
     "is_haskell_src",
@@ -465,8 +465,8 @@ def _make_package(
     early: bool = False,
     library_less: bool = False,
 ) -> Artifact:
-    artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
-    db_suffix = ("early-" if early else "nolib-" if library_less else "") + artifact_suffix
+    variant = variant_name(link_style, enable_profiling)
+    db_variant = ("early-" if early else "nolib-" if library_less else "") + variant
 
     # Don't expose boot sources, as they're only meant to be used for compiling.
     modules = [x for x, src in srcs_to_pairs(ctx.attrs.srcs) if is_haskell_src(src)]
@@ -476,7 +476,7 @@ def _make_package(
         # following this logic (https://fburl.com/code/3gmobm5x) and will fail.
         libname += "_p"
 
-    db = ctx.actions.declare_output("db-" + db_suffix, has_content_based_path = False)
+    db = ctx.actions.declare_output("db-" + db_variant, has_content_based_path = False)
 
     # The package names the directories of the interfaces and libraries it
     # was given, wherever they are, by their paths relative to ${pkgroot}: the
@@ -523,7 +523,7 @@ def _make_package(
         ]
         if own_shared_lib != None:
             conf.append(cmd_args("dynamic-library-dirs: ", pkgroot_path(own_shared_lib, parent = 1), delimiter = ""))
-    pkg_conf = ctx.actions.write("pkg-" + db_suffix + ".conf", conf, has_content_based_path = False)
+    pkg_conf = ctx.actions.write("pkg-" + db_variant + ".conf", conf, has_content_based_path = False)
 
     # While the list of hlis is unique, there may be multiple packages in the same db.
     # Cutting down the GHC_PACKAGE_PATH significantly speeds up GHC.
@@ -564,7 +564,8 @@ def _make_package(
             # needs hi, because ghc-pkg checks that the .hi files exist
             hidden = [] if early else hi.values() if library_less else hi.values() + lib.values() + ([own_shared_lib] if own_shared_lib != None else []),
         ),
-        category = "haskell_package_" + db_suffix.replace("-", "_"),
+        category = "haskell_package",
+        identifier = db_variant,
         env = {"GHC_PACKAGE_PATH": ghc_package_path} if db_deps else {},
     )
 
@@ -616,7 +617,8 @@ def _link_haskell_shared_lib(
         lib_short_path: str,
         objfiles,
         hidden,
-        category: str) -> (Artifact, LinkedObject, LinkInfos):
+        # Which of the library's links this is, such as "shared".
+        identifier: str) -> (Artifact, LinkedObject, LinkInfos):
     lib = ctx.actions.declare_output(lib_short_path, has_content_based_path = False)
     link = cmd_args(
         [haskell_toolchain.linker]
@@ -654,7 +656,8 @@ def _link_haskell_shared_lib(
     link.add(cmd_args(unpack_link_args(infos), format = "-optl={}"))
     ctx.actions.run(
         link,
-        category = category,
+        category = "haskell_link",
+        identifier = identifier,
         env = haskell_toolchain.link_env,
     )
 
@@ -740,7 +743,7 @@ def _build_haskell_lib(
         dynamic_from = non_profiling_shared_compiled if enable_profiling else None,
     )
     solibs = {}
-    artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
+    variant = variant_name(link_style, enable_profiling)
 
     libstem = libname
     if link_style == LinkStyle("static_pic"):
@@ -750,7 +753,7 @@ def _build_haskell_lib(
     static_lib_suffix = "_p.a" if enable_profiling else ".a"
     libfile = "lib" + libstem + (dynamic_lib_suffix if link_style == LinkStyle("shared") else static_lib_suffix)
 
-    lib_short_path = paths.join("lib-{}".format(artifact_suffix), libfile)
+    lib_short_path = paths.join("lib-{}".format(variant), libfile)
 
     linfos = [x.prof_info if enable_profiling else x.info for x in hlis]
 
@@ -771,7 +774,7 @@ def _build_haskell_lib(
             lib_short_path,
             objfiles,
             compiled.stubs,
-            "haskell_link" + artifact_suffix.replace("-", "_"),
+            variant,
         )
         solibs[_soname(ctx, libfile)] = solib
         libs = [lib]
@@ -865,7 +868,7 @@ def _build_haskell_lib(
             shared_lib_short_path,
             dyn_objfiles,
             compiled.stubs,
-            "haskell_link_shared_derived",
+            "shared",
         )
         own_shared_lib = shared_lib
         if libstem != libname:

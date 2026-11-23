@@ -146,10 +146,16 @@ def output_extensions(link_style: LinkStyle, profiled: bool) -> (str, str):
     else:
         return (osuf, hisuf)
 
-# Single place to build the suffix used in artifacts (e.g. package directories,
-# lib names) considering attributes like link style and profiling.
-def get_artifact_suffix(link_style: LinkStyle, enable_profiling: bool, suffix: str = "") -> str:
-    artifact_suffix = link_style.value
+# The name of a 'variant', one way of building a target's code, such as "static-prof", 
+# followed by `extra`. 
+#
+# Targets often build things in several variants, so the rules use the variant to distinguish 
+# the different actions and outputs:
+# - Actions: 'category' is something useful to match on like 'haskell_compile', the variant 
+#   (and any other context, like the module in per-module compilation) goes into 'identifier'
+# - Outputs: only have a path, so we build the path out of what it is and the variant
+def variant_name(link_style: LinkStyle, enable_profiling: bool, extra: str = "") -> str:
+    variant = link_style.value
     if enable_profiling:
-        artifact_suffix += "-prof"
-    return artifact_suffix + suffix
+        variant += "-prof"
+    return variant + extra

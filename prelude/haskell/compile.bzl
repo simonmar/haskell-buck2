@@ -29,7 +29,7 @@ load(
     "attr_deps",
     "attr_deps_haskell_lib_infos",
     "attr_deps_haskell_link_infos",
-    "get_artifact_suffix",
+    "variant_name",
     "is_haskell_src",
     "output_extensions",
     "srcs_to_pairs",
@@ -327,18 +327,18 @@ def get_producing_indices(ctx: AnalysisContext) -> bool:
     toolchain_flags = ctx.attrs._haskell_toolchain[HaskellToolchainInfo].compiler_flags or []
     return "-fwrite-ide-info" in toolchain_flags + ctx.attrs.compiler_flags
 
-def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname = None, suffix: str = "", dynamic_too: bool = False, final: [dict[str, bool], None] = None) -> CompileArgsInfo:
+def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname = None, extra_variant: str = "", dynamic_too: bool = False, final: [dict[str, bool], None] = None) -> CompileArgsInfo:
     compile_cmd, compile_args = ghc_flags(ctx, link_style, enable_profiling, pkgname, dynamic_too)
 
-    artifact_suffix = get_artifact_suffix(link_style, enable_profiling, suffix)
+    variant = variant_name(link_style, enable_profiling, extra_variant)
 
     objects = ctx.actions.declare_output(
-        "objects-" + artifact_suffix,
+        "objects-" + variant,
         dir = True,
         has_content_based_path = False,
     )
-    hi = ctx.actions.declare_output("hi-" + artifact_suffix, dir = True, has_content_based_path = False)
-    stubs = ctx.actions.declare_output("stubs-" + artifact_suffix, dir = True, has_content_based_path = False)
+    hi = ctx.actions.declare_output("hi-" + variant, dir = True, has_content_based_path = False)
+    stubs = ctx.actions.declare_output("stubs-" + variant, dir = True, has_content_based_path = False)
 
     compile_args.add(
         "-odir",
@@ -523,7 +523,7 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
     # The native libraries of the libraries that the splices may load.
     native_dir = native_libs_tree(
         ctx,
-        "native-libs-" + get_artifact_suffix(link_style, enable_profiling),
+        "native-libs-" + variant_name(link_style, enable_profiling),
         [native_libs] + [lib.native_libs for lib in dependency_libs(ctx, link_style, enable_profiling).traverse() if lib.name in final],
     )
 
@@ -531,21 +531,22 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
         result = args.result
         ctx.actions.run(
             cmd_args("mkdir", "-p", result.objects.as_output(), result.hi.as_output(), result.stubs.as_output()),
-            category = "haskell_compile_" + get_artifact_suffix(link_style, enable_profiling).replace("-", "_"),
+            category = "haskell_compile",
+            identifier = variant_name(link_style, enable_profiling),
         )
         return result
 
     compile_cmd.add(args.args_for_cmd)
     compile_cmd.add(cmd_args(hidden = [native_dir] if native_dir != None else []))
 
-    artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
+    variant = variant_name(link_style, enable_profiling)
 
     if args.args_for_file:
         if haskell_toolchain.use_argsfile:
             compile_cmd.add(
                 at_argfile(
                     actions = ctx.actions,
-                    name = artifact_suffix + ".haskell_compile_argsfile",
+                    name = "args-" + variant + ".haskell_compile_argsfile",
                     args = [args.args_for_file, args.srcs],
                     allow_args = True,
                 )
@@ -554,9 +555,9 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
             compile_cmd.add(args.args_for_file)
             compile_cmd.add(args.srcs)
 
-    artifact_suffix = get_artifact_suffix(link_style, enable_profiling)
+    variant = variant_name(link_style, enable_profiling)
 
-    env = ghc_env(ctx, artifact_suffix + "-build-tool-depends")
+    env = ghc_env(ctx, "build-tool-depends-" + variant)
     steps = "set -eu; " + _MAKE_STUBDIR
     step_args = [args.result.stubs.as_output()]
     if dynamic_from != None and splice_objects_kind(ctx, enable_profiling) == "from_non_profiled":
@@ -565,7 +566,8 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
 
     ctx.actions.run(
         in_env(struct(script = env.script + steps, args = env.args + step_args), compile_cmd),
-        category = "haskell_compile_" + artifact_suffix.replace("-", "_"),
+        category = "haskell_compile",
+        identifier = variant,
         # Keep the previous run's -odir/-hidir so that `ghc --make` can do its
         # own recompilation checking and only rebuild the modules whose
         # sources or imported interfaces changed, rather than the whole
