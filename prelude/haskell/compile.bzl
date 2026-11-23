@@ -73,10 +73,11 @@ CompileResultInfo = record(
 )
 
 CompileArgsInfo = record(
-    result = field(CompileResultInfo),
     srcs = field(cmd_args),
     args_for_cmd = field(cmd_args),
     args_for_file = field(cmd_args),
+    # The compile's variant (see variant_name).
+    variant = field(str),
 )
 
 PackagesInfo = record(
@@ -147,6 +148,14 @@ def splice_dep_infos(ctx: AnalysisContext, link_style: LinkStyle, enable_profili
             named[lib.name] = info
     return struct(base = base, listed = named)
 
+# Given a compilation action whose splices may load the libraries in `finalDbs` (see
+# target_splice_libraries), should it compile against `lib`'s library-less db, or 
+# does it need the full db?
+#
+# If `finalDbs` is None that means that the splices may load every library.
+def uses_library_less_db(lib, finalDbs: [dict[str, bool], None]) -> bool:
+    return finalDbs != None and lib.early_db != None and lib.name not in finalDbs
+
 # The `final` argument, names the libraries whose final dbs and libraries
 # the compile uses (see target_splice_libraries()). 
 def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_version: bool, enable_profiling: bool, final: [dict[str, bool], None] = None) -> PackagesInfo:
@@ -160,7 +169,7 @@ def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_v
     packagedb_set = {}
 
     for lib in libs.traverse():
-        if final != None and lib.early_db != None and lib.name not in final:
+        if uses_library_less_db(lib, final):
             # A library compiled per-module has no library-less db of its
             # own. Its early db names the directory of its modules'
             # interfaces, which are inputs one by one.
@@ -327,29 +336,8 @@ def get_producing_indices(ctx: AnalysisContext) -> bool:
     toolchain_flags = ctx.attrs._haskell_toolchain[HaskellToolchainInfo].compiler_flags or []
     return "-fwrite-ide-info" in toolchain_flags + ctx.attrs.compiler_flags
 
-def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname = None, extra_variant: str = "", dynamic_too: bool = False, final: [dict[str, bool], None] = None) -> CompileArgsInfo:
+def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname = None, dynamic_too: bool = False, final: [dict[str, bool], None] = None) -> CompileArgsInfo:
     compile_cmd, compile_args = ghc_flags(ctx, link_style, enable_profiling, pkgname, dynamic_too)
-
-    variant = variant_name(link_style, enable_profiling, extra_variant)
-
-    objects = ctx.actions.declare_output(
-        "objects-" + variant,
-        dir = True,
-        has_content_based_path = False,
-    )
-    hi = ctx.actions.declare_output("hi-" + variant, dir = True, has_content_based_path = False)
-    stubs = ctx.actions.declare_output("stubs-" + variant, dir = True, has_content_based_path = False)
-
-    compile_args.add(
-        "-odir",
-        objects.as_output(),
-        "-hidir",
-        hi.as_output(),
-        "-hiedir",
-        hi.as_output(),
-        "-stubdir",
-        stubs.as_output(),
-    )
 
     # Add -package-db and -package/-expose-package flags for each Haskell
     # library dependency.
@@ -379,15 +367,10 @@ def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: 
     )
 
     return CompileArgsInfo(
-        result = CompileResultInfo(
-            objects = objects,
-            hi = hi,
-            stubs = stubs,
-            producing_indices = get_producing_indices(ctx),
-        ),
         srcs = srcs,
         args_for_cmd = compile_cmd,
         args_for_file = compile_args,
+        variant = variant_name(link_style, enable_profiling),
     )
 
 # Shell steps that run before `ghc --make`, in the same shell as the
@@ -432,15 +415,24 @@ def paths_data_dirs(modules, data_dirs: dict[str, Artifact]) -> dict[str, Artifa
 def own_data_dirs(ctx: AnalysisContext) -> dict[str, Artifact]:
     return paths_data_dirs([m for m, _ in srcs_to_pairs(ctx.attrs.srcs)], data_dirs_env(ctx))
 
-# The data dirs to set for a compile whose splices can run code from the
-# libraries in `final` (see target_splice_libraries): the ones those
-# libraries use, and the rule's own. If the rule has build tools, the
-# compile gets all of them, since a tool might need its own.
+# The data dirs to set for a compilation action.
+def compile_data_dirs(data_dirs: dict[str, Artifact], lib_dirs: dict[str, Artifact], own_modules: list[str], runs_tools: bool) -> dict[str, Artifact]:
+    # A tool might read data files of its own.
+    if runs_tools:
+        return data_dirs
+    return lib_dirs | paths_data_dirs(own_modules, data_dirs)
+
+# The data dirs to set for a compilaion action that builds all the target's modules, 
+# assuming that the splices can run code from the libraries in `final` (see
+# target_splice_libraries).
 def splice_data_dirs(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, final: dict[str, bool]) -> dict[str, Artifact]:
-    if build_tools(ctx):
-        return data_dirs_env(ctx)
     libs = [lib for lib in dependency_libs(ctx, link_style, enable_profiling).traverse() if lib.name in final]
-    return own_data_dirs(ctx) | {var: d for lib in libs for var, d in lib.data_dirs.items()}
+    return compile_data_dirs(
+        data_dirs_env(ctx),
+        {var: d for lib in libs for var, d in lib.data_dirs.items()},
+        [m for m, _ in srcs_to_pairs(ctx.attrs.srcs)],
+        len(build_tools(ctx)) > 0,
+    )
 
 # The target's build tools (build_tool_depends), by the name of each tool's
 # executable, which is the name that a program looks it up by on PATH.
@@ -518,64 +510,87 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     compile_cmd = cmd_args(haskell_toolchain.compiler)
 
-    final = target_splice_libraries(ctx, link_style, enable_profiling)
-    args = compile_args(ctx, link_style, enable_profiling, pkgname, dynamic_too = dynamic_too, final = final)
-    # The native libraries of the libraries that the splices may load.
-    native_dir = native_libs_tree(
-        ctx,
-        "native-libs-" + variant_name(link_style, enable_profiling),
-        [native_libs] + [lib.native_libs for lib in dependency_libs(ctx, link_style, enable_profiling).traverse() if lib.name in final],
+    splices = target_splice_env(ctx, link_style, enable_profiling, native_libs)
+    args = compile_args(ctx, link_style, enable_profiling, pkgname, dynamic_too = dynamic_too, final = splices.final)
+    result = CompileResultInfo(
+        objects = ctx.actions.declare_output("objects-" + args.variant, dir = True, has_content_based_path = False),
+        hi = ctx.actions.declare_output("hi-" + args.variant, dir = True, has_content_based_path = False),
+        stubs = ctx.actions.declare_output("stubs-" + args.variant, dir = True, has_content_based_path = False),
+        producing_indices = get_producing_indices(ctx),
     )
 
     if not has_modules(ctx):
-        result = args.result
         ctx.actions.run(
             cmd_args("mkdir", "-p", result.objects.as_output(), result.hi.as_output(), result.stubs.as_output()),
             category = "haskell_compile",
-            identifier = variant_name(link_style, enable_profiling),
+            identifier = args.variant,
         )
         return result
 
     compile_cmd.add(args.args_for_cmd)
-    compile_cmd.add(cmd_args(hidden = [native_dir] if native_dir != None else []))
+    outputs = cmd_args(
+        "-odir",
+        result.objects.as_output(),
+        "-hidir",
+        result.hi.as_output(),
+        "-hiedir",
+        result.hi.as_output(),
+        "-stubdir",
+        result.stubs.as_output(),
+    )
+    compile_cmd.add(ghc_file_args(ctx, "args-" + args.variant + ".haskell_compile_argsfile", cmd_args(args.args_for_file, outputs), args.srcs))
 
-    variant = variant_name(link_style, enable_profiling)
-
-    if args.args_for_file:
-        if haskell_toolchain.use_argsfile:
-            compile_cmd.add(
-                at_argfile(
-                    actions = ctx.actions,
-                    name = "args-" + variant + ".haskell_compile_argsfile",
-                    args = [args.args_for_file, args.srcs],
-                    allow_args = True,
-                )
-            )
-        else:
-            compile_cmd.add(args.args_for_file)
-            compile_cmd.add(args.srcs)
-
-    variant = variant_name(link_style, enable_profiling)
-
-    env = ghc_env(ctx, "build-tool-depends-" + variant)
-    steps = "set -eu; " + _MAKE_STUBDIR
-    step_args = [args.result.stubs.as_output()]
+    steps = _MAKE_STUBDIR
+    step_args = [result.stubs.as_output()]
     if dynamic_from != None and splice_objects_kind(ctx, enable_profiling) == "from_non_profiled":
         steps += _COPY_DYN_OBJECTS
-        step_args += [args.result.objects.as_output(), dynamic_from.objects]
+        step_args += [result.objects.as_output(), dynamic_from.objects]
 
-    ctx.actions.run(
-        in_env(struct(script = env.script + steps, args = env.args + step_args), compile_cmd),
-        category = "haskell_compile",
-        identifier = variant,
-        # Keep the previous run's -odir/-hidir so that `ghc --make` can do its
-        # own recompilation checking and only rebuild the modules whose
-        # sources or imported interfaces changed, rather than the whole
-        # package. GHC >= 9.4 tracks file changes with hashes rather than
-        # timestamps, so this is safe even though Buck doesn't preserve
-        # timestamps on artifacts.
-        no_outputs_cleanup = True,
-        env = splice_data_dirs(ctx, link_style, enable_profiling, final) | ({"LD_LIBRARY_PATH": cmd_args(native_dir)} if native_dir != None else {}),
+    # This keeps the previous run's -odir/-hidir (see run_ghc), so that `ghc
+    # --make` can do its own recompilation checking and only rebuild the
+    # modules whose sources or imported interfaces changed.
+    #
+    # GHC >= 9.4 tracks file changes with hashes rather than
+    # timestamps, so this is safe even though Buck doesn't preserve
+    # timestamps on artifacts.
+    run_ghc(ctx, compile_cmd, splices, args.variant, args.variant, steps, step_args, "haskell_compile")
+
+    return result
+
+# The environment for splices in a compilation action. That is: the libraries 
+# in `final` (see target_splice_libraries), the native libraries of those and of the target
+# (`native_libs`), and their data dirs (see splice_data_dirs).
+def target_splice_env(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, native_libs: SharedLibraryInfo):
+    final = target_splice_libraries(ctx, link_style, enable_profiling)
+    return struct(
+        final = final,
+        native_libs = [native_libs] + [lib.native_libs for lib in dependency_libs(ctx, link_style, enable_profiling).traverse() if lib.name in final],
+        data_dirs = splice_data_dirs(ctx, link_style, enable_profiling, final),
     )
 
-    return args.result
+# Run `cmd`, a GHC program, with its splice environment (`splices`, from target_splice_env) 
+# and the target's build tools (see ghc_env). First the shell runs `steps`, shell
+# commands which take `step_args` from the front of the positional parameters and
+# shift them off. `variant` is the action's identifier (see variant_name), and
+# `name` names the directories it makes, unique among the target's run_ghc
+# actions.
+#
+# The action does not clean up its outputs, as we sometimes want GHC to reuse them; set `-fforce-recomp` 
+# if you don't want that. 
+def run_ghc(ctx: AnalysisContext, cmd: cmd_args, splices, variant: str, name: str, steps: str, step_args: list, category: str):
+    env = ghc_env(ctx, "build-tool-depends-" + name)
+    native_dir = native_libs_tree(ctx, "native-libs-" + name, splices.native_libs)
+    ctx.actions.run(
+        in_env(struct(script = env.script + "set -eu; " + steps, args = env.args + step_args), cmd_args(cmd, hidden = [native_dir] if native_dir != None else [])),
+        category = category,
+        identifier = variant,
+        no_outputs_cleanup = True,
+        env = splices.data_dirs | ({"LD_LIBRARY_PATH": cmd_args(native_dir)} if native_dir != None else {}),
+    )
+
+# GHC's arguments `args` and the sources `srcs`, in a file named `name` if
+# the toolchain uses one (use_argsfile).
+def ghc_file_args(ctx: AnalysisContext, name: str, args: cmd_args, srcs: cmd_args) -> cmd_args:
+    if ctx.attrs._haskell_toolchain[HaskellToolchainInfo].use_argsfile:
+        return at_argfile(actions = ctx.actions, name = name, args = [args, srcs], allow_args = True)
+    return cmd_args(args, srcs)

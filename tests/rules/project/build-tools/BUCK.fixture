@@ -72,3 +72,10 @@ haskell_library(
     build_tool_depends = [":bt-copy"],
     per_module = True,
 )
+
+# The documentation of :flags. Haddock compiles the modules as the compile
+# does, so it runs bt-copy too.
+haskell_haddock(
+    name = "flags-docs",
+    deps = [":flags"],
+)

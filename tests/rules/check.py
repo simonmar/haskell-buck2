@@ -45,6 +45,7 @@ from both_ways import (
 from harness import CheckFailed, Skipped, State
 from other_rules import (
     check_data_files,
+    check_haddock_build_tools,
     check_own_rts,
     check_profiled_shared_only,
     check_test_build_tools,
@@ -155,6 +156,7 @@ CHECKS = [
     check_configurations,
     check_data_dirs,
     check_test_build_tools,
+    check_haddock_build_tools,
     check_data_files,
     check_own_rts,
     check_test_labels,

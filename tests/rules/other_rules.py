@@ -37,6 +37,15 @@ def check_test_build_tools(st):
                len(tool) == configurations and (own in tool) == with_own)
 
 
+def check_haddock_build_tools(st):
+    """Haddock runs a library's build tools, as the library's compile does:
+    //build-tools:flags-docs documents //build-tools:flags, every module of
+    which runs bt-copy. It also runs the library's splices:
+    //th-internal-splice:docs documents a library one of whose splices runs
+    another of its modules."""
+    build("//build-tools:flags-docs", "//th-internal-splice:docs")
+
+
 def check_data_files(st):
     """A binary with data_dirs finds its data files through the variables
     they set, both with `buck2 run` and as a test."""

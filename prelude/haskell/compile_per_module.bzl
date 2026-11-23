@@ -10,16 +10,17 @@ load(
     "get_exposed_package_args",
     "get_producing_indices",
     "build_tools",
+    "compile_data_dirs",
     "ghc_env",
     "ghc_flags",
     "has_modules",
     "in_env",
     "native_libs_tree",
-    "paths_data_dirs",
     "splice_dep_infos",
     "splice_libraries",
     "splice_objects_kind",
     "tools_env",
+    "uses_library_less_db",
 )
 load("@prelude//linking:shared_libraries.bzl", "EMPTY_SHARED_LIBRARY_INFO", "SharedLibraryInfo")
 load(
@@ -99,7 +100,7 @@ def _package_dbs(libs: list, final: dict[str, bool], below_make: dict[str, bool]
     early_names = {}
     native_libs = []
     for lib in libs:
-        library_less = lib.early_db != None and lib.name not in final
+        library_less = uses_library_less_db(lib, final)
         if library_less and lib.modules != None:
             packagedb_set[lib.early_db] = None
             early_names[lib.name] = True
@@ -478,7 +479,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         module_tools = list(tools) if runs_th[n] else [p for p in program_nodes[n] if p in tools]
         # See Note [Data files of splices].
         own_modules = [_module_of(d) for d in closure[n] if not _is_boot(d)]
-        module_data_dirs = (data_dirs if module_tools else mod_packages.data_dirs | paths_data_dirs(own_modules, data_dirs)) if runs_th[n] else {}
+        module_data_dirs = compile_data_dirs(data_dirs, mod_packages.data_dirs, own_modules, len(module_tools) > 0) if runs_th[n] else {}
         hidirs = mod_packages.local_import_dirs + [(name, d) for name, d in module_lib_dirs.items() if name in mod_packages.early_names]
 
         # The flags specific to this module: its source and output files.
@@ -1509,10 +1510,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # target's own modules in its closure, and code can only read its own
 # package's data files, through that package's Paths_<pkg> module. So the
 # module only needs <pkg>_datadir if one of those libraries has a
-# Paths_<pkg> module, or its closure has the target's own (see
-# own_data_dirs in compile.bzl). Most Template Haskell modules need none. A
-# --make compile works its variables out the same way, for the whole target
-# (see splice_data_dirs).
+# Paths_<pkg> module, or its closure has the target's own. Most Template
+# Haskell modules need none. A --make compile works its variables out the
+# same way, for the whole target (see compile_data_dirs in compile.bzl).
 #
 # Build tools are the exception. A tool might read data files of its own,
 # so a module that might run one of the target's build tools, or a --make
