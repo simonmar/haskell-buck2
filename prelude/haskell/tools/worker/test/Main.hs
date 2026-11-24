@@ -708,6 +708,7 @@ otherTarget sendIn dir ghc = do
   writeFile (dir </> "w-go") ""
   (wCode, wErr) <- takeMVar mine
   assertBool ("the other target's T.W compiles, with its warning: " ++ otherWErr) (otherWCode == 0 && "othersUnused" `isInfixOf` otherWErr)
+  assertBool ("the warning names its file and line, as ghc -c's does: " ++ otherWErr) ("T/W.hs:3:" `isInfixOf` otherWErr)
   assertBool ("T.W compiles, without the other target's warning: " ++ wErr) (wCode == 0 && not ("othersUnused" `isInfixOf` wErr))
 
 -- | When a session can't be made, here because of a flag GHC doesn't know,

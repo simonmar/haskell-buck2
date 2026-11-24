@@ -34,7 +34,7 @@ import qualified GHC.Data.EnumSet as EnumSet
 import GHC.Driver.Session (PackageDBFlag (..), PkgDbRef (..), fFlags, flagSpecName, globalPackageDatabasePath, hasNoDebugOutput, hasPprDebug, setUnsafeGlobalDynFlags, ways)
 import GHC.Platform.Ways (Way (..))
 import GHC.Runtime.Interpreter (stopInterp)
-import GHC.Types.Error (MessageClass (..))
+import GHC.Types.Error (MessageClass (..), getCaretDiagnostic, mkLocMessageWarningGroups)
 import GHC.Types.SourceFile (HscSource (..))
 import GHC.Unit.Finder (FindResult (..), findObjectLinkableMaybe, initFinderCache)
 import GHC.Types.Name.Cache (NameCache)
@@ -49,7 +49,7 @@ import GHC.Unit.External (ExternalUnitCache, initExternalUnitCache)
 import GHC.Unit.State (UnitDatabase, UnitState)
 import GHC.Unit.Types (GenWithIsBoot (..), UnitId)
 import GHC.Utils.Logger (LogFlags (..))
-import GHC.Utils.Outputable (renderWithContext)
+import GHC.Utils.Outputable (empty, renderWithContext, ($+$))
 import GHC.Utils.Panic (throwGhcExceptionIO)
 import GHC.Utils.TmpFs (cleanCurrentModuleTempFiles, cleanTempDirs, cleanTempFiles, forkTmpFsFrom, mergeTmpFsInto)
 
@@ -385,9 +385,17 @@ compileHeld s report r = do
   -- The compile's own temporary files (its assembly code, for example) are
   -- removed when it finishes. The temporary files that must last as long as
   -- the session are merged into the session's, as `--make -j` does for each
-  -- module. The compile's diagnostics go to the request, through `report`.
+  -- module. The compile's diagnostics go to the request, through `report`,
+  -- as `ghc -c` would print them: with their location, and the source line
+  -- they are about.
   tmpfs <- forkTmpFsFrom (hsc_tmpfs hsc)
-  let logger = pushLogHook (\_ lf cls _ doc -> report (Diagnostic (isError cls) (renderWithContext (log_default_user_context lf) doc))) (hsc_logger hsc)
+  let logger = pushLogHook (\_ lf cls srcSpan doc -> do
+        text <- case cls of
+          MCDiagnostic {} -> do
+            caret <- if log_show_caret lf then getCaretDiagnostic cls srcSpan else pure empty
+            pure (mkLocMessageWarningGroups (log_show_warn_groups lf) cls srcSpan doc $+$ caret)
+          _ -> pure doc
+        report (Diagnostic (isError cls) (renderWithContext (log_default_user_context lf) text))) (hsc_logger hsc)
   hmi <- compileOne hsc{hsc_tmpfs = tmpfs, hsc_logger = logger} ms 1 1 Nothing emptyHomeModInfoLinkable
     `finally` (cleanCurrentModuleTempFiles (hsc_logger hsc) tmpfs >> mergeTmpFsInto tmpfs (hsc_tmpfs hsc))
   let n = (ms_mod_name ms, if reqBoot r then IsBoot else NotBoot)
