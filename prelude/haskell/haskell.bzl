@@ -615,70 +615,6 @@ def _get_haskell_shared_library_name_linker_flags(linker_type: LinkerType, sonam
 def _native_libs(ctx: AnalysisContext) -> SharedLibraryInfo:
     return merge_shared_libraries(ctx.actions, deps = [d[SharedLibraryInfo] for d in ctx.attrs.deps if SharedLibraryInfo in d and HaskellLinkInfo not in d])
 
-# Links a Haskell shared library from a set of already-compiled object
-# files.
-def _link_haskell_shared_lib(
-        ctx,
-        haskell_toolchain,
-        linker_info,
-        nlis: list[MergedLinkInfo],
-        libfile: str,
-        lib_short_path: str,
-        objfiles,
-        hidden,
-        # Which of the library's links this is, such as "shared".
-        identifier: str) -> (Artifact, LinkedObject, LinkInfos):
-    lib = ctx.actions.declare_output(lib_short_path, has_content_based_path = False)
-    link = cmd_args(
-        [haskell_toolchain.linker]
-        + [haskell_toolchain.linker_flags]
-        + [ctx.attrs.linker_flags]
-        + ["-o", lib.as_output()]
-        + [
-            "-package-env=-",
-            get_shared_library_flags(linker_info.type),
-            "-dynamic",
-            cmd_args(
-                _get_haskell_shared_library_name_linker_flags(linker_info.type, _soname(ctx, libfile)),
-                prepend = "-optl",
-            ),
-        ]
-        # The objects of its internal_deps are part of it, as in its archive.
-        + [objfiles, _internal_objects(ctx, LinkStyle("shared"))],
-        hidden = hidden,
-    )
-
-    infos = get_link_args_for_strategy(
-        ctx.actions,
-        ctx.label,
-        linker_info,
-        nlis,
-        to_link_strategy(LinkStyle("shared")),
-        prefer_stripped = False,
-        transformation_spec_context = None,
-    )
-    # Wrap linker args that we pass to GHC as `-optl=X`, not `-optl X`:
-    # if X is an argsfile (@file) we want it passed literally to
-    # the C compiler rather than GHC expanding it which wouldn't wrap
-    # each argument in `-optl`. We do the same thing for `-optP` and
-    # `-optc` in compile_args().
-    link.add(cmd_args(unpack_link_args(infos), format = "-optl={}"))
-    ctx.actions.run(
-        link,
-        category = "haskell_link",
-        identifier = identifier,
-        env = haskell_toolchain.link_env,
-    )
-
-    return (
-        lib,
-        LinkedObject(output = lib, unstripped_output = lib),
-        LinkInfos(default = LinkInfo(
-            pre_flags = ctx.attrs.exported_linker_flags,
-            linkables = [SharedLibLinkable(lib = lib)],
-        )),
-    )
-
 # _link_library() and _register_library() are invoked once for each
 # combination of
 #
@@ -719,18 +655,53 @@ def _link_library(
     objfiles = _srcs_to_objfiles(ctx, compiled.objects, osuf)
 
     if link_style == LinkStyle("shared"):
-        lib, solib, link_infos = _link_haskell_shared_lib(
-            ctx,
-            haskell_toolchain,
+        lib = ctx.actions.declare_output(lib_short_path, has_content_based_path = False)
+        link = cmd_args(
+            [haskell_toolchain.linker]
+            + [haskell_toolchain.linker_flags]
+            + [ctx.attrs.linker_flags]
+            + ["-o", lib.as_output()]
+            + [
+                "-package-env=-",
+                get_shared_library_flags(linker_info.type),
+                "-dynamic",
+                cmd_args(
+                    _get_haskell_shared_library_name_linker_flags(linker_info.type, _soname(ctx, libfile)),
+                    prepend = "-optl",
+                ),
+            ]
+            # The objects of its internal_deps are part of it, as in its archive.
+            + [objfiles, _internal_objects(ctx, LinkStyle("shared"))],
+            hidden = compiled.stubs,
+        )
+
+        infos = get_link_args_for_strategy(
+            ctx.actions,
+            ctx.label,
             linker_info,
             nlis,
-            libfile,
-            lib_short_path,
-            objfiles,
-            compiled.stubs,
-            variant,
+            to_link_strategy(LinkStyle("shared")),
+            prefer_stripped = False,
+            transformation_spec_context = None,
         )
-        solibs[_soname(ctx, libfile)] = solib
+        # Wrap linker args that we pass to GHC as `-optl=X`, not `-optl X`:
+        # if X is an argsfile (@file) we want it passed literally to
+        # the C compiler rather than GHC expanding it which wouldn't wrap
+        # each argument in `-optl`. We do the same thing for `-optP` and
+        # `-optc` in compile_args().
+        link.add(cmd_args(unpack_link_args(infos), format = "-optl={}"))
+        ctx.actions.run(
+            link,
+            category = "haskell_link",
+            identifier = variant,
+            env = haskell_toolchain.link_env,
+        )
+
+        solibs[_soname(ctx, libfile)] = LinkedObject(output = lib, unstripped_output = lib)
+        link_infos = LinkInfos(default = LinkInfo(
+            pre_flags = ctx.attrs.exported_linker_flags,
+            linkables = [SharedLibLinkable(lib = lib)],
+        ))
         libs = [lib]
 
     else:  # static flavours
