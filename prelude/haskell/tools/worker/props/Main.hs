@@ -688,7 +688,7 @@ workerBuild cfg h b mods lastOk libSeen stats = do
     depFile node@(i, _) = "dep" </> (if inP i then "p-" else "") ++ nodeName node <.> "dep"
     request node@(i, boot) =
       [ "--request", "--contract", contract, "--libdir", cLibdir cfg
-      , "--depfile", depFile node, "--abi", outDir i </> modName i <.> ("abi" ++ suffix node), "--module", modName i
+      , "--depfile", depFile node, "--abi", outDir i </> modName i <.> ("abi" ++ suffix node), "--diagnostics", outDir i </> modName i <.> ("diag" ++ suffix node), "--module", modName i
       , "--source", source node, "--outdir", outDir i, "--hisuf", "hi", "--srcroot=" ++ srcDir i
       ] ++ ["--boot" | boot] ++ ["--loadable=" ++ modName k | not boot, isJust (mSplice (mods M.! i)), k <- closureOf mods i]
       ++ ["--hidir=p=" ++ outDir pkgP | not (inP i)]

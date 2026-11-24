@@ -13,7 +13,9 @@ import qualified Data.Map as M
 import Data.Maybe (isJust)
 import qualified Data.Set as Set
 import Foreign.C.Types (CInt (..))
+import System.Directory (createDirectoryIfMissing)
 import System.Environment (lookupEnv)
+import System.FilePath (takeDirectory)
 import System.IO (hPutStrLn, stderr)
 import Text.Read (readMaybe)
 
@@ -243,7 +245,9 @@ compileRequest w r
           ds <- reverse <$> readIORef diagnostics
           when (wVerbose w) $ hPutStrLn stderr ("buck2-ghc-worker: " ++ reqModPath r ++ " " ++ show (round ((t1 - t0) * 1000) :: Int) ++ "ms")
           let text = map diagText ds
-          pure $ case result of
+          -- The messages are the action's diagnostics output as well as its
+          -- answer.
+          answered (reqDiagnostics r) $ case result of
             Right () | not (any diagIsError ds) -> (0, unlines text)
             Right () -> (1, unlines text)
             -- compileOne throws a compile's errors as a SourceError rather than
@@ -256,6 +260,13 @@ compileRequest w r
               -- it runs, come with no location, so they get the source's, as
               -- GHC's errors have.
               Nothing -> (1, unlines (text ++ [reqSource r ++ ": error:"] ++ map ("    " ++) (lines (dropWhile (== '\n') (show e)))))
+
+-- | Write an answer's messages to the given file, and give the answer.
+answered :: FilePath -> (Int, String) -> IO (Int, String)
+answered file answer = do
+  createDirectoryIfMissing True (takeDirectory file)
+  writeFile file (snd answer)
+  pure answer
 
 -- | The node that the request compiles: its module, or its module's boot
 -- interface.

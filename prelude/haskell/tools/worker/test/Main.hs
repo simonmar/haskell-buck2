@@ -263,7 +263,7 @@ data Req = Req
 argv :: FilePath -> String -> FilePath -> Req -> [String]
 argv pkg ghc libdir r =
   [ "--request", "--contract", reqContract r, "--libdir", fromMaybe libdir (libdirOf r)
-  , "--depfile", pkg </> "dep" </> node r <.> "dep", "--abi", abi, "--module", modPath r, "--source", src
+  , "--depfile", pkg </> "dep" </> node r <.> "dep", "--abi", abi, "--diagnostics", pkg </> "diag" </> node r <.> "diag", "--module", modPath r, "--source", src
   , "--outdir", out, "--hisuf", "hi"
   ] ++ ["--boot" | boot r] ++ ["--loadable=" ++ m | m <- loadable r]
   ++ ["--srcroot=" ++ pkg </> "src", "--mkdir=" ++ pkg </> "stubs" </> node r]
