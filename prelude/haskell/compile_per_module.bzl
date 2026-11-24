@@ -291,6 +291,7 @@ def _declare_module_outputs(ctx: AnalysisContext, out_dir: str, nodes: list, osu
         o = {n: declare(n, osuf) for n, _ in nodes},
         hi = {n: declare(n, hisuf) for n, _ in nodes},
         abi = {n: declare(n, "abi") for n, _ in nodes},
+        diagnostics = {n: declare(n, "diag") for n, _ in nodes},
         dyn_o = {n: declare(n, "dyn_o") for n, _ in nodes} if dynamic_too else {},
         dyn_hi = {n: declare(n, "dyn_hi") for n, _ in nodes} if dynamic_too else {},
     )
@@ -324,7 +325,7 @@ def _splice_objects(ctx: AnalysisContext, out_dir: str, nodes: list, o_of: dict,
 # of the rules reports the mismatch rather than misreading the request. When
 # either the request or the worker's outputs change, bump this and the
 # version in tools/ghc-api/Contract.hs.
-_WORKER_CONTRACT = "5"
+_WORKER_CONTRACT = "6"
 
 # The dynamic output of a per-module compile. It runs once the deps tool has
 # written the module graph. It registers a compile action for each node,
@@ -351,6 +352,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     dyn_o_of = s.dyn_o_of
     splice_objects = s.splice_objects
     dyn_hi_of = s.dyn_hi_of
+    diag_of = s.diag_of
     objects = s.objects
     hi = s.hi
     stubs = s.stubs
@@ -520,6 +522,8 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             tag.tag_artifacts(depfile.as_output()),
             "--abi",
             out[abi_of[n]],
+            "--diagnostics",
+            out[diag_of[n]],
             "--module",
             _module_of(n).replace(".", "/"),
             "--source",
@@ -827,6 +831,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     abi_of = module_outputs.abi
     dyn_o_of = module_outputs.dyn_o
     dyn_hi_of = module_outputs.dyn_hi
+    diag_of = module_outputs.diagnostics
     dynamic_objects = o_of if link_style == LinkStyle("shared") else dyn_o_of
     splice_objects = _splice_objects(ctx, out_dir, nodes, o_of, dynamic_objects, enable_profiling, dynamic_from)
     objects = ctx.actions.declare_output("objects-" + variant, dir = True, has_content_based_path = False)
@@ -894,7 +899,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     # The results of the advice checks (see Note [Advice]).
     advice = {name: ctx.actions.declare_output(prefix + "advice/" + name + ".json") for name in ADVICE_CHECKS}
     all_outputs = [objects, hi, stubs] + advice.values()
-    for files in [o_of, hi_of, abi_of, dyn_o_of, dyn_hi_of]:
+    for files in [o_of, hi_of, abi_of, dyn_o_of, dyn_hi_of, diag_of]:
         all_outputs += files.values()
     closures = ctx.actions.dynamic_output_new(_register_modules(
         s = struct(
@@ -919,6 +924,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             dyn_o_of = dyn_o_of,
             splice_objects = splice_objects,
             dyn_hi_of = dyn_hi_of,
+            diag_of = diag_of,
             objects = objects,
             hi = hi,
             stubs = stubs,
@@ -943,7 +949,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
         artifacts = all_outputs,
         outputs = [a.as_output() for a in all_outputs],
     ))
-    return CompileResultInfo(objects = objects, hi = hi, stubs = stubs, producing_indices = producing_indices, modules = modules, closures = closures, module_dir = out_dir, advice = advice, dynamic_objects = dynamic_objects)
+    return CompileResultInfo(objects = objects, hi = hi, stubs = stubs, producing_indices = producing_indices, diagnostics = diag_of.values(), modules = modules, closures = closures, module_dir = out_dir, advice = advice, dynamic_objects = dynamic_objects)
 
 # Note [Advice]
 #

@@ -87,7 +87,7 @@ def haskell_haddock_lib(ctx: AnalysisContext, pkgname: str, link_style: LinkStyl
         cmd.add("--no-compilation", "--optghc=-hidir", cmd_args(compiled.hi, format = "--optghc={}"))
 
     # Otherwise haddock compiles in a temporary directory of its own.
-    run_ghc(ctx, cmd, splices, args.variant, "haddock-" + args.variant, "", [], "haskell_haddock")
+    run_ghc(ctx, cmd, splices, args.variant, "haddock-" + args.variant, "", [], "haskell_haddock", ctx.actions.declare_output("haddock-diagnostics-" + args.variant + ".txt", has_content_based_path = False))
 
     return HaskellHaddockInfo(interface = iface, html = odir)
 

@@ -790,6 +790,7 @@ def _dynamic_view(compiled: CompileResultInfo) -> CompileResultInfo:
         stubs = compiled.stubs,
         producing_indices = compiled.producing_indices,
         module_dir = compiled.module_dir,
+        diagnostics = compiled.diagnostics,
         modules = modules,
         closures = compiled.closures,
         dynamic_objects = compiled.dynamic_objects,
@@ -855,6 +856,18 @@ def _exported_link_infos(ctx: AnalysisContext, enable_profiling: bool) -> list[M
         (d.get(HaskellProfLinkInfo).prof_infos if enable_profiling and d.get(HaskellProfLinkInfo) else d.get(MergedLinkInfo))
         for d in ctx.attrs.deps
     ])
+
+# A file of all the messages, such as warnings, that GHC gave when compiling
+# the target's modules. They are kept with the compile's outputs, so a module
+# that buck2 didn't compile again, or found in a cache, still has its
+# messages here.
+def _diagnostics(ctx: AnalysisContext, compiled: CompileResultInfo) -> Artifact:
+    out = ctx.actions.declare_output("diagnostics.txt", has_content_based_path = False)
+    ctx.actions.run(
+        cmd_args("sh", "-c", 'out="$1"; shift; cat "$@" > "$out"', "sh", out.as_output(), compiled.diagnostics),
+        category = "haskell_diagnostics",
+    )
+    return out
 
 def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     preferred_linkage = _attr_preferred_linkage(ctx)
@@ -1093,8 +1106,9 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     #    )]
     pp = []
 
-    # The interfaces of the default output's compile.
+    # The interfaces and messages of the default output's compile.
     sub_targets["interfaces"] = [DefaultInfo(default_output = hlib_compiled[actual_link_style].hi)]
+    sub_targets["diagnostics.txt"] = [DefaultInfo(default_output = _diagnostics(ctx, hlib_compiled[actual_link_style]))]
 
     providers = [
         DefaultInfo(
@@ -1593,7 +1607,10 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     providers = [
         DefaultInfo(
             default_output = output,
-            sub_targets = {"interfaces": [DefaultInfo(default_output = compiled.hi)]},
+            sub_targets = {
+                "diagnostics.txt": [DefaultInfo(default_output = _diagnostics(ctx, compiled))],
+                "interfaces": [DefaultInfo(default_output = compiled.hi)],
+            },
         ),
         RunInfo(args = run),
     ] + advice_validations(compiled)

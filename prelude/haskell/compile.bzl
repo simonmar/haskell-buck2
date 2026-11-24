@@ -57,6 +57,11 @@ CompileResultInfo = record(
     # The directory relative to the target's outputs in which the modules'
     # interfaces are written.
     module_dir = field(str),
+    # GHC's messages, such as warnings: a file for each module compiled
+    # per-module, or one for a --make compile. A --make compile keeps its
+    # previous outputs and compiles only the modules that changed, so its file
+    # has only their messages.
+    diagnostics = field(list[Artifact]),
     # These are only set when the target is compiled per-module:
     modules = field(dict[str, HaskellModuleFiles] | None, None),
     closures = field(typing.Any, None),
@@ -386,7 +391,7 @@ def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: 
     )
 
 # Shell steps that run before `ghc --make`, in the same shell as the
-# toolchain's environment (see in_env). Each step takes its arguments from
+# toolchain's environment (see run_ghc). Each step takes its arguments from
 # the front of the positional parameters and shifts them off, so that what
 # is left at the end is the command to run.
 
@@ -397,6 +402,11 @@ def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: 
 # the action would fail to produce one of its outputs. This step makes the
 # directory that its argument names.
 _MAKE_STUBDIR = 'mkdir -p "$1"; shift; '
+
+# Runs the rest of the positional parameters, with its stderr going to the
+# file that the first one names, and then copies the file to stderr. It
+# exits with the program's status.
+_CAPTURE_DIAGNOSTICS = 'diagnostics=$1; shift; status=0; "$@" 2>"$diagnostics" || status=$?; cat "$diagnostics" >&2; exit "$status"'
 
 # Copies the .dyn_o objects of another compile of the same sources into this
 # compile's -odir. The arguments are the -odir and the other compile's
@@ -530,15 +540,18 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
     splices = target_splice_env(ctx, link_style, enable_profiling, native_libs)
     args = compile_args(ctx, link_style, enable_profiling, pkgname, dynamic_too = dynamic_too, final = splices.final)
     module_dir = "hi-" + args.variant
+    diagnostics = ctx.actions.declare_output("diagnostics-" + args.variant + ".txt", has_content_based_path = False)
     result = CompileResultInfo(
         objects = ctx.actions.declare_output("objects-" + args.variant, dir = True, has_content_based_path = False),
         hi = ctx.actions.declare_output(module_dir, dir = True, has_content_based_path = False),
         module_dir = module_dir,
         stubs = ctx.actions.declare_output("stubs-" + args.variant, dir = True, has_content_based_path = False),
         producing_indices = get_producing_indices(ctx),
+        diagnostics = [diagnostics],
     )
 
     if not has_modules(ctx):
+        ctx.actions.write(diagnostics.as_output(), "")
         ctx.actions.run(
             cmd_args("mkdir", "-p", result.objects.as_output(), result.hi.as_output(), result.stubs.as_output()),
             category = "haskell_compile",
@@ -572,7 +585,7 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
     # GHC >= 9.4 tracks file changes with hashes rather than
     # timestamps, so this is safe even though Buck doesn't preserve
     # timestamps on artifacts.
-    run_ghc(ctx, compile_cmd, splices, args.variant, args.variant, steps, step_args, "haskell_compile")
+    run_ghc(ctx, compile_cmd, splices, args.variant, args.variant, steps, step_args, "haskell_compile", diagnostics)
 
     return result
 
@@ -598,14 +611,18 @@ def target_splice_env(ctx: AnalysisContext, link_style: LinkStyle, enable_profil
 # the directories that the action makes, and has to be unique among the
 # target's run_ghc actions.
 #
+# The program's messages, such as warnings, go to `diagnostics` and then to
+# stderr, so that they are kept with the action's outputs.
+#
 # The action doesn't clean up its outputs before it runs, because GHC can
 # sometimes reuse them. Pass -fforce-recomp in `cmd` to stop GHC from doing
 # that.
-def run_ghc(ctx: AnalysisContext, cmd: cmd_args, splices, variant: str, name: str, steps: str, step_args: list, category: str):
+def run_ghc(ctx: AnalysisContext, cmd: cmd_args, splices, variant: str, name: str, steps: str, step_args: list, category: str, diagnostics: Artifact):
     env = ghc_env(ctx, "build-tool-depends-" + name)
     native_dir = native_libs_tree(ctx, "native-libs-" + name, splices.native_libs)
+    script = env.script + "set -eu; " + steps + _CAPTURE_DIAGNOSTICS
     ctx.actions.run(
-        in_env(struct(script = env.script + "set -eu; " + steps, args = env.args + step_args), cmd_args(cmd, hidden = [native_dir] if native_dir != None else [])),
+        cmd_args(["sh", "-c", script, "sh"] + env.args + step_args + [diagnostics.as_output()], cmd, hidden = [native_dir] if native_dir != None else []),
         category = category,
         identifier = variant,
         no_outputs_cleanup = True,

@@ -36,6 +36,16 @@ linking it, which is enough to see its type errors.
 with `-haddock` (in its `compiler_flags` or the toolchain's) will build the documentation 
 from the interfaces on GHC 9.12+, which is more efficient.
 
+# Warnings
+
+buck2 shows warnings only when it runs a compilation action, and not
+when it finds the result in a cache. `buck2 build
+my-package:my-program[diagnostics.txt] --out -` prints all the diagnostics 
+from compiling a target's modules, whether they were compiled in this build or not. 
+
+A target compiled with `--make` will show the diagnostics from the modules that it
+re-compiled on the last run.
+
 # Splice dependencies
 
 A Template Haskell splice, quasiquote or `ANN` pragma needs the linked libraries
