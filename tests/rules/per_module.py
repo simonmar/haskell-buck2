@@ -3,6 +3,7 @@ interfaces of each module's compile, what its dep file lists, and which
 modules compile again after an edit."""
 
 import json
+import os
 import re
 import sys
 
@@ -175,7 +176,7 @@ def check_early_db_conf(st):
     expect_set("library fields of lib's early db conf", set(early) & library_fields, set())
     dirs = early.get("import-dirs", [])
     expect("lib's early db conf has one import-dir, the modules' output directory (got {})".format(dirs),
-           len(dirs) == 1 and re.fullmatch(r'"\$\{pkgroot\}/per-module-' + DEV_STYLE + r'/out-[0-9]+"', dirs[0]) is not None)
+           len(dirs) == 1 and re.fullmatch(r'"\$\{pkgroot\}/per-module-' + DEV_STYLE + r'/out"', dirs[0]) is not None)
     expect("lib's final db conf names its library (fields: {})".format(sorted(final)), "extra-libraries" in final)
 
 
@@ -201,6 +202,20 @@ def check_compile_granularity(st):
     expect_set("compiles of //compile-granularity:default by default", compiled(what_ran()), {"default"})
     buck2("build", "-c", "haskell.compile_granularity=module", "//compile-granularity:default")
     expect_set("compiles of //compile-granularity:default with [haskell] compile_granularity = module", compiled(what_ran()), {"default:CS.A"})
+
+
+def check_boot_file_removed(st):
+    """A boot file removed from a target that keeps another builds. The
+    removed boot file's interface is still in the target's output directory,
+    and the worker mustn't take it for the module's own boot interface.
+    //boot-drop:boot-drop drops X.C's boot file and keeps X.B's, so with the
+    worker its modules compile in a session that knows about boot files."""
+    build("//boot-drop:boot-drop")
+    replace("boot-drop/BUCK.fixture", '"X.B": "X/B.hs-boot", "X.C": "X/C.hs-boot"}', '"X.B": "X/B.hs-boot"}')
+    replace("boot-drop/X/D.hs", "import {-# SOURCE #-} X.C (c)", "import X.C (c)")
+    os.remove("boot-drop/X/C.hs-boot")
+    p = build("//boot-drop:boot-drop", keep_going=True)
+    expect("//boot-drop:boot-drop builds without X.C's boot file (got:\n{})".format(tail(p.stderr, 15)), p.returncode == 0)
 
 
 def check_cross_package_dep_file(st):

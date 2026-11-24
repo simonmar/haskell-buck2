@@ -1,6 +1,6 @@
 -- | The request that the rules send to compile each module, and the flags
 -- of the GHC session that compiles it.
-module Request (Request (..), parseRequest, moduleArg, sessionFlags, withRequestEnv, withoutRts) where
+module Request (Request (..), parseRequest, moduleArg, outputDirFlags, sessionFlags, withRequestEnv, withoutRts) where
 
 import Data.List (intercalate, isPrefixOf, stripPrefix)
 
@@ -12,7 +12,7 @@ import Contract (contract)
 --
 -- > --request --contract V --libdir LIBDIR --depfile DEP --abi ABI
 -- >   --module Foo/Bar --source Foo/Bar.hs --outdir OUT --hisuf SUF [--boot]
--- >   [--hidir=UNIT=DIR]... [--srcroot=SRCS]... [--mkdir=DIR]...
+-- >   --hidir DIR [--unit-hidir=UNIT=DIR]... [--srcroot=SRCS]... [--mkdir=DIR]...
 -- >   [--data-dir=VAR=DIR]... [--library-path=DIR]... [--loadable=MODULE]...
 -- >   -- ghc SESSION_FLAGS... -- -c Foo/Bar.hs -o ... -ohi ...
 --
@@ -35,7 +35,8 @@ data Request = Request
   , reqSource :: FilePath
   , reqOutDir :: FilePath -- where every module's outputs are
   , reqHisuf :: String
-  , reqHidirs :: [(String, FilePath)] -- the dependencies' interface (and .abi) dirs, by unit id
+  , reqHidir :: FilePath -- where the session finds the interfaces of the target's modules
+  , reqUnitHidirs :: [(String, FilePath)] -- the dependencies' interface (and .abi) dirs, by unit id
   , reqSrcRoots :: [FilePath] -- trees of the target's sources, which go on the session's import path
   , reqMkdirs :: [FilePath] -- output directories to create first
   , reqDataDirs :: [(String, FilePath)] -- the variables for the module's splices, with the data dirs they name (see Note [Data files of splices] in compile_per_module.bzl)
@@ -60,7 +61,7 @@ moduleArg flag r = case dropWhile (/= flag) (reqModuleArgs r) of
 parseRequest :: [String] -> Either String Request
 parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
   "--contract" : v : rest
-    | v == contract -> go (Request "" "" "" "" "" "" "" "" [] [] [] [] [] False [] "" [] []) rest
+    | v == contract -> go empty rest
     | otherwise -> Left ("this program takes version " ++ contract ++ " of the rules' requests, but the rules sent version " ++ v ++ ": build it from the same version of the rules")
   _ -> Left "the request names no version: build this program from the same version of the rules"
   where
@@ -71,16 +72,18 @@ parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
     go r ("--module" : v : rest) = go r{reqModPath = v} rest
     go r ("--source" : v : rest) = go r{reqSource = v} rest
     go r ("--outdir" : v : rest) = go r{reqOutDir = v} rest
+    go r ("--hidir" : v : rest) = go r{reqHidir = v} rest
     go r ("--hisuf" : v : rest) = go r{reqHisuf = v} rest
     go r ("--boot" : rest) = go r{reqBoot = True} rest
     go r ("--" : compiler : rest)
       | null (reqLibdir r) = Left "the request names no libdir (--libdir)"
       | null (reqDiagnostics r) = Left "the request names no diagnostics file (--diagnostics)"
+      | null (reqHidir r) = Left "the request names no interface directory (--hidir)"
       | otherwise =
           let (session, moduleArgs) = break (== "--") rest
            in Right r{reqCompiler = compiler, reqSessionArgs = session, reqModuleArgs = drop 1 moduleArgs}
     go r (x : rest)
-      | Just v <- stripPrefix "--hidir=" x, (unit, '=' : d) <- break (== '=') v = go r{reqHidirs = reqHidirs r ++ [(unit, d)]} rest
+      | Just v <- stripPrefix "--unit-hidir=" x, (unit, '=' : d) <- break (== '=') v = go r{reqUnitHidirs = reqUnitHidirs r ++ [(unit, d)]} rest
       | Just v <- stripPrefix "--srcroot=" x = go r{reqSrcRoots = reqSrcRoots r ++ [v]} rest
       | Just v <- stripPrefix "--mkdir=" x = go r{reqMkdirs = reqMkdirs r ++ [v]} rest
       | Just v <- stripPrefix "--loadable=" x = go r{reqLoadable = reqLoadable r ++ [v]} rest
@@ -88,6 +91,28 @@ parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
       | Just d <- stripPrefix "--library-path=" x = go r{reqLibraryPaths = reqLibraryPaths r ++ [d]} rest
       | otherwise = Left ("unexpected request argument " ++ show x)
     go _ [] = Left "the request has no compiler command"
+    empty =
+      Request
+        { reqLibdir = ""
+        , reqDepfile = ""
+        , reqAbi = ""
+        , reqDiagnostics = ""
+        , reqModPath = ""
+        , reqSource = ""
+        , reqOutDir = ""
+        , reqHisuf = ""
+        , reqHidir = ""
+        , reqUnitHidirs = []
+        , reqSrcRoots = []
+        , reqMkdirs = []
+        , reqDataDirs = []
+        , reqLibraryPaths = []
+        , reqBoot = False
+        , reqLoadable = []
+        , reqCompiler = ""
+        , reqSessionArgs = []
+        , reqModuleArgs = []
+        }
 
 -- | The flags of the session that compiles the request's module. They are
 -- the request's session flags, without two kinds of flag that only the ghc
@@ -101,9 +126,7 @@ parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
 --
 -- To those, this adds:
 --
--- - @-odir@ and @-hidir@, so that GHC writes each output into the output
---   directory, at a path made from the module's name. That is where the
---   rules expect the outputs.
+-- - @-odir@ and @-hidir@ (see 'outputDirFlags').
 -- - The trees of the target's sources, on the import path.
 --
 -- Every other flag comes from the rules, so that the worker compiles with
@@ -111,8 +134,14 @@ parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
 sessionFlags :: Request -> [String]
 sessionFlags r =
   filter (not . ("-B" `isPrefixOf`)) (withoutRts (reqSessionArgs r))
-    ++ ["-odir", reqOutDir r, "-hidir", reqOutDir r]
+    ++ outputDirFlags r
     ++ ["-i" ++ d | d <- reqSrcRoots r]
+
+-- | Where GHC finds the outputs of the target's modules: their objects in
+-- the output directory, and their interfaces in the request's interface
+-- directory.
+outputDirFlags :: Request -> [String]
+outputDirFlags r = ["-odir", reqOutDir r, "-hidir", reqHidir r]
 
 -- | Add the variables of the request's data dirs to an environment, in place
 -- of any variables with the same names, and put the request's library paths

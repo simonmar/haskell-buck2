@@ -117,11 +117,9 @@ def check_discovered_module(st):
     //build-tools:discover's BT.Disc is written by bt-discover, which imports
     each module in BT/Disc. Adding BT/Disc/B.hs to the target's sources
     changes no file that BT.Disc's compile names, but it changes what the
-    preprocessor writes.
-
-    Compiled per-module, the target's other modules may compile again too,
-    since a new module changes the target's output directory (see
-    per_module_out_dir), so only BT.Disc and BT.Disc.B are required."""
+    preprocessor writes. Compiled per-module, the target's other modules
+    don't compile again, including BT.DiscUser, which finds BT.Disc.A's
+    interface through the target's interface view."""
     targets = {c: configured("//build-tools:discover", c) for c in COMPILES}
     build(*targets.values())
     with open("build-tools/BT/Disc/B.hs", "w") as f:
@@ -133,8 +131,7 @@ def check_discovered_module(st):
         if c == "make":
             expect_set("compiles after adding BT/Disc/B.hs, compiled with --make", ran, {"discover"})
         else:
-            required = {"discover:BT.Disc", "discover:BT.Disc.B"}
-            expect("BT.Disc and BT.Disc.B compile after adding BT/Disc/B.hs, compiled {} (compiled: {})".format(c, sorted(ran)), required <= ran)
+            expect_set("compiles after adding BT/Disc/B.hs, compiled {}".format(c), ran, {"discover:BT.Disc", "discover:BT.Disc.B"})
 
 
 def check_header_change(st):

@@ -41,7 +41,8 @@ haskell_library(
 
 # BT.Disc's preprocessor, bt-discover, finds the modules in BT/Disc as
 # hspec-discover finds the specs: by listing the directory, not through
-# anything that the compile names.
+# anything that the compile names. BT.DiscUser imports BT.Disc.A, and runs
+# no preprocessor.
 sh_binary(
     name = "bt-discover",
     main = "bt-discover",
@@ -49,7 +50,7 @@ sh_binary(
 
 haskell_library(
     name = "discover",
-    srcs = {"BT.Disc": "BT/Disc.hs", "BT.Disc.A": "BT/Disc/A.hs"},
+    srcs = {"BT.Disc": "BT/Disc.hs", "BT.DiscUser": "BT/DiscUser.hs", "BT.Disc.A": "BT/Disc/A.hs"},
     packages = ["base"],
     build_tool_depends = [":bt-discover"],
     compile_granularity = COMPILE_GRANULARITY,

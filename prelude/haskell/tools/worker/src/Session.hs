@@ -356,9 +356,9 @@ compileHeld s report r = do
       pure ms0{ms_location = setLocationFile HieFile file (ms_location ms0)}
     Nothing -> pure ms0
   -- Likewise, use the object and interface files that the request names.
-  -- They are where GHC would put them anyway, given the module's name and
-  -- the session's -odir and -hidir, except for a Main module whose file has
-  -- another name.
+  -- GHC would otherwise put the object under the session's -odir, except
+  -- for a Main module whose file has another name, and the interface under
+  -- its -hidir, which isn't the output directory (see outputDirFlags).
   let outputs = [(ObjFile, "-o"), (HiFile, "-ohi"), (DynObjFile, "-dyno"), (DynHiFile, "-dynohi")]
       withOutputs =
         withHie
@@ -463,7 +463,10 @@ homeView s r key hsc ms = modifyMVar (gsHomes s) $ \homes0 -> do
     found <- findImport hsc imp
     pure [fst (importName imp) | Found _ m <- [found], isHomeModule (hsc_home_unit hsc) m]
   let sources = sourceImports ms
-  ownBoot <- if reqBoot r then pure False else doesFileExist (ml_hi_file (addBootSuffixLocn (ms_location ms)))
+  -- The module's own boot interface is looked for where GHC finds the
+  -- target's interfaces, not in the output directory, which may still hold
+  -- the boot interface of a boot file that has since been removed.
+  ownBoot <- if reqBoot r then pure False else doesFileExist (reqHidir r </> reqModPath r <.> (reqHisuf r ++ "-boot"))
   homes1 <- foldM (\h mn -> ifaceOf hsc h (mn, NotBoot)) homes0 imports
   -- Work out which modules the compile sees as boot interfaces, as GHC
   -- does in rnImports. Each import's interface records the boot files
