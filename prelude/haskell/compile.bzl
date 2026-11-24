@@ -208,11 +208,12 @@ def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_v
     )
 
 def dependency_libs(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool) -> HaskellLibraryInfoTSet:
-    direct_deps_link_info = attr_deps_haskell_link_infos(ctx)
-    return ctx.actions.tset(
-        HaskellLibraryInfoTSet,
-        children = [lib.prof_info[link_style] if enable_profiling else lib.info[link_style] for lib in direct_deps_link_info],
-    )
+    return ctx.actions.tset(HaskellLibraryInfoTSet, children = direct_dependency_libs(ctx, link_style, enable_profiling))
+
+# For each direct dependency, the libraries that it is built from: itself
+# and every library below it.
+def direct_dependency_libs(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool) -> list[HaskellLibraryInfoTSet]:
+    return [lib.prof_info[link_style] if enable_profiling else lib.info[link_style] for lib in attr_deps_haskell_link_infos(ctx)]
 
 def get_exposed_package_args(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_version: bool, enable_profiling: bool) -> cmd_args:
     package_flag = _package_flag(ctx.attrs._haskell_toolchain[HaskellToolchainInfo])

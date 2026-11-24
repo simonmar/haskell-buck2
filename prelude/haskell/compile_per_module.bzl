@@ -7,7 +7,7 @@ load(
     "@prelude//haskell:compile.bzl",
     "CompileResultInfo",
     "data_dirs_env",
-    "dependency_libs",
+    "direct_dependency_libs",
     "get_exposed_package_args",
     "get_producing_indices",
     "build_tools",
@@ -90,20 +90,28 @@ PerModuleClosures = provider(fields = {"by_module": provider_field(dict)})
 # module by module]. `import_dirs_tag` tags all the interface inputs, so
 # that a compile's dep file can list the ones it read.
 #
+# The library-less dbs are tagged inputs, and the other dbs are plain ones
+# (see Note [Package dbs as tagged inputs]).
+#
 # As well as the flags, the result has `local_import_dirs`, the interface
-# directories of the --make dependencies with their library names, and
-# `early_names`, the names of the dependencies on their early dbs. The
-# compile tool needs both to find the interfaces that its dep file lists.
+# directories of the --make dependencies with their library names,
+# `early_names`, the names of the dependencies on their early dbs, and
+# `unit_dbs`, the dbs of the local libraries with their names.
 def _package_dbs(libs: list, final: set[str], below_make: set[str], import_dirs_tag, runs_th: bool):
     packagedb_args = cmd_args()
-    packagedb_set = set()
+    # Each db, with its library and whether the db is a tagged input.
+    packagedb_set = {}
+    unit_dbs = []
     local_import_dirs = []
     early_names = set()
     native_libs = []
     for lib in libs:
         library_less = uses_library_less_db(lib, final)
+        # Whether the library's db is a tagged input rather than a plain one
+        # (see Note [Package dbs as tagged inputs]).
+        tagged = library_less
         if library_less and lib.modules != None:
-            packagedb_set.add(lib.early_db)
+            packagedb_set[lib.early_db] = (lib, tagged)
             early_names.add(lib.name)
             if lib.name in below_make:
                 # A library built with --make depends on this one, and its
@@ -111,7 +119,7 @@ def _package_dbs(libs: list, final: set[str], below_make: set[str], import_dirs_
                 # dependencies module by module].
                 packagedb_args.add(import_dirs_tag.tag_artifacts(cmd_args(hidden = lib.import_dirs)))
             continue
-        packagedb_set.add(lib.early_db if library_less else lib.db)
+        packagedb_set[lib.early_db if library_less else lib.db] = (lib, tagged)
         import_dirs = lib.import_dirs
         local_import_dirs += [(lib.name, d) for d in import_dirs if not d.is_source]
         # The interfaces are tagged, so that a compile's dep file can list
@@ -129,10 +137,17 @@ def _package_dbs(libs: list, final: set[str], below_make: set[str], import_dirs_
         if loads:
             native_libs.append(lib.native_libs)
 
-    # These we need to add for all the packages/dependencies, i.e.
-    # direct and transitive (e.g. `fbcode-common-hs-util-hs-array`)
-    packagedb_args.add([cmd_args("-package-db", x) for x in packagedb_set])
-    return struct(packagedb_args = packagedb_args, local_import_dirs = local_import_dirs, early_names = early_names, native_libs = native_libs)
+    # GHC needs the dbs of all the dependencies, direct and transitive, to
+    # find the interfaces of the modules that the direct ones re-export or
+    # refer to.
+    for db, (lib, tagged) in packagedb_set.items():
+        packagedb_args.add("-package-db", import_dirs_tag.tag_artifacts(db) if tagged else db)
+        # Each module makes the ones that its imports reach plain inputs as
+        # well (see `dbs_below` in compile_per_module), so we need to remember
+        # the dbs for later. Prebuilt dbs are not interesting for this.
+        if not lib.is_prebuilt:
+            unit_dbs.append((lib.name, db))
+    return struct(packagedb_args = packagedb_args, local_import_dirs = local_import_dirs, early_names = early_names, native_libs = native_libs, unit_dbs = unit_dbs)
 
 # The suffix that marks a boot source or interface (.hs-boot or
 # .hi-boot). A boot file's node name (its key in srcs) is
@@ -241,10 +256,12 @@ def _read_deps(label, deps: dict, nodes: list, module_libs: dict, prebuilt_names
     th = {}
     programs = {n: [] for n, _ in nodes}
     splice_imports = {}
+    units = {n: [] for n, _ in nodes}
     for n, d in deps.items():
         if n not in imports:
             fail("{}: GHC's dependency analysis found {}, but srcs has no such module (or boot file)".format(label, n))
         imports[n] = d["imports"]
+        units[n] = list(set([pkg for pkg, _ in d["external"]]))
         for pkg, mod in d["external"]:
             lib = module_libs.get(pkg)
             if lib != None and mod in lib.modules and (pkg, mod) not in upstream[n]:
@@ -254,7 +271,7 @@ def _read_deps(label, deps: dict, nodes: list, module_libs: dict, prebuilt_names
         programs[n] = d["programs"]
         if "splice" in d:
             splice_imports[n] = [(prebuilt_names.get(pkg, pkg), mod) for pkg, mod in d["splice"]]
-    return imports, upstream, th, splice_imports, programs
+    return imports, upstream, th, splice_imports, programs, units
 
 # For each node, all the nodes of this target that it imports directly or
 # indirectly, with its direct imports first. `order` must be a dependency
@@ -407,7 +424,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     tools = s.tools
     compile_script = s.compile_script
 
-    imports, upstream, th_nodes, splice_imports, program_nodes = _read_deps(s.label, deps.read_json(), nodes, module_libs, s.prebuilt_names)
+    imports, upstream, th_nodes, splice_imports, program_nodes, units = _read_deps(s.label, deps.read_json(), nodes, module_libs, s.prebuilt_names)
     order, left = _dependency_order(nodes, imports)
     if left:
         fail("{}: import cycle among {}".format(s.label, ", ".join(left)))
@@ -432,6 +449,17 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         closure_sets[n] = actions.tset(_ModuleClosureTSet, value = modules[n], children = [closure_sets[i] for i in imports[n]] + ups)
 
     runs_th = {n: n in th_nodes for n, _ in nodes}
+
+    # The direct dependencies that a module's imports reach (see Note
+    # [Package dbs as tagged inputs]). These are the ones with a
+    # library below them, or the dependency itself, that has modules imported
+    # by the module, or by another module of the target that the module
+    # depends on. That library is mostly going to be the direct dependency
+    # itself, or else a library that the direct dependency re-exports a
+    # module from.
+    def reached(n):
+        imported = set([u for m in [n] + closure[n] for u in units[m]])
+        return [d for d, below in s.reach.items() if any([u in below for u in imported])]
 
     # The environment of each set of build tools that some module may run,
     # made once for each set (see module_tools below).
@@ -595,6 +623,11 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             # interface files, so as an input it would make the module wait
             # for that particular interface for no reason.
             [cmd_args(d, format = "--unit-hidir=" + unit + "={}", ignore_artifacts = True) for unit, d in unit_hidirs],
+            # The package dbs that the module's imports reach, as plain
+            # inputs, whether or not they are tagged ones as well (see Note
+            # [Package dbs as tagged inputs]). It's fine to repeat
+            # things in here.
+            cmd_args(hidden = [mod_packages.dbs_below[d] for d in reached(n)]),
             tag.tag_artifacts(cmd_args(src_tree, format = "--srcroot={}")) if src_tree != None else [],
             cmd_args(mkdirs, format = "--mkdir={}"),
             # See Note [Data files of splices].
@@ -799,7 +832,13 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     # of the prebuilt dependencies and of the local ones in `final`, and dbs
     # that name no library for the other local ones. A module that runs no
     # Template Haskell compiles against no local library.
-    dep_libs = list(dependency_libs(ctx, link_style, enable_profiling).traverse())
+    direct_sets = direct_dependency_libs(ctx, link_style, enable_profiling)
+    dep_libs = list(ctx.actions.tset(HaskellLibraryInfoTSet, children = direct_sets).traverse())
+
+    # The local libraries below each direct dependency, itself included.
+    # Prebuilt libraries are left out: their dbs are never tagged, and a
+    # prebuilt unit's id may be the same as its name.
+    reach = {t.value.name: set([lib.name for lib in t.traverse() if not lib.is_prebuilt]) for t in direct_sets}
     exposed_package_args = get_exposed_package_args(ctx, link_style, False, enable_profiling)
 
     # The dependencies compiled per-module that some dependency built with
@@ -816,6 +855,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             args = cmd_args(exposed_package_args, dbs.packagedb_args),
             local_import_dirs = dbs.local_import_dirs,
             early_names = dbs.early_names,
+            # For each direct dependency, the dbs of the local libraries
+            # below it.
+            dbs_below = {d: [db for name, db in dbs.unit_dbs if name in below] for d, below in reach.items()},
             native_libs = dbs.native_libs,
             final = final,
             # The data dirs that the Paths_<pkg> modules of the libraries in
@@ -871,7 +913,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     # worker]). The tree changes whenever any of the target's sources
     # changes, and that alone is no reason to compile every module again. So
     # the tree is a tagged input, which only matters to a compile if its dep
-    # file lists it. A module's own source is an ordinary input as well.
+    # file lists it. A module's own source is a plain input as well.
     src_tree = None
     if worker_info != None:
         src_tree = ctx.actions.symlinked_dir(
@@ -972,6 +1014,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             module_libs = module_libs,
             module_lib_dirs = module_lib_dirs,
             prebuilt_names = prebuilt_names,
+            reach = reach,
             splice_infos = splice_infos,
             packages = packages,
             early_packages = early_packages,
@@ -1170,7 +1213,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # buck2 decides this for each action, from a dep file. Every file a module's
 # compile might read from other compiles is a tagged input: the interfaces,
 # and for a Template Haskell module the objects of the target's own modules.
-# (Its own source is an ordinary input, so editing it always compiles it
+# (Its own source is a plain input, so editing it always compiles it
 # again.) After the compile, the action lists the tagged inputs it actually
 # read. On the next build, buck2 runs the action again only if one of those
 # has changed.
@@ -1622,3 +1665,64 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # process. The worker can't do that, because all its sessions share one
 # environment. So a module that needs data dirs compiles outside the
 # worker.
+
+# Note [Package dbs as tagged inputs]
+#
+# 1. The problem
+#
+# A module's compile gets the package db of every library that its target
+# depends on, directly or not. For a library compiled per-module, that is
+# its early db, which lists the library's modules, so adding a module to the
+# library changes it. Take //app, which depends on //mid, which depends on
+# //base-lib. If every db were a plain input, adding a module to //mid or
+# //base-lib would compile again every module of //app, even those whose
+# imports don't lead there.
+#
+# 2. Which dbs are tagged
+#
+# GHC uses a db in two ways:
+#
+#  * To resolve imports, against the dbs of the target's direct
+#    dependencies, which are the only ones exposed. An import resolves to a
+#    module of a dependency that the module's imports reach, whose db is a
+#    plain input (see section 3). If that dependency stops providing the
+#    module, its db changes, and the module compiles again. If another
+#    dependency starts providing a module of the same name, GHC doesn't
+#    prefer one of them: the import is ambiguous. The deps tool resolves
+#    every import against the same dbs, and has them all as plain inputs, so
+#    it runs again and fails on the ambiguous import, as GHC would.
+#  * To find the interfaces of a package's modules. As far as we know, this
+#    is all that GHC uses a library-less db for otherwise.
+#
+# So the library-less dbs are tagged inputs (see _package_dbs). Final dbs
+# stay plain inputs, because GHC's interpreter loads the libraries they
+# name, and those libraries are plain inputs anyway. So do the dbs of
+# prebuilt libraries. They change only with the toolchain, and then most
+# things compile again anyway.
+#
+# The tagged dbs are in the shared package flags for a target and are not
+# listed by any dep files, so they don't lead to recompilation by
+# themselves.
+#
+# 3. Which tagged dbs a module depends on
+#
+# A module can only read the interfaces of the libraries below the direct
+# dependencies that it imports from, or that a module it imports, directly
+# or not, imports from. Its compile has the dbs of those libraries as
+# plain inputs (see `reached` in _register_modules_impl). Some of them are
+# tagged inputs as well, and buck2 treats an input that is both tagged and
+# plain as plain (the stronger constraint).
+#
+# The rules work out the libraries in question from the module graph
+# before the module compiles. They can't use the usages that GHC records in
+# the module's interface (thus letting us properly tag the used dbs),
+# because while these are sound (they include digests of transitively used
+# interfaces), they don't _list_ the transitive interfaces. In principle
+# this suggests that we could probably trim the set of depended-upon dbs
+# even further, but for now we stick to the conservative choice of all the
+# transitively used ones.
+#
+# So adding a module to //base-lib compiles again the modules of //mid
+# whose imports lead to //base-lib, and the modules of //app whose imports
+# lead to //mid. Adding a module to //mid compiles again only the modules of
+# //app whose imports lead to //mid.
