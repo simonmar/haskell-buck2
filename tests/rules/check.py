@@ -58,6 +58,7 @@ from other_rules import (
 )
 from per_module import (
     check_advice_modules_outside_worker,
+    check_advice_report,
     check_advice_template_haskell,
     check_advice_unused_build_tools,
     check_binary_unit,
@@ -106,6 +107,7 @@ CHECKS = [
     check_advice_unused_build_tools,
     check_advice_template_haskell,
     check_advice_modules_outside_worker,
+    check_advice_report,
     check_make_build,
     check_early_db_conf,
     check_native_libraries_outside_worker,

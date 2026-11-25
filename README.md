@@ -148,16 +148,36 @@ its imports.
 
 The rules can spot some ways of declaring a target that
 build correctly but slowly, and can report them as advice. 
-After a build, the prelude's `validation/audit_results.bxl` can be used to get 
-the check results: 
+To see what there is to act on, run:
 
 ```
-buck2 build //...
-buck2 bxl prelude//validation/audit_results.bxl:main -- --targets //... --trim true
+cat $(buck2 bxl prelude//haskell/advice.bxl:main -- --targets //...)
 ```
 
-A result is a JSON file whose `data` has a `message` for people and a list
-of `findings` for tools. `--take NAME` picks out one check. The checks are:
+The report has a section for each check that found something: what the
+check looks for and what to do about it, then a line for each target that
+it found something in. Checks and targets with nothing to report are left
+out. The report is made from the checks' results alone, so any validation
+whose result has `findings` gets a section too. For example:
+
+```
+haskell_modules_outside_worker (1 target)
+  Modules that compile without the persistent worker, which is slower. A module compiles outside it if it may run build tools (tools), or if its splices may read data files (data_dirs) or load native libraries (native_libraries). A module that runs Template Haskell (template_haskell) is assumed to run any of its target's build tools.
+  root//build-tools:own: BT.Own (runs bt-own); BT.OwnSplice (may run bt-own)
+
+haskell_unused_build_tools (2 targets)
+  Build tools that no module's compile runs, though where the target has Template Haskell splices (splices), a splice might. Remove them from build_tool_depends, or, for a program that runs them, move them to run_tool_depends.
+  root//build-tools:unused: bt-copy
+  root//build-tools:unused-splice: bt-copy (unless a splice runs them)
+```
+
+The script builds the targets first if they haven't been built.
+
+For tools, the prelude's `validation/audit_results.bxl` gives the path of
+each check's result, a JSON file whose `data` has a list of `findings`, a
+`message` that sums them up, and an `explanation` of what the check looks
+for and what the findings' fields mean (`buck2 bxl prelude//validation/audit_results.bxl:main --
+--targets //...`; `--take NAME` picks out one check). The checks are:
 
 - `haskell_unused_build_tools`: build tools that are not used by any module's 
   compilation. If the program uses them at runtime, they belong in

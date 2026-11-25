@@ -132,22 +132,22 @@ def check_advice_unused_build_tools(st):
     report there."""
     found = advice("haskell_unused_build_tools", "//build-tools:unused", "//build-tools:unused-splice", "//build-tools:own")
     expect_set("the targets checked", set(found), {"unused", "unused-splice", "own"})
-    expect_set("unused's findings", {(f["tool"], f["certainty"]) for f in found["unused"]}, {("bt-copy", "definite")})
-    expect_set("unused-splice's findings", {(f["tool"], f["certainty"]) for f in found["unused-splice"]}, {("bt-copy", "unless_a_splice_runs_it")})
-    expect_set("own's findings", {(f["tool"], f["certainty"]) for f in found["own"]}, set())
+    expect_set("unused's findings", {(f["tool"], f["splices"]) for f in found["unused"]}, {("bt-copy", False)})
+    expect_set("unused-splice's findings", {(f["tool"], f["splices"]) for f in found["unused-splice"]}, {("bt-copy", True)})
+    expect_set("own's findings", {(f["tool"], f["splices"]) for f in found["own"]}, set())
 
 
 def check_advice_template_haskell(st):
-    """haskell_template_haskell_from_flags reports a target whose flags turn
-    on Template Haskell for all its modules (//advice:th-flags's two), and
-    haskell_ann_pragmas the modules that compile as Template Haskell modules
-    only because of ANN pragmas (//advice:ann's AD.Ann). //build-tools:own's
-    BT.OwnSplice turns on Template Haskell in its own pragma, which neither
-    check reports."""
+    """haskell_template_haskell_from_flags reports the modules that compile
+    as Template Haskell modules because their target's flags turn it on
+    (//advice:th-flags's AD.F1 and AD.F2), and haskell_ann_pragmas the
+    modules that do only because of ANN pragmas (//advice:ann's AD.Ann).
+    //build-tools:own's BT.OwnSplice turns on Template Haskell in its own
+    pragma, which neither check reports."""
     targets = ["//advice:th-flags", "//advice:ann", "//build-tools:own"]
     flags = advice("haskell_template_haskell_from_flags", *targets)
     expect_set("the targets whose flags turn on Template Haskell", {t for t, fs in flags.items() if fs}, {"th-flags"})
-    expect("th-flags's finding counts its two modules (got {})".format(flags["th-flags"]), flags["th-flags"] == [{"modules": 2}])
+    expect_set("th-flags's findings", {f["module"] for f in flags["th-flags"]}, {"AD.F1", "AD.F2"})
     anns = advice("haskell_ann_pragmas", *targets)
     expect_set("the modules that run Template Haskell only for ANN pragmas", {(t, f["module"]) for t, fs in anns.items() for f in fs}, {("ann", "AD.Ann")})
 
@@ -159,8 +159,35 @@ def check_advice_modules_outside_worker(st):
     BT.OwnSplice, which runs Template Haskell, but not BT.OwnPlain. Without
     a worker, it reports nothing."""
     found = advice("haskell_modules_outside_worker", "//build-tools:own")
-    expected = {("BT.Own", ("bt-own",), "programs"), ("BT.OwnSplice", ("bt-own",), "template_haskell")} if st.worker else set()
-    expect_set("the modules of own compiled without the worker", {(f["module"], tuple(f["tools"]), f["reason"]) for f in found["own"]}, expected)
+    expected = {("BT.Own", ("bt-own",), False), ("BT.OwnSplice", ("bt-own",), True)} if st.worker else set()
+    expect_set("the modules of own compiled without the worker", {(f["module"], tuple(f["tools"]), f["template_haskell"]) for f in found["own"]}, expected)
+
+
+def check_advice_report(st):
+    """prelude//haskell/advice.bxl reports, for each check, only the targets
+    with something to report, one line each. In //advice:, th-flags's flags
+    and ann's ANN pragma. In //build-tools:, the unused build tool of unused
+    and unused-splice but not own, and, with a worker, the targets whose
+    modules run build tools, which compile outside it."""
+    def report(pattern):
+        path = buck2("bxl", "prelude//haskell/advice.bxl:main", "--", "--targets", pattern).stdout.strip().splitlines()[-1]
+        with open(path) as f:
+            return f.read().splitlines()
+    def section(lines, check):
+        # A check's heading, then its explanation, then a line for each
+        # target: "  root//pkg:name: summary".
+        heads = [i for i, line in enumerate(lines) if not line.startswith(" ")]
+        for i in heads:
+            if lines[i].startswith(check + " "):
+                end = min([j for j in heads if j > i] + [len(lines)])
+                return {m.group(1) for line in lines[i + 1:end] for m in [re.match(r"^  \S*//[^:]*:([^:]+): ", line)] if m}
+        return set()
+    lines = report("//advice:")
+    expect_set("targets under haskell_template_haskell_from_flags in //advice:'s report", section(lines, "haskell_template_haskell_from_flags"), {"th-flags"})
+    expect_set("targets under haskell_ann_pragmas in //advice:'s report", section(lines, "haskell_ann_pragmas"), {"ann"})
+    lines = report("//build-tools:")
+    expect_set("targets under haskell_unused_build_tools in //build-tools:'s report", section(lines, "haskell_unused_build_tools"), {"unused", "unused-splice"})
+    expect_set("targets under haskell_modules_outside_worker in //build-tools:'s report", section(lines, "haskell_modules_outside_worker"), {"discover", "flags", "own", "unused-splice"} if st.worker else set())
 
 
 def check_early_db_conf(st):
@@ -188,8 +215,8 @@ def check_native_libraries_outside_worker(st):
     even when the project has one, and haskell_modules_outside_worker says
     why."""
     found = advice("haskell_modules_outside_worker", "//th-ffi-splice:th-ffi-splice")
-    expected = {("U.V", "native_libraries"), ("U.W", "native_libraries")} if st.worker else set()
-    expect_set("the modules of th-ffi-splice compiled outside the worker", {(f["module"], f["reason"]) for f in found["th-ffi-splice"]}, expected)
+    expected = {("U.V", True), ("U.W", True)} if st.worker else set()
+    expect_set("the modules of th-ffi-splice compiled outside the worker", {(f["module"], f["native_libraries"]) for f in found["th-ffi-splice"]}, expected)
 
 
 def check_compile_granularity(st):
