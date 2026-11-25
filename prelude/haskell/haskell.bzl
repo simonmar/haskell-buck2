@@ -437,22 +437,14 @@ def _make_package(
     hlis: list[HaskellLibraryInfo],
     hi: list[Artifact],
     lib: list[Artifact],
+    # Libraries whose directories go in dynamic-library-dirs, where a
+    # dynamically linked GHC looks for the package's library. Like `lib`, it
+    # is ignored for an early or library-less package.
+    dynamic_lib: list[Artifact],
     enable_profiling: bool,
     # The directory, relative to the target's outputs, that the interfaces are
     # written to (see import_dir on CompileResultInfo). 
     import_dir: str,
-    # This same target's own "shared" variant (built alongside any other
-    # link style whenever Linkage allows it - see haskell_library_impl).
-    # Referenced here (for non-shared link styles) via `dynamic-library-dirs:`
-    # so that GHC's internal interpreter can load this package the dynamic
-    # way for a Template Haskell splice, even when this specific conf is
-    # for a statically-linked consumer. GHC's `--make` driver dual-compiles
-    # *every* module in a compilation unit the moment any one of them uses
-    # TemplateHaskell (confirmed empirically - it needs a dynamic way for
-    # every import reached that way, not just modules a splice actually
-    # touches), so every package needs to be discoverable this way, not
-    # just ones that use TH themselves.
-    own_shared_lib: [Artifact, None] = None,
     # Every library this one depends on, when it re-exports modules: the
     # package the module is defined in may be one that the dependency re-exports it
     # from, and ghc-pkg has to find it.
@@ -524,9 +516,8 @@ def _make_package(
         conf += [
             cmd_args("library-dirs: ", library_dirs, delimiter = ""),
             "extra-libraries: " + libname,
+            cmd_args("dynamic-library-dirs: ", cmd_args([pkgroot_path(l, parent = 1) for l in dynamic_lib], delimiter = ", "), delimiter = ""),
         ]
-        if own_shared_lib != None:
-            conf.append(cmd_args("dynamic-library-dirs: ", pkgroot_path(own_shared_lib, parent = 1), delimiter = ""))
     pkg_conf = ctx.actions.write("pkg-" + db_variant + ".conf", conf, has_content_based_path = False)
 
     # While the list of hlis is unique, there may be multiple packages in the same db.
@@ -566,7 +557,7 @@ def _make_package(
                 haskell_toolchain.packager,
             ],
             # needs hi, because ghc-pkg checks that the .hi files exist
-            hidden = [] if early else hi if library_less else hi + lib + ([own_shared_lib] if own_shared_lib != None else []),
+            hidden = [] if early else hi if library_less else hi + lib + dynamic_lib,
         ),
         category = "haskell_package",
         identifier = db_variant,
@@ -615,13 +606,8 @@ def _get_haskell_shared_library_name_linker_flags(linker_type: LinkerType, sonam
 def _native_libs(ctx: AnalysisContext) -> SharedLibraryInfo:
     return merge_shared_libraries(ctx.actions, deps = [d[SharedLibraryInfo] for d in ctx.attrs.deps if SharedLibraryInfo in d and HaskellLinkInfo not in d])
 
-# _link_library() and _register_library() are invoked once for each
-# combination of
-#
-#    (enable_profiling, link_style)
-#
-# that the library offers (see Note [Link styles and profiling]), except
-# that there's no enable_profiling = True + link_style = "shared".
+# _link_library() and _register_library() are invoked once for each variant
+# that the library builds (see Note [Link styles and profiling]).
 def _link_library(
     ctx,
     libname: str,
@@ -742,19 +728,15 @@ def _register_library(
     # The library's native libraries (see _native_libs).
     native_libs: SharedLibraryInfo,
     library: Library,
-    # The non-profiled library is also needed to build the package for
-    # profiling, so it should be passed when `enable_profiling` is True.
-    non_profiling_library: [Library, None] = None,
-    # The library's non-profiled shared library, for the package to name as
-    # its dynamic way (see own_shared_lib on _make_package). GHC's internal
-    # interpreter can't load a profiled library, so a profiled package needs
-    # this to run its code in a splice.
-    non_profiling_shared_lib: [Artifact, None] = None,
+    # The splice variant of `library`: the variant whose code GHC loads when
+    # a splice in a module compiled against `library` runs this library's
+    # code. It may be `library` itself (see Note [Link styles and
+    # profiling]).
+    splice_variant: Library,
 ) -> HaskellLibBuildOutput:
     link_style = library.link_style
     compiled = library.compiled
     libstem = library.libstem
-    libs = library.libs
     linfos = [x.prof_info if enable_profiling else x.info for x in hlis]
 
     # only gather direct dependencies
@@ -762,40 +744,35 @@ def _register_library(
     all_hlis = [lib for x in linfos for lib in x[link_style].traverse()] if ctx.attrs.reexported_modules else []
     below = ctx.actions.tset(HaskellLibraryInfoTSet, children = [x[link_style] for x in linfos])
 
-    if enable_profiling:
-        if not non_profiling_library:
-            fail("Non-profiling Library wasn't provided when building profiling lib")
+    # The package names the variant's own interfaces, stubs and libraries,
+    # and those of its splice variant. Its library-dirs names only the
+    # variant's own library, because listing both can confuse a profiled
+    # external interpreter. GHC's internal interpreter finds a shared splice
+    # variant's library through dynamic-library-dirs instead. When the
+    # variant is its own splice variant, or both come from one -dynamic-too
+    # compile, they share some files, so each file is named only once.
+    def unique(xs: list) -> list:
+        return list({x: None for x in xs}.keys())
 
-        import_artifacts = [compiled.hi, non_profiling_library.compiled.hi]
-        # Only the profiled library: GHC's internal interpreter finds the
-        # non-profiled one through dynamic-library-dirs (own_shared_lib).
-        # Listing both can confuse a profiled external interpreter.
-        library_artifacts = [libs[0]]
-        all_libs = libs + non_profiling_library.libs
-        stub_dirs = [compiled.stubs] + [non_profiling_library.compiled.stubs]
-    else:
-        import_artifacts = [compiled.hi]
-        library_artifacts = [libs[0]]
-        all_libs = libs
-        stub_dirs = [compiled.stubs]
-
-    own_shared_lib = None
-    if non_profiling_shared_lib != None:
+    import_artifacts = unique([compiled.hi, splice_variant.compiled.hi])
+    stub_dirs = unique([compiled.stubs, splice_variant.compiled.stubs])
+    all_libs = unique(library.libs + splice_variant.libs)
+    splice_lib = splice_variant.libs[0]
+    if splice_variant.link_style == LinkStyle("shared"):
         # GHC looks in dynamic-library-dirs for a shared library whose name
         # is the package's extra-libraries entry with the shared library
         # suffix. That entry is `libstem`, with "_p" when the package is
         # profiled (see _make_package). When the shared library has a
         # different name, we link it under the name GHC looks for. Each
         # variant has a different name, so the links don't clash.
-        own_shared_libfile = "lib" + libstem + ("_p" if enable_profiling else "") + non_profiling_shared_lib.extension
-        if own_shared_libfile == non_profiling_shared_lib.basename:
-            own_shared_lib = non_profiling_shared_lib
-        else:
-            own_shared_lib = ctx.actions.declare_output(
-                paths.join("lib-shared", own_shared_libfile),
+        splice_libfile = "lib" + libstem + ("_p" if enable_profiling else "") + splice_lib.extension
+        if splice_libfile != splice_lib.basename:
+            alias = ctx.actions.declare_output(
+                paths.join("lib-shared", splice_libfile),
                 has_content_based_path = False,
             )
-            ctx.actions.symlink_file(own_shared_lib.as_output(), non_profiling_shared_lib)
+            ctx.actions.symlink_file(alias.as_output(), splice_lib)
+            splice_lib = alias
 
     db = _make_package(
         ctx,
@@ -804,10 +781,10 @@ def _register_library(
         libstem,
         uniq_infos,
         import_artifacts,
-        library_artifacts,
+        [library.libs[0]],
+        [splice_lib],
         enable_profiling = enable_profiling,
         import_dir = compiled.import_dir,
-        own_shared_lib = own_shared_lib,
         all_hlis = all_hlis,
     )
 
@@ -872,10 +849,10 @@ def _per_module_fields(
         # compile against, and its dependencies.
         return {
             "below": below,
-            "early_db": _make_package(ctx, link_style, pkgname, libname, hlis, hi, [], enable_profiling = enable_profiling, import_dir = compiled.import_dir, all_hlis = all_hlis, library_less = True),
+            "early_db": _make_package(ctx, link_style, pkgname, libname, hlis, hi, [], [], enable_profiling = enable_profiling, import_dir = compiled.import_dir, all_hlis = all_hlis, library_less = True),
         }
     return {
-        "early_db": _make_package(ctx, link_style, pkgname, libname, hlis, [], [], enable_profiling = enable_profiling, import_dir = compiled.import_dir, all_hlis = all_hlis, early = True),
+        "early_db": _make_package(ctx, link_style, pkgname, libname, hlis, [], [], [], enable_profiling = enable_profiling, import_dir = compiled.import_dir, all_hlis = all_hlis, early = True),
         "modules": compiled.modules,
         "closures": compiled.closures,
     }
@@ -1008,75 +985,69 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     # profiled link asks for them. See Note [Link styles and profiling].
     prof_link_styles = [legacy_output_style_to_link_style(o) for o in get_output_styles_for_linkage(Linkage("static"))]
 
-    # Each profiled library is registered together with a non-profiled build
-    # of the library (see non_profiling_library on _register_library), from
-    # which GHC loads it to run a Template Haskell splice. A dynamically
-    # linked GHC loads the shared library, with its .dyn_hi interfaces. A
-    # statically linked one loads the static library of the same style, which
-    # is built for it if the library otherwise has none.
-    pair_with_shared = haskell_toolchain.dynamic_ghc and LinkStyle("shared") in link_styles
-
-    def non_profiling_style(link_style: LinkStyle) -> LinkStyle:
-        return LinkStyle("shared") if pair_with_shared else link_style
+    # The style of a variant's splice variant. The Template Haskell section
+    # of Note [Link styles and profiling] explains the choice.
+    def splice_variant_style(link_style: LinkStyle, enable_profiling: bool) -> LinkStyle:
+        if enable_profiling:
+            if haskell_toolchain.dynamic_ghc and LinkStyle("shared") in link_styles:
+                return LinkStyle("shared")
+            return link_style
+        if build_shared_too and link_style == consumed_static_link_style:
+            return LinkStyle("shared")
+        return link_style
 
     unprof_link_styles = link_styles + [
         s
-        for s in prof_link_styles
-        if s not in link_styles and non_profiling_style(s) == s
+        for s in [splice_variant_style(p, True) for p in prof_link_styles]
+        if s not in link_styles
     ]
 
-    # The non-profiling library is also needed to build the package with
-    # profiling enabled, so we need to keep track of it for each link style.
-    non_profiling_hlib = {}
-    for enable_profiling in [False, True]:
-        for link_style in (prof_link_styles if enable_profiling else unprof_link_styles):
-            if build_shared_too and link_style == LinkStyle("shared"):
-                # Packaged from the consumed static style's compile, below.
-                continue
+    compiles = {}
 
-            dynamic_too = build_shared_too and link_style == consumed_static_link_style and not enable_profiling
-            non_profiling_shared = non_profiling_hlib.get(LinkStyle("shared"))
-
-            compiled = (compile_per_module if compiles_per_module(ctx) else compile)(
+    def compile_variant(link_style: LinkStyle, enable_profiling: bool, dynamic_from: [CompileResultInfo, None]) -> CompileResultInfo:
+        key = (link_style, enable_profiling)
+        if key not in compiles:
+            compiles[key] = (compile_per_module if compiles_per_module(ctx) else compile)(
                 ctx,
                 link_style,
                 enable_profiling = enable_profiling,
                 pkgname = pkgname,
                 native_libs = native_libs,
-                dynamic_too = dynamic_too,
-                dynamic_from = non_profiling_shared.library.compiled if (enable_profiling and non_profiling_shared) else None,
+                dynamic_too = build_shared_too and link_style == consumed_static_link_style and not enable_profiling,
+                dynamic_from = dynamic_from,
             )
+        return compiles[key]
 
-            if dynamic_too:
-                non_profiling_shared = _register_library(
-                    ctx,
-                    libname,
-                    pkgname,
-                    hlis = hlis,
-                    enable_profiling = False,
-                    native_libs = native_libs,
-                    library = _link_library(ctx, libname, nlis, LinkStyle("shared"), False, _dynamic_view(compiled)),
-                )
+    # Each variant is built after its splice variant, so the shared variant
+    # first.
+    variants = (
+        [(False, s) for s in unprof_link_styles if s == LinkStyle("shared")] +
+        [(False, s) for s in unprof_link_styles if s != LinkStyle("shared")] +
+        [(True, s) for s in prof_link_styles]
+    )
+    # The libraries of the non-profiled variants, by style.
+    libraries = {}
+    for enable_profiling, link_style in variants:
+        splice_style = splice_variant_style(link_style, enable_profiling)
+        if build_shared_too and link_style == LinkStyle("shared"):
+            compiled = _dynamic_view(compile_variant(consumed_static_link_style, False, None))
+        else:
+            dynamic_from = libraries[splice_style].compiled if enable_profiling and splice_style == LinkStyle("shared") else None
+            compiled = compile_variant(link_style, enable_profiling, dynamic_from)
 
-            hlib_build_out = _register_library(
-                ctx,
-                libname,
-                pkgname,
-                hlis = hlis,
-                enable_profiling = enable_profiling,
-                native_libs = native_libs,
-                library = _link_library(ctx, libname, nlis, link_style, enable_profiling, compiled),
-                non_profiling_library = non_profiling_hlib[non_profiling_style(link_style)].library if enable_profiling else None,
-                non_profiling_shared_lib = non_profiling_shared.library.libs[0] if (non_profiling_shared and (enable_profiling or dynamic_too)) else None,
-            )
-            if not enable_profiling:
-                non_profiling_hlib[link_style] = hlib_build_out
-
-            record(link_style, enable_profiling, hlib_build_out)
-
-            if dynamic_too:
-                non_profiling_hlib[LinkStyle("shared")] = non_profiling_shared
-                record(LinkStyle("shared"), False, non_profiling_shared)
+        library = _link_library(ctx, libname, nlis, link_style, enable_profiling, compiled)
+        if not enable_profiling:
+            libraries[link_style] = library
+        record(link_style, enable_profiling, _register_library(
+            ctx,
+            libname,
+            pkgname,
+            hlis = hlis,
+            enable_profiling = enable_profiling,
+            native_libs = native_libs,
+            library = library,
+            splice_variant = libraries[splice_style],
+        ))
 
     link_style = cxx_toolchain_link_style(ctx)
     output_style = get_lib_output_style(
@@ -1142,7 +1113,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
         deps = ctx.attrs.deps,
     )
 
-    default_output = hlib_infos[actual_link_style].libs
+    default_output = libraries[actual_link_style].libs
 
     inherited_pp_info = cxx_inherited_preprocessor_infos(attr_deps(ctx))
 
@@ -1767,13 +1738,22 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
 # GHC runs a Template Haskell splice in its own process, by loading the code
 # the splice uses: the modules it uses of the libraries the module depends on,
 # and of the module's own library. GHC loads code the way that it was itself
-# linked. A GHC linked statically loads archives, and the ordinary .hi
-# interfaces that go with them: any static variant will do. A GHC linked
-# dynamically (haskell_toolchain.dynamic_ghc, which is how GHC is normally
-# installed) loads shared libraries, and the .dyn_hi interfaces that go with
-# them. GHC finds them through the package of the variant being compiled
-# against: the .dyn_hi in its import-dirs, beside the .hi, and the shared
-# library in its dynamic-library-dirs.
+# linked (GHC calls this its "host way"). A GHC linked statically loads
+# archives, and the ordinary .hi interfaces that go with them: any static
+# variant will do. A GHC linked dynamically (haskell_toolchain.dynamic_ghc,
+# which is how GHC is normally installed) loads shared libraries, and the
+# .dyn_hi interfaces that go with them. GHC finds them through the package
+# of the variant being compiled against: the .dyn_hi in its import-dirs,
+# beside the .hi, and the shared library in its dynamic-library-dirs.
+#
+# For each variant of a library, its splice variant is the variant whose
+# code GHC loads when a splice in a module compiled against that variant
+# runs the library's code. GHC can't load profiled code, so a splice variant
+# is never profiled. It may be the variant itself. For example, with a
+# dynamically linked GHC, the splice variant of a library's profiled
+# variant is its shared variant, when the library has one. A variant's
+# package names its splice variant's files as well as its own, so that GHC
+# finds them through the package.
 #
 # So with a dynamic GHC every variant's package needs to have a shared
 # library and a set of .dyn_hi files. A shared variant's package has its
@@ -1789,18 +1769,19 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
 #    Linux) gets neither: see Known gaps below.
 #
 #  * Profiled: the profiled package also needs to contain a non-profiled
-#    library and interfaces (non_profiling_library). With a dynamic GHC, that
-#    is the shared variant, but where its interfaces live depends on whether
-#    we used -dynamic-too or not. In the case of -dynamic-too the .dyn_hi
-#    files live alongside the static variant's .hi files, otherwise they're
-#    in the shared variant's own directory. The package names whichever
-#    directory the interfaces were written to (_make_package uses the paths
-#    of the artifacts it is given). GHC looks for the shared library by the
-#    profiled library's name, with its _p, so the shared library is given
-#    that name too (own_shared_lib). With a static GHC, or a library that
-#    offers no shared variant, the non-profiled library is instead the
-#    unprofiled static variant of the same style, which is built for the
-#    purpose if the library doesn't otherwise offer it.
+#    library and interfaces (its splice variant). With a dynamic GHC, that is
+#    the shared variant, but where its interfaces live depends on whether we
+#    used -dynamic-too or not. In the case of -dynamic-too the .dyn_hi files
+#    live alongside the static variant's .hi files, otherwise they're in the
+#    shared variant's own directory. The package names whichever directory the
+#    interfaces were written to (_make_package uses the paths of the artifacts
+#    it is given). GHC looks for the shared library by the profiled library's
+#    name, with its _p, so the shared library is given that name too (see
+#    _register_library). With a static GHC, or a library that offers no shared
+#    variant, the non-profiled library is instead the unprofiled static
+#    variant of the same style, which is built for the purpose if the library
+#    doesn't otherwise offer it. A static GHC doesn't find it, though (see
+#    Known gaps below).
 #
 # A splice can also use a module of the same library. GHC then loads that
 # module's .dyn_o from the compile's own output directory, where it would be
@@ -1835,6 +1816,16 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
 #    "shared"): there is no package of that style to compile against. One
 #    whose link_style is "static_pic" compiles against the libraries'
 #    static_pic packages, but still links their shared libraries.
+#
+#  * With a static GHC, a profiled module can't use a library's code in a
+#    splice, unless it is compiled with -fexternal-interpreter. GHC's
+#    internal interpreter looks for the library in the profiled package's
+#    library-dirs, which names only the profiled archive, and it can't load
+#    profiled code. Cabal puts both archives in one directory. Here a
+#    library's package is shared by targets that may or may not use an
+#    external interpreter, and the two want different archives under the
+#    same name. This is from reading GHC's loader: the tests use a dynamic
+#    GHC.
 #
 #  * With a dynamic GHC, an unprofiled static variant that isn't the style
 #    executables use (static_pic on Linux) is compiled without -dynamic-too,
