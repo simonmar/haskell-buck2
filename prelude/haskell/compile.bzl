@@ -57,6 +57,8 @@ CompileResultInfo = record(
     import_dir = field(str),
     # These are only set when the target is compiled per-module:
     modules = field(dict[str, HaskellModuleFiles] | None, None),
+    # GHC's messages, such as warnings: a file for each module.
+    diagnostics = field(list[Artifact], []),
     closures = field(typing.Any, None),
     # For each module and node name, the dynamic object that GHC's internal
     # interpreter loads when a splice runs that module's code. This is the

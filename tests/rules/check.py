@@ -21,6 +21,7 @@ import traceback
 from both_ways import (
     check_configurations,
     check_data_dirs,
+    check_diagnostics,
     check_haddock,
     check_discovered_module,
     check_external_interpreter_native_splices,
@@ -158,6 +159,7 @@ CHECKS = [
     check_own_native_libraries_per_module,
     check_configurations,
     check_data_dirs,
+    check_diagnostics,
     check_haddock,
     check_test_build_tools,
     check_haddock_build_tools,

@@ -1,0 +1,13 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# A library with a warning in D.Warn, compiled per-module and with --make.
+[
+    haskell_library(
+        name = name,
+        srcs = {"D.Other": "D/Other.hs", "D.Warn": "D/Warn.hs"},
+        packages = ["base"],
+        compiler_flags = ["-Wunused-local-binds"],
+        per_module = per_module,
+    )
+    for name, per_module in [("per-module", True), ("make", False)]
+]

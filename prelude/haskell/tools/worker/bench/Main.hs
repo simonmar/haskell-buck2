@@ -482,7 +482,7 @@ viaWorker dir worker rts ghc n common settings w edit = do
 workerRequest :: String -> FilePath -> [String] -> Target -> String -> [String]
 workerRequest ghc libdir common t name =
   [ "--request", "--contract", contract, "--libdir", libdir
-  , "--depfile", tDir t </> "dep" </> name <.> "dep", "--abi", outDir t </> name <.> "abi", "--module", name, "--source", tDir t </> "src" </> name <.> "hs"
+  , "--depfile", tDir t </> "dep" </> name <.> "dep", "--abi", outDir t </> name <.> "abi", "--diagnostics", outDir t </> name <.> "diag", "--module", name, "--source", tDir t </> "src" </> name <.> "hs"
   , "--outdir", outDir t, "--hisuf", "hi", "--srcroot=" ++ tDir t </> "src"]
   ++ ["--", ghc] ++ compileFlags common t ++ ["-fforce-recomp", "--"] ++ compileArgs t name
 

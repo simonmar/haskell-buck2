@@ -9,6 +9,8 @@ import sys
 
 from harness import (
     COMPILES,
+    append,
+    compiled_modules,
     CheckFailed,
     DEV_STYLE,
     is_module_compile,
@@ -358,6 +360,29 @@ def check_configurations(st):
                 if m and is_module_compile(e) and e["reproducer"].get("executor") == "WorkerInit":
                     inits[m.group(2)] = inits.get(m.group(2), 0) + 1
             expect("a worker for each configuration (started: {})".format(inits), sorted(inits.values()) == [1, 1])
+
+
+def check_diagnostics(st):
+    """A target compiled per-module has a [diagnostics.txt] with its modules'
+    warnings, with their file and line: D.Warn's unused binding. A warning
+    stays there when its module isn't compiled again: an edit to D.Other
+    leaves D.Warn's. A target compiled with --make has no
+    [diagnostics.txt]."""
+    def diagnostics(name):
+        out = buck2("build", "--show-full-output", "//diagnostics:{}[diagnostics.txt]".format(name)).stdout
+        path = [line.split()[1] for line in out.splitlines() if line.startswith("root//diagnostics:")][0]
+        with open(path) as f:
+            return f.read()
+    text = diagnostics("per-module")
+    expect("//diagnostics:per-module[diagnostics.txt] has D.Warn's warning, with its line (got {!r})".format(text),
+           "unusedThing" in text and "Warn.hs:4:" in text)
+    p = buck2("build", "//diagnostics:make[diagnostics.txt]", ok=False)
+    expect("//diagnostics:make has no [diagnostics.txt]", p.returncode != 0)
+    append("diagnostics/D/Other.hs", "\n-- an edit\n")
+    text = diagnostics("per-module")
+    ran = compiled_modules(what_ran())
+    expect("after an edit to D.Other, D.Warn isn't compiled again (compiled: {})".format(sorted(ran)), "per-module:D.Warn" not in ran)
+    expect("after an edit to D.Other, [diagnostics.txt] still has D.Warn's warning (got {!r})".format(text), "unusedThing" in text)
 
 
 def check_th_boot_cycles(st):

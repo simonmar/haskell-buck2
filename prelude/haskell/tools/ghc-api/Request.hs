@@ -30,6 +30,7 @@ data Request = Request
   { reqLibdir :: FilePath
   , reqDepfile :: FilePath
   , reqAbi :: FilePath
+  , reqDiagnostics :: FilePath -- where to write the compile's messages, such as warnings
   , reqModPath :: String -- Foo/Bar
   , reqSource :: FilePath
   , reqOutDir :: FilePath -- where every module's outputs are
@@ -59,13 +60,14 @@ moduleArg flag r = case dropWhile (/= flag) (reqModuleArgs r) of
 parseRequest :: [String] -> Either String Request
 parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
   "--contract" : v : rest
-    | v == contract -> go (Request "" "" "" "" "" "" "" [] [] [] [] [] False [] "" [] []) rest
+    | v == contract -> go (Request "" "" "" "" "" "" "" "" [] [] [] [] [] False [] "" [] []) rest
     | otherwise -> Left ("this program takes version " ++ contract ++ " of the rules' requests, but the rules sent version " ++ v ++ ": build it from the same version of the rules")
   _ -> Left "the request names no version: build this program from the same version of the rules"
   where
     go r ("--libdir" : v : rest) = go r{reqLibdir = v} rest
     go r ("--depfile" : v : rest) = go r{reqDepfile = v} rest
     go r ("--abi" : v : rest) = go r{reqAbi = v} rest
+    go r ("--diagnostics" : v : rest) = go r{reqDiagnostics = v} rest
     go r ("--module" : v : rest) = go r{reqModPath = v} rest
     go r ("--source" : v : rest) = go r{reqSource = v} rest
     go r ("--outdir" : v : rest) = go r{reqOutDir = v} rest
@@ -73,6 +75,7 @@ parseRequest args = case drop 1 (dropWhile (/= "--request") args) of
     go r ("--boot" : rest) = go r{reqBoot = True} rest
     go r ("--" : compiler : rest)
       | null (reqLibdir r) = Left "the request names no libdir (--libdir)"
+      | null (reqDiagnostics r) = Left "the request names no diagnostics file (--diagnostics)"
       | otherwise =
           let (session, moduleArgs) = break (== "--") rest
            in Right r{reqCompiler = compiler, reqSessionArgs = session, reqModuleArgs = drop 1 moduleArgs}
