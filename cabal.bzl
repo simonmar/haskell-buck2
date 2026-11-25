@@ -191,12 +191,57 @@ def _check_provided(spec, c, srcs):
         ))
 
 def _include_flags(c, pkg_dir):
-    # The package's own include directories, and where a configure script put
-    # the headers it generated: GHC needs both for CPP and for the C stubs of
-    # foreign imports. They are paths from the root of the project, which is
-    # where the compiler runs.
-    dirs = [d if pkg_dir == "." or d.startswith("/") else pkg_dir + "/" + d for d in c.get("include_dirs", [])]
-    return _nub(["-I" + d for d in dirs + c.get("generated_include_dirs", [])])
+    # The -I flags of the component's include directories (see
+    # _include_dirs()), which cabal_targets() made once for the component.
+    return c["_include_flags"]
+
+# The files in an include directory that a C preprocessor may include.
+_HEADER_PATTERNS = ["**/*.h", "**/*.hh", "**/*.hpp", "**/*.hxx", "**/*.inc"]
+
+def _include_dirs(c, pkg_dir):
+    # Returns the -I flags for the component's include directories, and for
+    # where a configure script put the headers it generated. GHC needs them
+    # for CPP and for the C stubs of foreign imports, and the component's C
+    # needs them too.
+    #
+    # Each include directory inside the package's directory becomes a
+    # filegroup of its headers, and its flag names the filegroup's directory
+    # with $(location). So the headers are inputs of every compile that has
+    # the flag, and buck2 compiles it again when one of them changes. The
+    # compiler also sees only those headers, so a compile that includes a
+    # file the filegroup doesn't have fails here, and not only on a remote
+    # executor.
+    #
+    # buck2 can only list the files of a package from its BUCK file, so an
+    # include directory elsewhere in the project (`../include`, say) and the
+    # directories of generated headers (in the build directory) are named by
+    # their paths from the project root, which is where the compilers run.
+    # Their headers aren't inputs. A directory outside the project
+    # (`/usr/include`, say) is the system's.
+    flags = []
+    for i, d in enumerate(c.get("include_dirs", [])):
+        d = paths.normalize(d)
+        if d.startswith("/"):
+            flags.append("-I" + d)
+            continue
+        if d == ".." or d.startswith("../"):
+            flags.append("-I" + paths.normalize(paths.join(pkg_dir, d)))
+            continue
+        prefix = "" if d == "." else d + "/"
+        name = "{}-include-{}".format(c["name"], i)
+        # The filegroup holds symlinks to the headers, not copies. A compile
+        # can reach a header both through the filegroup and by its path in
+        # the source tree: a C file includes a header next to it with
+        # `#include "foo.h"`, say. A header with `#pragma once` is skipped the
+        # second time only if both paths lead to the same file.
+        native.filegroup(
+            name = name,
+            srcs = {f[len(prefix):]: f for f in native.glob([prefix + p for p in _HEADER_PATTERNS])},
+            copy = False,
+            visibility = ["PUBLIC"],
+        )
+        flags.append("-I$(location :{})".format(name))
+    return _nub(flags + ["-I" + d for d in c.get("generated_include_dirs", [])])
 
 def _this_unit_id(flags):
     # The unit id that a package's options give its library, as those of a
@@ -366,9 +411,7 @@ def _cxx_library(c, pkg_dir, pkgconfig_seen):
     headers_of(name = headers, deps = _nub([_third_party_label(p) for p in ["rts"] + packages] + labels))
     kwargs["deps"] = [":" + headers] + kwargs["deps"]
 
-    # exported_preprocessor_flags is an opaque list of strings to buck2, so
-    # (unlike srcs) its include paths have to be made relative to the cell
-    # root by hand: cxx actions always run from there.
+    # The component's include directories are its dependents' too.
     include_flags = _include_flags(c, pkg_dir)
     if include_flags:
         kwargs["exported_preprocessor_flags"] = include_flags
@@ -615,6 +658,7 @@ def cabal_targets(spec, defaults = {}, overrides = {}, transform = None, rules =
     all_defaults = [DEFAULTS.get("*", {}), DEFAULTS.get(spec["package"]["name"], {}), defaults]
     pkgconfig_seen = {}
     for c in spec["components"]:
+        c = dict(c, _include_flags = _include_dirs(c, pkg_dir))
         if _foreign_main(c):
             _cxx_binary(c, pkg_dir, pkgconfig_seen, _merge(project_overrides.get(c["name"], {}), overrides.get(c["name"], {})))
             continue
