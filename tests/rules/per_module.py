@@ -586,8 +586,8 @@ def check_local_splices_in_modes(st):
     plain inputs of those compiles instead.
 
     check_native_splices_in_modes checks the splices that call native
-    libraries, and check_own_splices_static the static compiles that
-    make no dynamic objects."""
+    libraries, and check_own_splices_static the splices that run their own
+    target's code in static and profiled compiles."""
     modes = ["opt", "prof"]
     # check_own_splices_static checks own in the other modes.
     internal = ["//th-internal-splice:use", "//th-internal-splice:own"]
@@ -635,21 +635,19 @@ def check_own_native_libraries_per_module(st):
     expect_output("//th-own-native:show", "", "(9,11)")
 
 
-@known_failure("GHC's internal interpreter needs dynamic objects, which a static or profiled compile only has for a library that is also linked shared", when=lambda st: not st.external_interpreter)
 def check_own_splices_static(st):
-    """A splice runs code from its own target in a compile that makes no
-    dynamic objects. //th-internal-splice:static-main prints P.Use's splice,
-    which runs P.Gen of //th-internal-splice:static, a library that is only
-    linked statically. //th-internal-splice:own, a binary, prints its Main's
-    splice in opt and prof modes as well as dev mode. GHC's internal
-    interpreter loads P.Gen's dynamic object. A static compile only makes
-    one (with -dynamic-too) for a library that is also linked shared, and a
-    profiled compile uses the non-profiled compile's, which a binary doesn't
-    make. --make has GHC add -dynamic-too for the modules that splices
-    need, and per-module compiles don't do that yet. With
-    -fexternal-interpreter, the interpreter loads the object that the
-    compile makes instead."""
-    expect_output("//th-internal-splice:static-main", "", buck2("run", "//th-internal-splice:use").stdout.strip())
+    """A splice runs code from its own target in a static or profiled
+    compile. //th-internal-splice:static-main prints P.Use's splice, which
+    runs P.Gen of //th-internal-splice:static, a library that is only linked
+    statically, in dev and prof modes. //th-internal-splice:own, a binary,
+    prints its Main's splice in opt and prof modes as well as dev mode.
+    GHC's internal interpreter loads P.Gen's dynamic object, so a static
+    compile makes one with -dynamic-too, and a profiled compile uses the
+    non-profiled compile's. With -fexternal-interpreter, the interpreter
+    loads the object that the compile makes instead."""
+    used = buck2("run", "//th-internal-splice:use").stdout.strip()
+    expect_output("//th-internal-splice:static-main", "", used)
+    expect_output("//th-internal-splice:static-main", "in prof mode", used, "prof")
     shown = buck2("run", "//th-internal-splice:own").stdout.strip()
     for mode in ["opt", "prof"]:
         expect_output("//th-internal-splice:own", "in {} mode".format(mode), shown, mode)
