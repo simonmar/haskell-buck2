@@ -575,12 +575,20 @@ def _make_package(
 
     return db
 
-HaskellLibBuildOutput = record(
-    hlib = HaskellLibraryInfo,
+# The library built in one variant: its compile, and what was linked from it.
+Library = record(
+    link_style = LinkStyle,
+    compiled = CompileResultInfo,
+    # The name of the library, without "lib" and its suffix.
+    libstem = str,
+    libs = list[Artifact],
     solibs = dict[str, LinkedObject],
     link_infos = LinkInfos,
-    compiled = CompileResultInfo,
-    libs = list[Artifact],
+)
+
+HaskellLibBuildOutput = record(
+    library = Library,
+    hlib = HaskellLibraryInfo,
 )
 
 def _get_haskell_shared_library_name_linker_flags(linker_type: LinkerType, soname: str) -> list[str]:
@@ -671,34 +679,23 @@ def _link_haskell_shared_lib(
         )),
     )
 
-# _package_variant() is invoked once for each combination of
+# _link_library() and _register_library() are invoked once for each
+# combination of
 #
 #    (enable_profiling, link_style)
 #
 # that the library offers (see Note [Link styles and profiling]), except
 # that there's no enable_profiling = True + link_style = "shared".
-def _package_variant(
+def _link_library(
     ctx,
     libname: str,
-    pkgname: str,
-    hlis: list[HaskellLinkInfo],  # haskell link infos from all deps
     nlis: list[MergedLinkInfo],  # native link infos from all deps
     link_style: LinkStyle,
     enable_profiling: bool,
-    # The library's native libraries (see _native_libs).
-    native_libs: SharedLibraryInfo,
     # The variant's compile. For "shared", this may be the dynamic view of
     # a static compile (see _dynamic_view).
     compiled: CompileResultInfo,
-    # The non-profiling artifacts are also needed to build the package for
-    # profiling, so it should be passed when `enable_profiling` is True.
-    non_profiling_hlib: [HaskellLibBuildOutput, None] = None,
-    # The library's non-profiled shared library, for the package to name as
-    # its dynamic way (see own_shared_lib on _make_package). GHC's internal
-    # interpreter can't load a profiled library, so a profiled package needs
-    # this to run its code in a splice.
-    non_profiling_shared_lib: [Artifact, None] = None,
-) -> HaskellLibBuildOutput:
+) -> Library:
     linker_info = ctx.attrs._cxx_toolchain[CxxToolchainInfo].linker_info
 
     # Link the objects into a library
@@ -718,13 +715,6 @@ def _package_variant(
     libfile = "lib" + libstem + (dynamic_lib_suffix if link_style == LinkStyle("shared") else static_lib_suffix)
 
     lib_short_path = paths.join("lib-{}".format(variant), libfile)
-
-    linfos = [x.prof_info if enable_profiling else x.info for x in hlis]
-
-    # only gather direct dependencies
-    uniq_infos = [x[link_style].value for x in linfos]
-    all_hlis = [lib for x in linfos for lib in x[link_style].traverse()] if ctx.attrs.reexported_modules else []
-    below = ctx.actions.tset(HaskellLibraryInfoTSet, children = [x[link_style] for x in linfos])
 
     objfiles = _srcs_to_objfiles(ctx, compiled.objects, osuf)
 
@@ -763,20 +753,58 @@ def _package_variant(
             ),
         )
 
-    if enable_profiling:
-        if not non_profiling_hlib:
-            fail("Non-profiling HaskellLibBuildOutput wasn't provided when building profiling lib")
+    return Library(
+        link_style = link_style,
+        compiled = compiled,
+        libstem = libstem,
+        libs = libs,
+        solibs = solibs,
+        link_infos = link_infos,
+    )
 
-        import_artifacts = [compiled.hi, non_profiling_hlib.compiled.hi]
+def _register_library(
+    ctx,
+    libname: str,
+    pkgname: str,
+    hlis: list[HaskellLinkInfo],  # haskell link infos from all deps
+    enable_profiling: bool,
+    # The library's native libraries (see _native_libs).
+    native_libs: SharedLibraryInfo,
+    library: Library,
+    # The non-profiled library is also needed to build the package for
+    # profiling, so it should be passed when `enable_profiling` is True.
+    non_profiling_library: [Library, None] = None,
+    # The library's non-profiled shared library, for the package to name as
+    # its dynamic way (see own_shared_lib on _make_package). GHC's internal
+    # interpreter can't load a profiled library, so a profiled package needs
+    # this to run its code in a splice.
+    non_profiling_shared_lib: [Artifact, None] = None,
+) -> HaskellLibBuildOutput:
+    link_style = library.link_style
+    compiled = library.compiled
+    libstem = library.libstem
+    libs = library.libs
+    linfos = [x.prof_info if enable_profiling else x.info for x in hlis]
+
+    # only gather direct dependencies
+    uniq_infos = [x[link_style].value for x in linfos]
+    all_hlis = [lib for x in linfos for lib in x[link_style].traverse()] if ctx.attrs.reexported_modules else []
+    below = ctx.actions.tset(HaskellLibraryInfoTSet, children = [x[link_style] for x in linfos])
+
+    if enable_profiling:
+        if not non_profiling_library:
+            fail("Non-profiling Library wasn't provided when building profiling lib")
+
+        import_artifacts = [compiled.hi, non_profiling_library.compiled.hi]
         # Only the profiled library: GHC's internal interpreter finds the
         # non-profiled one through dynamic-library-dirs (own_shared_lib).
         # Listing both can confuse a profiled external interpreter.
-        library_artifacts = [lib]
-        all_libs = libs + non_profiling_hlib.libs
-        stub_dirs = [compiled.stubs] + [non_profiling_hlib.compiled.stubs]
+        library_artifacts = [libs[0]]
+        all_libs = libs + non_profiling_library.libs
+        stub_dirs = [compiled.stubs] + [non_profiling_library.compiled.stubs]
     else:
         import_artifacts = [compiled.hi]
-        library_artifacts = [lib]
+        library_artifacts = [libs[0]]
         all_libs = libs
         stub_dirs = [compiled.stubs]
 
@@ -788,7 +816,7 @@ def _package_variant(
         # profiled (see _make_package). When the shared library has a
         # different name, we link it under the name GHC looks for. Each
         # variant has a different name, so the links don't clash.
-        own_shared_libfile = "lib" + libstem + ("_p" if enable_profiling else "") + dynamic_lib_suffix
+        own_shared_libfile = "lib" + libstem + ("_p" if enable_profiling else "") + non_profiling_shared_lib.extension
         if own_shared_libfile == non_profiling_shared_lib.basename:
             own_shared_lib = non_profiling_shared_lib
         else:
@@ -827,13 +855,7 @@ def _package_variant(
         **_per_module_fields(ctx, link_style, pkgname, libstem, uniq_infos, compiled, enable_profiling = enable_profiling, all_hlis = all_hlis, hi = import_artifacts, below = below)
     )
 
-    return HaskellLibBuildOutput(
-        hlib = hlib,
-        solibs = solibs,
-        link_infos = link_infos,
-        compiled = compiled,
-        libs = libs,
-    )
+    return HaskellLibBuildOutput(library = library, hlib = hlib)
 
 # Given a compilation built with -dynamic-too, produce a `CompileResultInfo`
 # that sees the "extra" dynamic interface files as the primary ones. The
@@ -967,9 +989,9 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     # Records one variant's outputs in the dicts above.
     def record(link_style: LinkStyle, enable_profiling: bool, hlib_build_out: HaskellLibBuildOutput):
         hlib = hlib_build_out.hlib
-        solibs.update(hlib_build_out.solibs)
-        compiled = hlib_build_out.compiled
-        libs = hlib_build_out.libs
+        solibs.update(hlib_build_out.library.solibs)
+        compiled = hlib_build_out.library.compiled
+        libs = hlib_build_out.library.libs
 
         if enable_profiling:
             prof_hlib_infos[link_style] = hlib
@@ -978,7 +1000,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 value = hlib,
                 children = [li.prof_info[link_style] for li in hlis],
             )
-            prof_link_infos[link_style] = hlib_build_out.link_infos
+            prof_link_infos[link_style] = hlib_build_out.library.link_infos
         else:
             hlib_infos[link_style] = hlib
             hlib_compiled[link_style] = compiled
@@ -987,7 +1009,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 value = hlib,
                 children = [li.info[link_style] for li in hlis],
             )
-            link_infos[link_style] = hlib_build_out.link_infos
+            link_infos[link_style] = hlib_build_out.library.link_infos
 
         # Build the indices and create subtargets only once, with profiling
         # enabled or disabled based on what was set in the library's
@@ -1016,7 +1038,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     prof_link_styles = [legacy_output_style_to_link_style(o) for o in get_output_styles_for_linkage(Linkage("static"))]
 
     # Each profiled library is registered together with a non-profiled build
-    # of the library (see non_profiling_hlib on _package_variant), from
+    # of the library (see non_profiling_library on _register_library), from
     # which GHC loads it to run a Template Haskell splice. A dynamically
     # linked GHC loads the shared library, with its .dyn_hi interfaces. A
     # statically linked one loads the static library of the same style, which
@@ -1051,34 +1073,30 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 pkgname = pkgname,
                 native_libs = native_libs,
                 dynamic_too = dynamic_too,
-                dynamic_from = non_profiling_shared.compiled if (enable_profiling and non_profiling_shared) else None,
+                dynamic_from = non_profiling_shared.library.compiled if (enable_profiling and non_profiling_shared) else None,
             )
 
             if dynamic_too:
-                non_profiling_shared = _package_variant(
+                non_profiling_shared = _register_library(
                     ctx,
                     libname,
                     pkgname,
                     hlis = hlis,
-                    nlis = nlis,
-                    link_style = LinkStyle("shared"),
                     enable_profiling = False,
                     native_libs = native_libs,
-                    compiled = _dynamic_view(compiled),
+                    library = _link_library(ctx, libname, nlis, LinkStyle("shared"), False, _dynamic_view(compiled)),
                 )
 
-            hlib_build_out = _package_variant(
+            hlib_build_out = _register_library(
                 ctx,
                 libname,
                 pkgname,
                 hlis = hlis,
-                nlis = nlis,
-                link_style = link_style,
                 enable_profiling = enable_profiling,
                 native_libs = native_libs,
-                compiled = compiled,
-                non_profiling_hlib = non_profiling_hlib.get(non_profiling_style(link_style)) if enable_profiling else None,
-                non_profiling_shared_lib = non_profiling_shared.libs[0] if (non_profiling_shared and (enable_profiling or dynamic_too)) else None,
+                library = _link_library(ctx, libname, nlis, link_style, enable_profiling, compiled),
+                non_profiling_library = non_profiling_hlib[non_profiling_style(link_style)].library if enable_profiling else None,
+                non_profiling_shared_lib = non_profiling_shared.library.libs[0] if (non_profiling_shared and (enable_profiling or dynamic_too)) else None,
             )
             if not enable_profiling:
                 non_profiling_hlib[link_style] = hlib_build_out
@@ -1800,7 +1818,7 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
 #    Linux) gets neither: see Known gaps below.
 #
 #  * Profiled: the profiled package also needs to contain a non-profiled
-#    library and interfaces (non_profiling_hlib). With a dynamic GHC, that
+#    library and interfaces (non_profiling_library). With a dynamic GHC, that
 #    is the shared variant, but where its interfaces live depends on whether
 #    we used -dynamic-too or not. In the case of -dynamic-too the .dyn_hi
 #    files live alongside the static variant's .hi files, otherwise they're
