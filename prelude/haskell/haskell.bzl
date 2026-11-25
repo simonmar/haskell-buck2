@@ -777,6 +777,14 @@ def _register_library(
 
     return HaskellLibBuildOutput(library = library, hlib = hlib)
 
+# The link style of the splice variant of a variant with this link style,
+# whether profiled or not (see Note [Link styles and profiling]). Where this
+# returns the style unchanged, a non-profiled variant is its own splice
+# variant.
+def _splice_variant_style(ctx: AnalysisContext, link_style: LinkStyle) -> LinkStyle:
+    dynamic_ghc = ctx.attrs._haskell_toolchain[HaskellToolchainInfo].dynamic_ghc
+    return LinkStyle("shared") if dynamic_ghc else link_style
+
 # Given a compilation built with -dynamic-too, produce a `CompileResultInfo`
 # that sees the "extra" dynamic interface files as the primary ones. The
 # objects need no change, because the shared variant's link takes the .dyn_o
@@ -882,7 +890,6 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     libname = haskell_library_name(ctx.label)
     pkgname = ctx.attrs.unit_id or haskell_library_unit_id(ctx.label)
 
-    haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     native_libs = _native_libs(ctx)
 
     link_styles = [legacy_output_style_to_link_style(o) for o in get_output_styles_for_linkage(preferred_linkage)]
@@ -895,21 +902,15 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
         process_output_style_for_pic_behavior(LibOutputStyle("archive"), pic_behavior),
     )
 
-    # When this library's preferred_linkage offers both a shared variant and
-    # the static style that executables use, build the two together from one
-    # -dynamic-too compile instead of two independent ones (see
-    # _dynamic_view). It has to be the static style that consumers use,
-    # because its package is what lets their Template Haskell splices load
-    # this library the dynamic way. See Note [Link styles and profiling].
-    build_shared_too = (
-        consumed_static_link_style in link_styles and
-        LinkStyle("shared") in link_styles
-    )
-
-    # Records one variant's outputs in the dicts above.
+    # Records one variant's outputs in the dicts above. A variant that the
+    # library builds only to be a splice variant has a package, for its
+    # dependents' splice variants to compile against, but nothing links it,
+    # so it has no link infos, shared libraries or sub-target.
     def record(link_style: LinkStyle, enable_profiling: bool, hlib_build_out: HaskellLibBuildOutput):
         hlib = hlib_build_out.hlib
-        solibs.update(hlib_build_out.library.solibs)
+        splice_only = not enable_profiling and link_style not in link_styles
+        if not splice_only:
+            solibs.update(hlib_build_out.library.solibs)
         compiled = hlib_build_out.library.compiled
         libs = hlib_build_out.library.libs
 
@@ -929,12 +930,13 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 value = hlib,
                 children = [li.info[link_style] for li in hlis],
             )
-            link_infos[link_style] = hlib_build_out.library.link_infos
+            if not splice_only:
+                link_infos[link_style] = hlib_build_out.library.link_infos
 
         # Build the indices and create subtargets only once, with profiling
         # enabled or disabled based on what was set in the library's
         # target.
-        if ctx.attrs.enable_profiling == enable_profiling:
+        if ctx.attrs.enable_profiling == enable_profiling and not splice_only:
             if compiled.producing_indices:
                 tset = derive_indexing_tset(
                     ctx.actions,
@@ -957,22 +959,19 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     # profiled link asks for them. See Note [Link styles and profiling].
     prof_link_styles = [legacy_output_style_to_link_style(o) for o in get_output_styles_for_linkage(Linkage("static"))]
 
-    # The style of a variant's splice variant. The Template Haskell section
-    # of Note [Link styles and profiling] explains the choice.
-    def splice_variant_style(link_style: LinkStyle, enable_profiling: bool) -> LinkStyle:
-        if enable_profiling:
-            if haskell_toolchain.dynamic_ghc and LinkStyle("shared") in link_styles:
-                return LinkStyle("shared")
-            return link_style
-        if build_shared_too and link_style == consumed_static_link_style:
-            return LinkStyle("shared")
-        return link_style
+    unprof_link_styles = list(link_styles)
+    for style in link_styles + prof_link_styles:
+        splice_style = _splice_variant_style(ctx, style)
+        if splice_style not in unprof_link_styles:
+            unprof_link_styles.append(splice_style)
 
-    unprof_link_styles = link_styles + [
-        s
-        for s in [splice_variant_style(p, True) for p in prof_link_styles]
-        if s not in link_styles
-    ]
+    # When the shared variant and the static style that executables use are
+    # both built, they come from one -dynamic-too compile instead of two
+    # independent ones (see _dynamic_view).
+    build_shared_too = (
+        consumed_static_link_style in unprof_link_styles and
+        LinkStyle("shared") in unprof_link_styles
+    )
 
     compiles = {}
 
@@ -1000,7 +999,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     # The libraries of the non-profiled variants, by style.
     libraries = {}
     for enable_profiling, link_style in variants:
-        splice_style = splice_variant_style(link_style, enable_profiling)
+        splice_style = _splice_variant_style(ctx, link_style)
         if build_shared_too and link_style == LinkStyle("shared"):
             compiled = _dynamic_view(compile_variant(consumed_static_link_style, False, None))
         else:
@@ -1711,49 +1710,35 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
 # the splice uses: the modules it uses of the libraries the module depends on,
 # and of the module's own library. GHC loads code the way that it was itself
 # linked (GHC calls this its "host way"). A GHC linked statically loads
-# archives, and the ordinary .hi interfaces that go with them: any static
-# variant will do. A GHC linked dynamically (haskell_toolchain.dynamic_ghc,
-# which is how GHC is normally installed) loads shared libraries, and the
-# .dyn_hi interfaces that go with them. GHC finds them through the package
-# of the variant being compiled against: the .dyn_hi in its import-dirs,
-# beside the .hi, and the shared library in its dynamic-library-dirs.
+# archives, and the ordinary .hi interfaces that go with them: any
+# non-profiled static variant will do. A GHC linked dynamically
+# (haskell_toolchain.dynamic_ghc, which is how GHC is normally installed)
+# loads shared libraries, and the .dyn_hi interfaces that go with them. It
+# can also load a non-profiled archive, with GHC's own runtime linker, but we
+# don't rely on that. No GHC can load profiled code.
 #
-# For each variant of a library, its splice variant is the variant whose
-# code GHC loads when a splice in a module compiled against that variant
-# runs the library's code. GHC can't load profiled code, so a splice variant
-# is never profiled. It may be the variant itself. For example, with a
-# dynamically linked GHC, the splice variant of a library's profiled
-# variant is its shared variant, when the library has one. A variant's
-# package names its splice variant's files as well as its own, so that GHC
-# finds them through the package.
+# For each variant of a library, its splice variant is the variant whose code
+# GHC loads when a splice in a module compiled against that variant runs the
+# library's code. With a dynamic GHC, every variant's splice variant is the
+# shared variant. With a static GHC, it is the non-profiled variant of the
+# same style, so a non-profiled variant is its own. The library builds a
+# splice variant even if it doesn't otherwise offer it, and then nothing links
+# it.
 #
-# So with a dynamic GHC every variant's package needs to have a shared
-# library and a set of .dyn_hi files. A shared variant's package has its
-# own. For static variants this works as follows:
+# A variant's package names its splice variant's interfaces in import-dirs,
+# beside its own. With a dynamic GHC, the package's dynamic-library-dirs
+# names the shared library's directory (see _register_library). GHC finds
+# the shared library there because it has the same name as the variant's own
+# library. A static GHC looks in library-dirs, which names only the variant's
+# own library, so it doesn't find a profiled variant's splice variant (see
+# Known gaps below).
 #
-#  * Non-profiled: when the library offers both shared and the static style
-#    that executables use (consumed_static_link_style: "static", or
-#    "static_pic" on macOS), we build the two together, by compiling the
-#    static variant with -dynamic-too (build_shared_too). Then the .dyn_o and
-#    .dyn_hi files are alongside the regular .o and .hi files; the shared
-#    library is linked from the .dyn_o, and goes in the dynamic-library-dirs
-#    of the static variant's package. The other static style (static_pic on
-#    Linux) gets neither: see Known gaps below.
-#
-#  * Profiled: the profiled package also needs to contain a non-profiled
-#    library and interfaces (its splice variant). With a dynamic GHC, that is
-#    the shared variant, but where its interfaces live depends on whether we
-#    used -dynamic-too or not. In the case of -dynamic-too the .dyn_hi files
-#    live alongside the static variant's .hi files, otherwise they're in the
-#    shared variant's own directory. The package names whichever directory the
-#    interfaces were written to (_make_package uses the paths of the artifacts
-#    it is given). The package's dynamic-library-dirs is the shared library's
-#    directory (see _register_library), where GHC finds it under the same name
-#    as the profiled library. With a static GHC, or a library that offers no
-#    shared variant, the non-profiled library is instead the unprofiled static
-#    variant of the same style, which is built for the purpose if the library
-#    doesn't otherwise offer it. A static GHC doesn't find it, though (see
-#    Known gaps below).
+# When the shared variant and the static style that executables use
+# (consumed_static_link_style: "static", or "static_pic" on macOS) are both
+# built, we compile the static variant with -dynamic-too (build_shared_too),
+# and make the shared variant from the same compile: the shared library is
+# linked from the .dyn_o files, and the .dyn_hi files are beside the .hi
+# files, in the static variant's own directory.
 #
 # A splice can also use a module of the same library. GHC then loads that
 # module's .dyn_o from the compile's own output directory, where it would be
@@ -1771,8 +1756,9 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
 #    the dynamic way. (Offering a static variant as well would make that one
 #    compile with -dynamic-too, which costs about as much as two.)
 #
-#  * Libraries "any", executables "static": each module is compiled once with
-#    -dynamic-too, for both the static and the shared variant.
+#  * Libraries "any" or "static", executables "static": each module is
+#    compiled once with -dynamic-too, for both the static and the shared
+#    variant. A "static" library's shared variant is only for splices.
 #
 #  * Either of those, with executables that have enable_profiling = True: the
 #    executables compile against their libraries' profiled packages and link
@@ -1798,8 +1784,3 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
 #    external interpreter, and the two want different archives under the
 #    same name. This is from reading GHC's loader: the tests use a dynamic
 #    GHC.
-#
-#  * With a dynamic GHC, an unprofiled static variant that isn't the style
-#    executables use (static_pic on Linux) is compiled without -dynamic-too,
-#    and its package has no .dyn_hi: a module that uses Template Haskell can't
-#    be compiled against it.

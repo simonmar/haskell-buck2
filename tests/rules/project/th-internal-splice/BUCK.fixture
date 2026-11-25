@@ -42,8 +42,8 @@ haskell_library(
     per_module = True,
 )
 
-# Linked statically whatever the mode, as a binary linked shared can't
-# depend on the library.
+# Linked statically whatever the mode, so that it compiles against
+# :static's static package.
 haskell_binary(
     name = "static-main",
     srcs = {"Main": "Main.hs"},
