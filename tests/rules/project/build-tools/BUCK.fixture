@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # Preprocessors (run with -pgmF), which the libraries below use as build
 # tools. bt-own ignores its input and writes a fixed module. bt-copy copies
@@ -26,7 +26,7 @@ haskell_library(
     },
     packages = ["base", "template-haskell"],
     build_tool_depends = [":bt-own"],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 # Every module runs bt-copy, because the target's own flags say so.
@@ -36,7 +36,7 @@ haskell_library(
     packages = ["base"],
     compiler_flags = ["-F", "-pgmF", "bt-copy"],
     build_tool_depends = [":bt-copy"],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 # BT.Disc's preprocessor, bt-discover, finds the modules in BT/Disc as
@@ -52,7 +52,7 @@ haskell_library(
     srcs = {"BT.Disc": "BT/Disc.hs", "BT.Disc.A": "BT/Disc/A.hs"},
     packages = ["base"],
     build_tool_depends = [":bt-discover"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 # Build tools that no module runs: unused's module runs no program, and
@@ -62,7 +62,7 @@ haskell_library(
     srcs = {"BT.Unused": "BT/Unused.hs"},
     packages = ["base"],
     build_tool_depends = [":bt-copy"],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 haskell_library(
@@ -70,7 +70,7 @@ haskell_library(
     srcs = {"BT.UnusedSplice": "BT/UnusedSplice.hs"},
     packages = ["base", "template-haskell"],
     build_tool_depends = [":bt-copy"],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 # The documentation of :flags. Haddock compiles the modules as the compile

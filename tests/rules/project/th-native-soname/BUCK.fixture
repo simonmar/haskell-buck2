@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # A splice that runs code calling a C library whose soname isn't of the
 # form libfoo.so, which GHC can't look up by name.
@@ -15,7 +15,7 @@ haskell_library(
     srcs = {"V.C": "V/C.hs"},
     packages = ["base"],
     deps = [":c-ver"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 haskell_library(
@@ -24,7 +24,7 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = [":ffi-ver"],
     splice_depends = [":ffi-ver"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 # Prints V.S's splice.
@@ -33,5 +33,5 @@ haskell_binary(
     srcs = {"Main": "Show.hs"},
     packages = ["base"],
     deps = [":th-native-soname"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )

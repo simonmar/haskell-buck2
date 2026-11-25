@@ -14,7 +14,7 @@ haskell_library(
         "I.T": "I/T.hs",
     },
     packages = ["base"],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 haskell_library(
@@ -22,7 +22,7 @@ haskell_library(
     srcs = {"I.Mid": "I/Mid.hs"},
     packages = ["base"],
     deps = [":low"],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 haskell_library(
@@ -30,5 +30,5 @@ haskell_library(
     srcs = {"I.High": "I/High.hs"},
     packages = ["base"],
     deps = [":low", ":mid"],
-    per_module = True,
+    compile_granularity = "module",
 )

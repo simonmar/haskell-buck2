@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # Flat sources: Lib imports User, which imports Q.Lib from //make-lib:make-lib.
 # Lib is not Q.Lib, though Q.Lib's interface path ends in /Lib.hi.
@@ -11,6 +11,6 @@ haskell_library(
     },
     packages = ["base"],
     deps = ["//make-lib:make-lib"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
     visibility = ["PUBLIC"],
 )

@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # Imports cl_value from //c-lib:c-lib.
 haskell_library(
@@ -7,7 +7,7 @@ haskell_library(
     srcs = {"FFI.C": "FFI/C.hs"},
     packages = ["base"],
     deps = ["//c-lib:c-lib"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
     visibility = ["PUBLIC"],
 )
 
@@ -18,6 +18,6 @@ haskell_library(
     srcs = {"FFI.W": "FFI/W.hs"},
     packages = ["base"],
     deps = [":ffi-import"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
     visibility = ["PUBLIC"],
 )

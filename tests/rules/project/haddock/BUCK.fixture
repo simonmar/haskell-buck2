@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # A library with doc comments, and its documentation.
 haskell_library(
@@ -9,7 +9,7 @@ haskell_library(
         "D.B": "D/B.hs",
     },
     packages = ["base"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 haskell_haddock(
@@ -27,7 +27,7 @@ haskell_library(
     },
     packages = ["base"],
     compiler_flags = ["-haddock"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 haskell_haddock(

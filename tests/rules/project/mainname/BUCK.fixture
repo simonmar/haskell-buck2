@@ -6,5 +6,5 @@ haskell_binary(
     name = "server",
     srcs = {"Helper": "app/Helper.hs", "Server": "app/Server.hs"},
     packages = ["base"],
-    per_module = True,
+    compile_granularity = "module",
 )

@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # A splice of P.Use runs P.Gen, of the same library.
 haskell_library(
@@ -9,7 +9,7 @@ haskell_library(
         "P.Use": "P/Use.hs",
     },
     packages = ["base", "template-haskell"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 # The documentation of the library. Haddock runs P.Use's splice, which runs
@@ -25,7 +25,7 @@ haskell_binary(
     srcs = {"Main": "Main.hs"},
     packages = ["base"],
     deps = [":th-internal-splice"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 # The library again, linked statically only, so only its static compile
@@ -39,7 +39,7 @@ haskell_library(
     },
     packages = ["base", "template-haskell"],
     preferred_linkage = "static",
-    per_module = True,
+    compile_granularity = "module",
 )
 
 # Linked statically whatever the mode, so that it compiles against
@@ -50,7 +50,7 @@ haskell_binary(
     packages = ["base"],
     deps = [":static"],
     link_style = "static",
-    per_module = True,
+    compile_granularity = "module",
 )
 
 # A binary whose splice (in Main) runs a module of its own, P.Gen. In a
@@ -62,7 +62,7 @@ haskell_binary(
         "P.Gen": "P/Gen.hs",
     },
     packages = ["base", "template-haskell"],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 # A binary whose splice (in Main) runs P.LibGen, a module of its own that
@@ -76,5 +76,5 @@ haskell_binary(
     packages = ["base", "template-haskell"],
     deps = ["//lib:lib"],
     splice_depends = ["//lib:lib"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )

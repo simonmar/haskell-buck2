@@ -93,6 +93,10 @@ HaskellToolchainInfo = provider(
         # per_module_worker_info. It is None if the toolchain has no worker.
         # See Note [The persistent worker] in compile_per_module.bzl.
         "per_module_shared_worker": provider_field(typing.Any, default = None),
+        # How a target is compiled when it doesn't set compile_granularity:
+        # "target" or "module" (see compiles_per_module in
+        # compile_per_module.bzl).
+        "compile_granularity": provider_field(str, default = "target"),
         # The worker's settings: its RTS options, the most sessions it keeps,
         # and its session mode.
         "per_module_worker_rts_options": provider_field(list[str], default = []),

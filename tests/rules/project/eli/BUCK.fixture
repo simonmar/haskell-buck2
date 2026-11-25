@@ -15,7 +15,7 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = ["//lib:lib", "//make-lib:make-lib", "//th-gen:th-gen"],
     splice_depends = ["//make-lib:make-lib", "//th-gen:th-gen"],
-    per_module = True,
+    compile_granularity = "module",
     visibility = ["PUBLIC"],
 )
 
@@ -27,7 +27,7 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = ["//lib:lib", "//th-gen:th-gen"],
     splice_depends = [],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 # E.Own imports E.OwnGen, a module of its own target, at the splice level.
@@ -35,5 +35,5 @@ haskell_library(
     name = "eli-own",
     srcs = ["E/Own.hs", "E/OwnGen.hs"],
     packages = ["base", "template-haskell"],
-    per_module = True,
+    compile_granularity = "module",
 )

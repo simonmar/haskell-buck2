@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # C.Splice's splice runs TH.Gen's code, of //th-gen:th-gen, which
 # splice_depends lists. C.Ann's ANN pragma runs code in GHC's
@@ -15,7 +15,7 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = ["//lib:lib", "//th-gen:th-gen"],
     splice_depends = ["//th-gen:th-gen"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
     visibility = ["PUBLIC"],
 )
 
@@ -25,5 +25,5 @@ haskell_binary(
     srcs = {"Main": "Show.hs"},
     packages = ["base"],
     deps = [":th-local-splice"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )

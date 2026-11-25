@@ -7,7 +7,7 @@ load("//buck2:haskell.bzl", "haskell_library")
         srcs = {"D.Other": "D/Other.hs", "D.Warn": "D/Warn.hs"},
         packages = ["base"],
         compiler_flags = ["-Wunused-local-binds"],
-        per_module = per_module,
+        compile_granularity = granularity,
     )
-    for name, per_module in [("per-module", True), ("make", False)]
+    for name, granularity in [("per-module", "module"), ("make", "target")]
 ]

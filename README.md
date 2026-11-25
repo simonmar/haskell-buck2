@@ -43,9 +43,10 @@ when it finds the result in a cache. `buck2 build
 my-package:my-program[diagnostics.txt] --out -` prints all the diagnostics 
 from compiling a target's modules, whether they were compiled in this build or not. 
 
-Only targets compiled with `per_module = True` have `[diagnostics.txt]`. A target
-compiled with `--make` compiles only the modules that changed, so its diagnostics
-would be incomplete, and in no fixed order.
+Only targets compiled with `compile_granularity = "module"` have
+`[diagnostics.txt]`. A target compiled with `--make` compiles only the
+modules that changed, so its diagnostics would be incomplete, and in no
+fixed order.
 
 # Splice dependencies
 
@@ -58,14 +59,17 @@ those modules use, so they must be listed too.
 # Per-module compilation (experimental)
 
 By default each `haskell_library()`/`haskell_binary()` is compiled by one
-`ghc --make` action. With `per_module = True`, each module is compiled
-by an action of its own. That means that `buck2` can compile a target's
+`ghc --make` action. With `compile_granularity = "module"`, each module is
+compiled by an action of its own. That means that `buck2` can compile a target's
 modules in parallel with everything else it has to do, and rebuilds can
 be more minimal. Notably the dependency graph is cross-package, so modules
 in later packages can start compiling as soon as the specific modules they
 depend on are done, without having to wait for the full package.
 
-`per_module` is only tested on Linux.
+To change the default granulariy, set `compile_granularity` in the `[haskell]` 
+section of the buckconfig. This can still be overridden by each target.
+
+Per-module compilation is only tested on Linux.
 
 The main thing that still leads to suboptimal dependency graphs is Template
 Haskell. A module that runs Template Haskell waits for the libraries that

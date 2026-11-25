@@ -20,7 +20,7 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = [":state"],
     splice_depends = [":state"],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 haskell_library(
@@ -29,7 +29,7 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = [":state"],
     splice_depends = [":state"],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 haskell_binary(
@@ -55,12 +55,12 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = [":crash-lib"],
     splice_depends = [":crash-lib"],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 haskell_library(
     name = "slow",
     srcs = {"TI.Slow": "TI/Slow.hs"},
     packages = ["base", "template-haskell"],
-    per_module = True,
+    compile_granularity = "module",
 )

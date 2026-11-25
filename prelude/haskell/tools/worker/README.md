@@ -1,7 +1,7 @@
 # buck2-ghc-worker
 
 A [buck2 persistent worker](https://buck2.build/docs/users/advanced/persistent_workers/)
-for the per-module compiles of targets with `per_module = True` (see the
+for the per-module compiles of targets with `compile_granularity = "module"` (see the
 repository README). Without the worker, each module is compiled by a
 `ghc -c` process of its own, which has to start GHC and read the interfaces
 of all the module's imports again. With the worker, buck2 sends the
@@ -137,8 +137,8 @@ built worker:
   the worker's default session mode and once with `--make` sessions only;
 - with a `ghc -c` per module, as the rules compile per-module without the
   worker;
-- with a `ghc --make` per target, as the rules compile without
-  `per_module`;
+- with a `ghc --make` per target, as the rules compile with
+  `compile_granularity = "target"`;
 - with one multi-unit `ghc --make -j8` for all the targets.
 
 For each build it prints the wall time, CPU time, peak memory, largest

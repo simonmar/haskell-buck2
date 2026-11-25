@@ -1,10 +1,10 @@
 load("//buck2:haskell.bzl", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 haskell_library(
     name = "th-gen",
     srcs = {"TH.Gen": "TH/Gen.hs"},
     packages = ["base", "template-haskell"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
     visibility = ["PUBLIC"],
 )

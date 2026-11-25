@@ -12,6 +12,7 @@ from harness import (
     is_module_compile,
     append,
     buck2,
+    compiled,
     build,
     compiled_modules,
     configured,
@@ -189,6 +190,17 @@ def check_native_libraries_outside_worker(st):
     found = advice("haskell_modules_outside_worker", "//th-ffi-splice:th-ffi-splice")
     expected = {("U.V", "native_libraries"), ("U.W", "native_libraries")} if st.worker else set()
     expect_set("the modules of th-ffi-splice compiled outside the worker", {(f["module"], f["reason"]) for f in found["th-ffi-splice"]}, expected)
+
+
+def check_compile_granularity(st):
+    """A target that doesn't set compile_granularity is compiled as the
+    toolchain says, which a project sets in its buckconfig ([haskell]
+    compile_granularity). //compile-granularity:default compiles with --make
+    by default, and per-module with compile_granularity = module."""
+    build("//compile-granularity:default")
+    expect_set("compiles of //compile-granularity:default by default", compiled(what_ran()), {"default"})
+    buck2("build", "-c", "haskell.compile_granularity=module", "//compile-granularity:default")
+    expect_set("compiles of //compile-granularity:default with [haskell] compile_granularity = module", compiled(what_ran()), {"default:CS.A"})
 
 
 def check_cross_package_dep_file(st):

@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # OB.A imports OB.B with {-# SOURCE #-}, and the splices of OB.T and OB.U
 # run OB.A's code, which runs OB.B's. In boot-only, OB.T only reaches OB.B
@@ -15,7 +15,7 @@ haskell_library(
     },
     boot_srcs = {"OB.B": "OB/B.hs-boot"},
     packages = ["base", "template-haskell"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 haskell_library(
@@ -28,5 +28,5 @@ haskell_library(
     },
     boot_srcs = {"OB.B": "OB/B.hs-boot"},
     packages = ["base", "template-haskell"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
