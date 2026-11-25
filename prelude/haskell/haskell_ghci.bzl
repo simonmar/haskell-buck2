@@ -31,7 +31,7 @@ load(
     "@prelude//haskell:toolchain.bzl",
     "HaskellToolchainInfo",
 )
-load("@prelude//haskell:util.bzl", "attr_deps", "variant_name")
+load("@prelude//haskell:util.bzl", "attr_deps")
 load("@prelude//linking:execution_preference.bzl", "LinkExecutionPreference")
 load(
     "@prelude//linking:link_info.bzl",
@@ -660,9 +660,8 @@ def haskell_ghci_impl(ctx: AnalysisContext) -> list[Provider]:
                 "packagedb": lib.db,
             }
 
-            for prof, import_dir in lib.import_dirs.items():
-                variant = variant_name(link_style, prof)
-                lib_symlinks["hi-" + variant] = import_dir
+            for import_dir in lib.import_dirs:
+                lib_symlinks[import_dir.short_path] = import_dir
 
             for o in lib.libs:
                 lib_symlinks[o.short_path] = o
