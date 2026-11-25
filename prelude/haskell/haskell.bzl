@@ -1003,8 +1003,10 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
         if build_shared_too and link_style == LinkStyle("shared"):
             compiled = _dynamic_view(compile_variant(consumed_static_link_style, False, None))
         else:
-            dynamic_from = libraries[splice_style].compiled if enable_profiling and splice_style == LinkStyle("shared") else None
-            compiled = compile_variant(link_style, enable_profiling, dynamic_from)
+            # A profiled compile can't make the dynamic objects that its
+            # splices load, so it takes them from its splice variant's compile
+            # (see `dynamic_from` on compile).
+            compiled = compile_variant(link_style, enable_profiling, libraries[splice_style].compiled if enable_profiling else None)
 
         library = _link_library(ctx, libname, nlis, link_style, enable_profiling, compiled)
         if not enable_profiling:
@@ -1248,11 +1250,20 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     )
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
 
+    # A profiled compile of a binary takes the dynamic objects that its
+    # splices load from its splice variant's compile, as a library's does
+    # (see `dynamic_from` on `compile`). A binary has no such compile
+    # otherwise, so we make one.
+    dynamic_from = None
+    if enable_profiling and compiles_per_module(ctx):
+        dynamic_from = compile_per_module(ctx, _splice_variant_style(ctx, link_style), enable_profiling = False, native_libs = _native_libs(ctx))
+
     compiled = (compile_per_module if compiles_per_module(ctx) else compile)(
         ctx,
         link_style,
         enable_profiling = enable_profiling,
         native_libs = _native_libs(ctx),
+        dynamic_from = dynamic_from,
     )
 
     output = ctx.actions.declare_output(ctx.attrs.exe_name or ctx.attrs.name, has_content_based_path = False)
@@ -1758,7 +1769,12 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
 #
 #  * Libraries "any" or "static", executables "static": each module is
 #    compiled once with -dynamic-too, for both the static and the shared
-#    variant. A "static" library's shared variant is only for splices.
+#    variant. A "static" library's shared variant is only for splices. An
+#    executable that compiles per module also compiles each of its own
+#    modules with -dynamic-too, because a per-module compile can't tell which
+#    modules splices need (see Note [Template Haskell modules] in
+#    compile_per_module.bzl). With --make, GHC uses -dynamic-too only for
+#    those modules.
 #
 #  * Either of those, with executables that have enable_profiling = True: the
 #    executables compile against their libraries' profiled packages and link
