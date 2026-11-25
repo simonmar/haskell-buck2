@@ -57,6 +57,9 @@ import GHC.Unit.Info (unitId)
 import GHC.Unit.State (LookupResult (..), ModuleOrigin (..), lookupModuleWithSuggestions)
 import GHC.Unit.Module.ModSummary (isBootSummary)
 import GHC.Unit.Types (unitIdString, unitString)
+#if MIN_VERSION_ghc(10,1,0)
+import GHC.Unit.Types (ModuleLookupScope (LookupUser))
+#endif
 import GHC.Utils.Outputable (ppr)
 #if MIN_VERSION_ghc(9,8,0)
 import GHC.Driver.Config.Diagnostic (initIfaceMessageOpts)
@@ -201,13 +204,20 @@ withSourcePragmas _ dflags src = do
 -- reexported-modules does), and its own unit if that exposes it too. For a
 -- module that nothing re-exports, that is just its own unit.
 throughUnits :: HscEnv -> ModuleName -> PkgQual -> Module -> [String]
-throughUnits hsc mn pkg m = case lookupModuleWithSuggestions (hsc_units hsc) mn pkg of
+throughUnits hsc mn pkg m = case lookupImport (hsc_units hsc) mn pkg of
   LookupFound _ (_, origin)
     | not (null (fromExposedReexport origin)) ->
         map (unitIdString . unitId) (fromExposedReexport origin) ++ [own | fromOrigUnit origin == Just True]
   _ -> [own]
   where
     own = unitString (moduleUnit m)
+#if MIN_VERSION_ghc(10,1,0)
+    -- The import is one that the module's source has, so it may only name
+    -- a module that the user can import.
+    lookupImport units = lookupModuleWithSuggestions units LookupUser
+#else
+    lookupImport = lookupModuleWithSuggestions
+#endif
 
 -- | Whether a module has explicit level imports, so that the levels of its
 -- imports say what its splices may run (see Note [Explicit level imports]
