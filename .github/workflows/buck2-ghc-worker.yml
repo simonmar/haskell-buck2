@@ -18,6 +18,15 @@ on:
     paths: *worker
   workflow_dispatch:
 
+# A newer run for the same pull request or branch cancels an older one that
+# is still queued or running, such as the run of a commit that a force-push
+# replaced. GitHub runs only a few macOS jobs at a time for all of the
+# account's repositories together, so an outdated run would hold up the
+# runs that matter.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   buck2-ghc-worker:
     name: buck2-ghc-worker (${{ matrix.os }}, GHC ${{ matrix.ghc }})
