@@ -40,7 +40,7 @@ def haskell_haddock_lib(ctx: AnalysisContext, pkgname: str, link_style: LinkStyl
     # compile's do.
     from_interfaces = haddock_from_interfaces(ctx)
     if from_interfaces:
-        splices = struct(final = {}, native_libs = [], data_dirs = {})
+        splices = struct(final = set(), native_libs = [], data_dirs = {})
     else:
         splices = target_splice_env(ctx, link_style, False, native_libs)
     args = compile_args(

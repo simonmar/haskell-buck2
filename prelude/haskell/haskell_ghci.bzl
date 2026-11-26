@@ -190,12 +190,12 @@ def _build_haskell_omnibus_so(ctx: AnalysisContext) -> HaskellOmnibusData:
 
     # Body nodes should support haskell omnibus (e.g. cxx_library)
     # and can't be prebuilt tp dependencies
-    body_nodes = {}
+    body_nodes = set()
 
     # Prebuilt (i.e. third-party) nodes shouldn't be statically linked on
     # the omnibus, but we need to keep track of them because they're a
     # dependency of it and are linked dynamically.
-    prebuilt_so_deps = {}
+    prebuilt_so_deps = set()
 
     # Helper to get body nodes and prebuilt dependencies of the
     # omnibus SO (which should dynamically linked) during BFS traversal
@@ -212,15 +212,15 @@ def _build_haskell_omnibus_so(ctx: AnalysisContext) -> HaskellOmnibusData:
                 # If the library is marked as force-static, then it won't provide
                 # shared libs and we'll have to link is statically.
                 if node.preferred_linkage == Linkage("static"):
-                    body_nodes[node_label] = None
+                    body_nodes.add(node_label)
                 else:
-                    prebuilt_so_deps[node_label] = None
+                    prebuilt_so_deps.add(node_label)
 
             if node_label in all_nodes_to_exclude:
                 continue
 
             if "supports_haskell_omnibus" in node.labels and "prebuilt_so_for_haskell_omnibus" not in node.labels:
-                body_nodes[node_label] = None
+                body_nodes.add(node_label)
 
             final_deps.append(node_label)
 
@@ -238,7 +238,7 @@ def _build_haskell_omnibus_so(ctx: AnalysisContext) -> HaskellOmnibusData:
     # files) that will be part of the omnibus SO.
     body_link_infos = {}
 
-    for node_label in body_nodes.keys():
+    for node_label in body_nodes:
         node = graph_nodes[node_label]
 
         node_target = node_label.raw_target()
@@ -273,7 +273,7 @@ def _build_haskell_omnibus_so(ctx: AnalysisContext) -> HaskellOmnibusData:
     tp_deps_shared_link_infos = {}
     prebuilt_shlibs = []
 
-    for node_label in prebuilt_so_deps.keys():
+    for node_label in prebuilt_so_deps:
         node = graph_nodes[node_label]
 
         output_style = get_lib_output_style(
@@ -646,11 +646,11 @@ def haskell_ghci_impl(ctx: AnalysisContext) -> list[Provider]:
     package_symlinks_root = ctx.label.name + ".packages"
 
     packagedb_args = cmd_args(delimiter = " ")
-    prebuilt_packagedb_args_set = {}
+    prebuilt_packagedb_args_set = set()
 
     for lib in packages_info.transitive_deps.traverse():
         if lib.is_prebuilt:
-            prebuilt_packagedb_args_set[lib.db] = None
+            prebuilt_packagedb_args_set.add(lib.db)
         else:
             lib_symlinks_root = paths.join(
                 package_symlinks_root,
@@ -680,7 +680,7 @@ def haskell_ghci_impl(ctx: AnalysisContext) -> list[Provider]:
                     "packagedb",
                 ),
             )
-    prebuilt_packagedb_args = cmd_args(prebuilt_packagedb_args_set.keys(), delimiter = " ")
+    prebuilt_packagedb_args = cmd_args(list(prebuilt_packagedb_args_set), delimiter = " ")
 
     script_templates = []
     for script_template in ctx.attrs.extra_script_templates:

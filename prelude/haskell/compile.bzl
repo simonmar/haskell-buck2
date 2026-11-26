@@ -106,7 +106,7 @@ def _package_flag(toolchain: HaskellToolchainInfo) -> str:
 #
 # The closures are included because a
 # library's code needs the libraries it was linked against.
-def target_splice_libraries(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool) -> dict[str, bool]:
+def target_splice_libraries(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool) -> set[str]:
     return splice_libraries(ctx.actions, splice_dep_infos(ctx, link_style, enable_profiling))
 
 # The names of the libraries that a splice may load. `infos` are the
@@ -114,9 +114,9 @@ def target_splice_libraries(ctx: AnalysisContext, link_style: LinkStyle, enable_
 # base dependencies, and the listed ones, or only those of them named in
 # `names` if it isn't None. It may also load any library that these depend
 # on, directly or indirectly.
-def splice_libraries(actions: AnalysisActions, infos, names: [list[str], None] = None) -> dict[str, bool]:
+def splice_libraries(actions: AnalysisActions, infos, names: [list[str], None] = None) -> set[str]:
     listed = infos.listed.values() if names == None else [infos.listed[n] for n in names]
-    return {l.name: True for l in actions.tset(HaskellLibraryInfoTSet, children = infos.base + listed).traverse()}
+    return set([l.name for l in actions.tset(HaskellLibraryInfoTSet, children = infos.base + listed).traverse()])
 
 # The libraries which may be used by the target's Template Haskell splices
 # (see target_splice_libraries), in two groups:
@@ -126,13 +126,13 @@ def splice_libraries(actions: AnalysisActions, infos, names: [list[str], None] =
 # - listed: the dependencies that splice_depends lists, by name.
 def splice_dep_infos(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool):
     deps = attr_deps(ctx) + ctx.attrs.template_deps
-    known = {d.label.raw_target(): True for d in deps}
-    listed = {}
+    known = set([d.label.raw_target() for d in deps])
+    listed = set()
     for d in ctx.attrs.splice_depends:
         t = d.label.raw_target()
         if t not in known:
             fail("{}: splice_depends names {}, which is not a dependency".format(ctx.label.raw_target(), t))
-        listed[t] = True
+        listed.add(t)
 
     base = []
     named = {}
@@ -153,12 +153,12 @@ def splice_dep_infos(ctx: AnalysisContext, link_style: LinkStyle, enable_profili
 # full db. The action's splices may load the libraries in `finalDbs` (see
 # target_splice_libraries). If `finalDbs` is None, the splices may load
 # every library, so every library needs its full db.
-def uses_library_less_db(lib, finalDbs: [dict[str, bool], None]) -> bool:
+def uses_library_less_db(lib, finalDbs: [set[str], None]) -> bool:
     return finalDbs != None and lib.early_db != None and lib.name not in finalDbs
 
 # The `final` argument names the libraries whose final dbs and linked
 # libraries the compile uses (see target_splice_libraries).
-def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_version: bool, enable_profiling: bool, final: [dict[str, bool], None] = None) -> PackagesInfo:
+def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_version: bool, enable_profiling: bool, final: [set[str], None] = None) -> PackagesInfo:
     # Collect library dependencies. Note that these don't need to be in a
     # particular order.
     libs = dependency_libs(ctx, link_style, enable_profiling)
@@ -166,21 +166,21 @@ def get_packages_info(ctx: AnalysisContext, link_style: LinkStyle, specify_pkg_v
     exposed_package_args = cmd_args()
 
     packagedb_args = cmd_args()
-    packagedb_set = {}
+    packagedb_set = set()
 
     for lib in libs.traverse():
         if uses_library_less_db(lib, final):
             # A library compiled per-module has no library-less db of its
             # own. Its early db names the directory of its modules'
             # interfaces, which are inputs one by one.
-            packagedb_set[lib.early_db] = None
+            packagedb_set.add(lib.early_db)
             if lib.modules != None:
                 interfaces = [f for m in lib.modules.values() for f in [m.hi, m.dyn_hi] if f != None]
             else:
                 interfaces = lib.import_dirs
             hidden_args = cmd_args(hidden = [interfaces, lib.stub_dirs])
         else:
-            packagedb_set[lib.db] = None
+            packagedb_set.add(lib.db)
             hidden_args = cmd_args(
                 hidden = [
                     lib.import_dirs,
@@ -348,7 +348,7 @@ def ghc_flags(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: boo
 def get_producing_indices(ctx: AnalysisContext) -> bool:
     return has_compiler_flag(ctx, "-fwrite-ide-info")
 
-def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname = None, dynamic_too: bool = False, final: [dict[str, bool], None] = None) -> CompileArgsInfo:
+def compile_args(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname = None, dynamic_too: bool = False, final: [set[str], None] = None) -> CompileArgsInfo:
     compile_cmd, compile_args = ghc_flags(ctx, link_style, enable_profiling, pkgname, dynamic_too)
 
     # Add -package-db and -package/-expose-package flags for each Haskell
@@ -443,7 +443,7 @@ def compile_data_dirs(data_dirs: dict[str, Artifact], lib_dirs: dict[str, Artifa
 # The data dirs that a --make compile of the target sets. Its splices can
 # run code from any of the target's own modules, and from the libraries in
 # `final` (see target_splice_libraries).
-def splice_data_dirs(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, final: dict[str, bool]) -> dict[str, Artifact]:
+def splice_data_dirs(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, final: set[str]) -> dict[str, Artifact]:
     libs = [lib for lib in dependency_libs(ctx, link_style, enable_profiling).traverse() if lib.name in final]
     return compile_data_dirs(
         data_dirs_env(ctx),

@@ -517,7 +517,7 @@ def _make_package(
 
     # While the list of hlis is unique, there may be multiple packages in the same db.
     # Cutting down the GHC_PACKAGE_PATH significantly speeds up GHC.
-    db_deps = {(x.early_db if (early or library_less) and x.early_db != None else x.db): None for x in hlis + all_hlis}.keys()
+    db_deps = list(set([x.early_db if (early or library_less) and x.early_db != None else x.db for x in hlis + all_hlis]))
 
     # So that ghc-pkg can find the DBs for the dependencies. We might
     # be able to use flags for this instead, but this works.
@@ -740,7 +740,7 @@ def _register_library(
     # variant is its own splice variant, or both come from one -dynamic-too
     # compile, they share some files, so each file is named only once.
     def unique(xs: list) -> list:
-        return list({x: None for x in xs}.keys())
+        return list(set(xs))
 
     import_artifacts = unique([compiled.hi, splice_variant.compiled.hi])
     stub_dirs = unique([compiled.stubs, splice_variant.compiled.stubs])
