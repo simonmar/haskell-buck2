@@ -1,0 +1,271 @@
+[
+  {
+    "buck.package": "root//cabal-example",
+    "buck.type": "prelude//rules.bzl:haskell_library",
+    "compile_granularity": "module",
+    "compiler_flags": {
+      "__type": "concat",
+      "items": [
+        {
+          "__type": "selector",
+          "entries": {
+            "DEFAULT": [],
+            "root//buck2/constraints:opt": ["-O"]
+          }
+        },
+        ["-XHaskell2010", "-XLambdaCase", "-Wall"],
+        ["-optP-include", "-optP$(location root//cabal-example/cabal-buck2/autogen:cabal-example-cabal-macros)"]
+      ]
+    },
+    "deps": ["root//cabal-example:internal", "third-party-haskell//:base", "third-party-haskell//:rts"],
+    "exposed": true,
+    "hidden_modules": ["Example.Hidden"],
+    "internal_deps": [],
+    "name": "cabal-example",
+    "package_name": "cabal-example",
+    "package_version": "0.1.0.0",
+    "preferred_linkage": {
+      "__type": "selector",
+      "entries": {
+        "DEFAULT": {
+          "__type": "selector",
+          "entries": {
+            "DEFAULT": {
+              "__type": "selector",
+              "entries": {
+                "DEFAULT": "shared",
+                "root//buck2/constraints:opt": "any"
+              }
+            },
+            "root//buck2/constraints:shared": "shared",
+            "root//buck2/constraints:static": "any"
+          }
+        },
+        "root//buck2/constraints:all_ways": "any"
+      }
+    },
+    "splice_depends": ["third-party-haskell//:base", "root//cabal-example:internal"],
+    "srcs": {
+      "Example": "root//cabal-example/src/Example.hs",
+      "Example.Hidden": "root//cabal-example/src/Example/Hidden.hs"
+    },
+    "unit_id": "cabal-example-0.1.0.0-inplace",
+    "visibility": ["PUBLIC"],
+    "within_view": ["PUBLIC"]
+  },
+  {
+    "buck.package": "root//cabal-example",
+    "buck.type": "prelude//rules.bzl:haskell_binary",
+    "compile_granularity": "module",
+    "compiler_flags": {
+      "__type": "concat",
+      "items": [
+        {
+          "__type": "selector",
+          "entries": {
+            "DEFAULT": [],
+            "root//buck2/constraints:opt": ["-O"]
+          }
+        },
+        ["-threaded", "-XHaskell2010", "-Wall"],
+        {
+          "__type": "selector",
+          "entries": {
+            "DEFAULT": [],
+            "root//buck2/constraints:asan": ["-optc-fsanitize=address", "-optl-fsanitize=address"]
+          }
+        },
+        ["-optP-include", "-optP$(location root//cabal-example/cabal-buck2/autogen:cabal-example-exe-cabal-macros)"]
+      ]
+    },
+    "deps": ["root//cabal-example:cabal-example", "third-party-haskell//:base", "third-party-haskell//:rts"],
+    "enable_profiling": {
+      "__type": "selector",
+      "entries": {
+        "DEFAULT": false,
+        "root//buck2/constraints:prof": true
+      }
+    },
+    "exe_name": "cabal-example",
+    "link_style": {
+      "__type": "selector",
+      "entries": {
+        "DEFAULT": {
+          "__type": "selector",
+          "entries": {
+            "DEFAULT": {
+              "__type": "selector",
+              "entries": {
+                "DEFAULT": "shared",
+                "root//buck2/constraints:opt": "static"
+              }
+            },
+            "root//buck2/constraints:prof": "static"
+          }
+        },
+        "root//buck2/constraints:shared": "shared",
+        "root//buck2/constraints:static": "static"
+      }
+    },
+    "linker_flags": {
+      "__type": "concat",
+      "items": [
+        {
+          "__type": "selector",
+          "entries": {
+            "DEFAULT": [],
+            "root//buck2/constraints:asan": ["-optc-fsanitize=address", "-optl-fsanitize=address"]
+          }
+        },
+        ["-threaded", "-Wall"]
+      ]
+    },
+    "name": "cabal-example-exe",
+    "splice_depends": ["third-party-haskell//:base", "root//cabal-example:cabal-example"],
+    "srcs": {
+      "Main": "root//cabal-example/app/Main.hs"
+    },
+    "visibility": ["PUBLIC"],
+    "within_view": ["PUBLIC"]
+  },
+  {
+    "buck.package": "root//cabal-example",
+    "buck.type": "prelude//rules.bzl:haskell_library",
+    "compile_granularity": "module",
+    "compiler_flags": {
+      "__type": "concat",
+      "items": [
+        {
+          "__type": "selector",
+          "entries": {
+            "DEFAULT": [],
+            "root//buck2/constraints:opt": ["-O"]
+          }
+        },
+        ["-XHaskell2010", "-Wall"],
+        ["-optP-include", "-optP$(location root//cabal-example/cabal-buck2/autogen:internal-cabal-macros)"]
+      ]
+    },
+    "deps": ["third-party-haskell//:base", "third-party-haskell//:rts"],
+    "exposed": false,
+    "internal_deps": [],
+    "name": "internal",
+    "package_name": "cabal-example",
+    "package_version": "0.1.0.0",
+    "preferred_linkage": {
+      "__type": "selector",
+      "entries": {
+        "DEFAULT": {
+          "__type": "selector",
+          "entries": {
+            "DEFAULT": {
+              "__type": "selector",
+              "entries": {
+                "DEFAULT": "shared",
+                "root//buck2/constraints:opt": "any"
+              }
+            },
+            "root//buck2/constraints:shared": "shared",
+            "root//buck2/constraints:static": "any"
+          }
+        },
+        "root//buck2/constraints:all_ways": "any"
+      }
+    },
+    "splice_depends": ["third-party-haskell//:base"],
+    "srcs": {
+      "Internal": "root//cabal-example/internal/Internal.hs"
+    },
+    "unit_id": "cabal-example-0.1.0.0-inplace-internal",
+    "visibility": ["PUBLIC"],
+    "within_view": ["PUBLIC"]
+  },
+  {
+    "args": ["cabal-example", "$(exe_target root//cabal-example:tests-bin)", "--quick"],
+    "buck.package": "root//cabal-example",
+    "buck.type": "prelude//rules.bzl:sh_test",
+    "env": {
+      "LANG": "C.UTF-8"
+    },
+    "labels": [],
+    "name": "tests",
+    "test": "root//buck2:run_test",
+    "visibility": [],
+    "within_view": ["PUBLIC"]
+  },
+  {
+    "buck.package": "root//cabal-example",
+    "buck.type": "prelude//rules.bzl:haskell_binary",
+    "build_tool_depends": ["root//cabal-example:cabal-example-exe"],
+    "compile_granularity": "module",
+    "compiler_flags": {
+      "__type": "concat",
+      "items": [
+        {
+          "__type": "selector",
+          "entries": {
+            "DEFAULT": [],
+            "root//buck2/constraints:opt": ["-O"]
+          }
+        },
+        ["-XHaskell2010", "-Wall"],
+        {
+          "__type": "selector",
+          "entries": {
+            "DEFAULT": [],
+            "root//buck2/constraints:asan": ["-optc-fsanitize=address", "-optl-fsanitize=address"]
+          }
+        },
+        ["-optP-include", "-optP$(location root//cabal-example/cabal-buck2/autogen:tests-cabal-macros)"]
+      ]
+    },
+    "deps": ["root//cabal-example:cabal-example", "third-party-haskell//:base", "third-party-haskell//:process", "third-party-haskell//:rts"],
+    "enable_profiling": {
+      "__type": "selector",
+      "entries": {
+        "DEFAULT": false,
+        "root//buck2/constraints:prof": true
+      }
+    },
+    "link_style": {
+      "__type": "selector",
+      "entries": {
+        "DEFAULT": {
+          "__type": "selector",
+          "entries": {
+            "DEFAULT": {
+              "__type": "selector",
+              "entries": {
+                "DEFAULT": "shared",
+                "root//buck2/constraints:opt": "static"
+              }
+            },
+            "root//buck2/constraints:prof": "static"
+          }
+        },
+        "root//buck2/constraints:shared": "shared",
+        "root//buck2/constraints:static": "static"
+      }
+    },
+    "linker_flags": {
+      "__type": "concat",
+      "items": [
+        {
+          "__type": "selector",
+          "entries": {
+            "DEFAULT": [],
+            "root//buck2/constraints:asan": ["-optc-fsanitize=address", "-optl-fsanitize=address"]
+          }
+        },
+        ["-Wall"]
+      ]
+    },
+    "name": "tests-bin",
+    "splice_depends": ["third-party-haskell//:base", "third-party-haskell//:process", "root//cabal-example:cabal-example"],
+    "srcs": {
+      "Main": "root//cabal-example/test/Main.hs"
+    },
+    "visibility": [],
+    "within_view": ["PUBLIC"]
+  }
+]

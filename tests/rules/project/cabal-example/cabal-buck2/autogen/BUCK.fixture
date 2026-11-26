@@ -1,0 +1,6 @@
+# The macros header of each component, as `cabal buck2` would generate it.
+
+[
+    export_file(name = c + "-cabal-macros", src = "cabal_macros.h", visibility = ["PUBLIC"])
+    for c in ["cabal-example", "internal", "cabal-example-exe", "tests"]
+]
