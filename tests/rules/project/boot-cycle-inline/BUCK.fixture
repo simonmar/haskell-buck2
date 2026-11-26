@@ -30,5 +30,5 @@ haskell_library(
     },
     compiler_flags = ["-O"],
     packages = ["base", "template-haskell"],
-    per_module = True,
+    compile_granularity = "module",
 )

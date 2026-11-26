@@ -7,5 +7,5 @@ haskell_library(
     srcs = {"OB.B": "OB/B.hs", "OB.U": "OB/U.hs"},
     boot_srcs = {"OB.U": "OB/U.hs-boot"},
     packages = ["base"],
-    per_module = True,
+    compile_granularity = "module",
 )

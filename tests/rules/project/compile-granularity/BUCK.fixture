@@ -1,0 +1,9 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# A library that doesn't set compile_granularity, so the toolchain decides how it
+# is compiled (see check_compile_granularity).
+haskell_library(
+    name = "default",
+    srcs = {"CS.A": "CS/A.hs"},
+    packages = ["base"],
+)

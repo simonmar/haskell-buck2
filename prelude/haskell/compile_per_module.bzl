@@ -1,6 +1,6 @@
-# Per-module compilation (`per_module = True`): one `ghc -c` action per module
-# instead of one `ghc --make` action per target. See the Notes at the end of
-# this file, starting with Note [Per-module compilation].
+# Per-module compilation (`compile_granularity = "module"`): one `ghc -c`
+# action per module instead of one `ghc --make` action per target. See the
+# Notes at the end of this file, starting with Note [Per-module compilation].
 
 load(
     "@prelude//haskell:compile.bzl",
@@ -706,11 +706,20 @@ def _unused_build_tools(tools: dict, runs_th: dict, program_nodes: dict, runs_to
 def _advice(findings: list, message: str) -> dict:
     return {"version": 1, "data": {"status": "success", "message": message if findings else "nothing to report", "findings": findings}}
 
-# Whether the target is compiled per-module: it has per_module = True, and at
-# least one Haskell module. A target without any modules always goes through
-# compile(), which produces the empty outputs that such a target needs.
+# Whether the target is compiled per-module: its compile granularity is
+# "module", and it has at least one Haskell module. A target without any
+# modules always goes through compile(), which produces the empty outputs that
+# such a target needs.
 def compiles_per_module(ctx: AnalysisContext) -> bool:
-    return getattr(ctx.attrs, "per_module", False) and has_modules(ctx)
+    return _compile_granularity(ctx) == "module" and has_modules(ctx)
+
+# The target's compile_granularity, or the toolchain's if the target doesn't
+# set it. A rule that has no compile_granularity attribute always compiles
+# the whole target with --make.
+def _compile_granularity(ctx: AnalysisContext) -> str:
+    if not hasattr(ctx.attrs, "compile_granularity"):
+        return "target"
+    return ctx.attrs.compile_granularity or ctx.attrs._haskell_toolchain[HaskellToolchainInfo].compile_granularity
 
 # Compile the target's sources with one action per module (see Note
 # [Per-module compilation]). It takes the same arguments as compile(), so
@@ -975,8 +984,8 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # Note [Per-module compilation]
 #
 # Normally a target is compiled by one `ghc --make` action. With
-# `per_module = True`, it is compiled by one `ghc -c` action per module
-# instead. buck2 can then:
+# compile_granularity = "module", it is compiled by one `ghc -c` action per
+# module instead. buck2 can then:
 #
 # - run the target's modules in parallel with everything else in the build;
 # - start each module as soon as the modules it imports are compiled, even

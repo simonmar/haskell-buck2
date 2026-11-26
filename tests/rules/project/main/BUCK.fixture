@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_binary")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 haskell_binary(
     name = "main",
@@ -9,7 +9,7 @@ haskell_binary(
     },
     packages = ["base"],
     deps = ["//lib-user:lib-user"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 # The same, linked shared whatever the mode: in opt mode its dependencies'
@@ -23,5 +23,5 @@ haskell_binary(
     packages = ["base"],
     deps = ["//lib-user:lib-user"],
     link_style = "shared",
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )

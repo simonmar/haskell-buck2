@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # TF.M has a splice that runs //lib:lib's code, but no LANGUAGE pragma. So
 # it only runs Template Haskell when the toolchain's flags enable the
@@ -10,6 +10,6 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = ["//lib:lib"],
     splice_depends = ["//lib:lib"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
     visibility = ["PUBLIC"],
 )

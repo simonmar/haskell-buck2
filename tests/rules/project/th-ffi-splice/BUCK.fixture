@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # Splices that call //c-lib:c-lib's C function: U.V's through
 # //ffi-import:ffi-import, U.W's through //ffi-import:ffi-wrap.
@@ -12,7 +12,7 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = ["//ffi-import:ffi-import", "//ffi-import:ffi-wrap"],
     splice_depends = ["//ffi-import:ffi-import", "//ffi-import:ffi-wrap"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
     visibility = ["PUBLIC"],
 )
 
@@ -25,5 +25,5 @@ haskell_binary(
     srcs = {"Main": "Show.hs"},
     packages = ["base"],
     deps = [":th-ffi-splice", "//c-lib:c-base"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )

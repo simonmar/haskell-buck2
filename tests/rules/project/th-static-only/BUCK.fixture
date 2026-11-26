@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # A library that is only linked statically, whose code splices run.
 haskell_library(
@@ -7,7 +7,7 @@ haskell_library(
     srcs = {"SO.Gen": "SO/Gen.hs"},
     packages = ["base"],
     preferred_linkage = "static",
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 # Another library that is only linked statically, whose code calls gen's.
@@ -17,7 +17,7 @@ haskell_library(
     packages = ["base"],
     deps = [":gen"],
     preferred_linkage = "static",
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 # Binaries whose splices run gen2's code, and through it gen's, compiling
@@ -31,7 +31,7 @@ haskell_library(
         deps = [":gen2"],
         splice_depends = [":gen2"],
         link_style = style,
-        per_module = PER_MODULE,
+        compile_granularity = COMPILE_GRANULARITY,
     )
     for name, style in [("static", "static"), ("static-pic", "static_pic")]
 ]

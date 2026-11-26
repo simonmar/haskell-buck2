@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # Two modules that run Template Haskell, each with its boot file below the
 # other: Tie.I imports Tie.A, which imports Tie.K {-# SOURCE #-}; Tie.K
@@ -21,6 +21,6 @@ haskell_library(
     },
     boot_srcs = {"Tie.I": "Tie/I.hs-boot", "Tie.K": "Tie/K.hs-boot", "Tie.W": "Tie/W.hs-boot"},
     packages = ["base", "template-haskell"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
     visibility = ["PUBLIC"],
 )

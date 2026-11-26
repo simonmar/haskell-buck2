@@ -1,4 +1,4 @@
-# How the fixtures that set `per_module = PER_MODULE` (defs.bzl) are
+# How the fixtures that set `compile_granularity = COMPILE_GRANULARITY` (defs.bzl) are
 # compiled: per-module, the default, or with `--make` when a target is built
 # with the `make` modifier, as in `//lib:lib?//compile:make`. The checks
 # build both ways in one daemon, since the two are different configurations.

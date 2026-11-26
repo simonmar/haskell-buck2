@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # Imports A.Base, which its one dependency, reexport, re-exports from lib.
 haskell_library(
@@ -7,5 +7,5 @@ haskell_library(
     srcs = {"U.M": "U/M.hs"},
     packages = ["base"],
     deps = ["//reexport:reexport"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )

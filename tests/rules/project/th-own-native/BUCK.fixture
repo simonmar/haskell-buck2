@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # Splices that run modules of their own targets, which call those targets'
 # C libraries (c-a for a, c-b for b). When a and b are built at once, their
@@ -22,7 +22,7 @@ haskell_library(
     srcs = {"A.C": "A/C.hs", "A.S": "A/S.hs"},
     packages = ["base", "template-haskell"],
     deps = [":c-a"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 haskell_library(
@@ -30,7 +30,7 @@ haskell_library(
     srcs = {"B.C": "B/C.hs", "B.S": "B/S.hs"},
     packages = ["base", "template-haskell"],
     deps = [":c-b"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 # Prints A.S's and B.S's splices.
@@ -39,5 +39,5 @@ haskell_binary(
     srcs = {"Main": "Show.hs"},
     packages = ["base"],
     deps = [":a", ":b"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )

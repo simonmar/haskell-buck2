@@ -69,7 +69,7 @@ check that the compile fails.
 - `check.py` runs the checks in order, in one buck2 daemon (buck2 keeps dep
   files in the daemon's memory, so the early cut-off checks need it to
   live). `harness.py` has what they share.
-- A fixture that sets `per_module = PER_MODULE` (`project/compile/defs.bzl`)
+- A fixture that sets `compile_granularity = COMPILE_GRANULARITY` (`project/compile/defs.bzl`)
   is compiled per-module, and with `--make` when it is built with the
   `//compile:make` modifier, as in `//lib:lib?//compile:make`. The two are
   different configurations, so a check can build both in the same daemon.

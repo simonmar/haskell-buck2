@@ -8,7 +8,7 @@ haskell_library(
     name = "p",
     srcs = {"Chain.P": "Chain/P.hs"},
     packages = ["base"],
-    per_module = True,
+    compile_granularity = "module",
     visibility = ["PUBLIC"],
 )
 
@@ -25,6 +25,6 @@ haskell_library(
     srcs = {"Chain.T": "Chain/T.hs"},
     packages = ["base"],
     deps = [":m", ":p"],
-    per_module = True,
+    compile_granularity = "module",
     visibility = ["PUBLIC"],
 )

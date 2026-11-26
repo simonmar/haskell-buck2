@@ -6,7 +6,7 @@ haskell_library(
     name = "first",
     srcs = {"Utils": "First/Utils.hs"},
     packages = ["base"],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 haskell_library(
@@ -16,7 +16,7 @@ haskell_library(
         "Utils": "Second/Utils.hs",
     },
     packages = ["base"],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 haskell_library(
@@ -27,5 +27,5 @@ haskell_library(
     },
     packages = ["base"],
     deps = [":first", ":second"],
-    per_module = True,
+    compile_granularity = "module",
 )

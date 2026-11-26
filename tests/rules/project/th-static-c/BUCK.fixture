@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # A library that uses //c-lib:c-static, which has no shared library.
 haskell_library(
@@ -7,7 +7,7 @@ haskell_library(
     srcs = {"SC.Lib": "SC/Lib.hs"},
     packages = ["base"],
     deps = ["//c-lib:c-static"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 # SC.Splice's splices only need static-c-user, which has no shared
@@ -19,5 +19,5 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = [":static-c-user", "//ffi-import:ffi-import"],
     splice_depends = [":static-c-user"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )

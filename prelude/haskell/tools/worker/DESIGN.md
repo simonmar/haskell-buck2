@@ -28,7 +28,7 @@ We want the worker:
 
 ## 1. Why a worker
 
-With `per_module = True`, the rules compile each module of a target in a
+With `compile_granularity = "module"`, the rules compile each module of a target in a
 buck2 action of its own, which runs `ghc -c` on that one module. This gives
 buck2 a finer-grained build graph, but it is slow. Each `ghc -c` repeats
 work that a `ghc --make` for the whole target does only once:

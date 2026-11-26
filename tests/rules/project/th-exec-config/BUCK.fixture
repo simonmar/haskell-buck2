@@ -1,6 +1,6 @@
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
 load(":defs.bzl", "run_tool")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # The library l is built in two configurations in one build. tool is a
 # build tool, which gen runs, so it and its copy of l are built in the
@@ -21,7 +21,7 @@ haskell_library(
         "DEFAULT": [],
         "prelude//cfg/exec_platform/marker:is_exec_platform[true]": ["-DEXEC"],
     }),
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 haskell_binary(
@@ -30,7 +30,7 @@ haskell_binary(
     packages = ["base", "template-haskell"],
     deps = [":l"],
     splice_depends = [":l"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 run_tool(
@@ -45,7 +45,7 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = [":l"],
     splice_depends = [":l"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 # Prints the value of U.S's splice, which comes from the target platform's
@@ -55,5 +55,5 @@ haskell_binary(
     srcs = {"Main": "Show.hs"},
     packages = ["base"],
     deps = [":user"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )

@@ -62,7 +62,7 @@ def build(*targets, mode=None, keep_going=False):
     return buck2(*args, ok=not keep_going)
 
 
-# How a fixture with `per_module = PER_MODULE` is compiled (see
+# How a fixture with `compile_granularity = COMPILE_GRANULARITY` is compiled (see
 # project/compile/BUCK.fixture).
 COMPILES = ["per-module", "make"]
 

@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # Template Haskell modules whose targets depend on //make-lib:make-lib,
 # which is built with --make.
@@ -20,7 +20,7 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = ["//make-lib:make-lib"],
     splice_depends = [],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
     visibility = ["PUBLIC"],
 )
 
@@ -30,7 +30,7 @@ haskell_binary(
     srcs = {"Main": "Lit.hs"},
     packages = ["base"],
     deps = [":th-make-dep"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )
 
 haskell_library(
@@ -39,7 +39,7 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = ["//make-lib:make-lib"],
     splice_depends = ["//make-lib:make-lib"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
     visibility = ["PUBLIC"],
 )
 
@@ -49,7 +49,7 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = ["//make-lib:make-lib"],
     splice_depends = [],
-    per_module = True,
+    compile_granularity = "module",
     visibility = ["PUBLIC"],
 )
 
@@ -67,7 +67,7 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = ["//make-lib:make-lib"],
     splice_depends = ["//make-lib:make-lib"],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 haskell_library(
@@ -76,7 +76,7 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = ["//make-lib:make-lib", ":mkload"],
     splice_depends = [],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 haskell_library(
@@ -85,6 +85,6 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = ["//make-lib:make-lib"],
     splice_depends = ["//lib:lib"],
-    per_module = True,
+    compile_granularity = "module",
     visibility = ["PUBLIC"],
 )

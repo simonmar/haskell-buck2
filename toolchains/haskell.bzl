@@ -14,6 +14,7 @@ def _haskell_toolchain_impl(ctx):
     return [
         DefaultInfo(),
         HaskellToolchainInfo(
+            compile_granularity = ctx.attrs.compile_granularity,
             compiler = compiler,
             packager = _tool(ctx.attrs.packager),
             linker = compiler,
@@ -75,6 +76,7 @@ haskell_toolchain = rule(
         # prints it (see HaskellToolchainInfo).
         "ghc_version": attrs.string(),
         # See HaskellToolchainInfo.
+        "compile_granularity": attrs.enum(["target", "module"], default = "target"),
         "per_module_worker": attrs.enum(["builtin", "none"], default = "builtin"),
         "per_module_worker_rts_options": attrs.list(attrs.string(), default = per_module_worker_rts_options()),
         # An empty string means that the worker uses its own default, since

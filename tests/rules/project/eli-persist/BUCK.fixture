@@ -11,5 +11,5 @@ haskell_library(
     packages = ["base", "template-haskell"],
     deps = ["//th-gen:th-gen"],
     splice_depends = ["//th-gen:th-gen"],
-    per_module = True,
+    compile_granularity = "module",
 )

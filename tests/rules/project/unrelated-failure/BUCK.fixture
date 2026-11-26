@@ -9,7 +9,7 @@ haskell_library(
         "S.Ok": "S/Ok.hs",
     },
     packages = ["base"],
-    per_module = True,
+    compile_granularity = "module",
 )
 
 haskell_library(
@@ -17,5 +17,5 @@ haskell_library(
     srcs = {"W.M": "W/M.hs"},
     packages = ["base"],
     deps = [":s"],
-    per_module = True,
+    compile_granularity = "module",
 )

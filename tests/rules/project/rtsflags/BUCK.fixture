@@ -1,5 +1,5 @@
 load("//buck2:haskell.bzl", "haskell_library")
-load("//compile:defs.bzl", "PER_MODULE")
+load("//compile:defs.bzl", "COMPILE_GRANULARITY")
 
 # Options for GHC's runtime among the compiler flags.
 haskell_library(
@@ -7,5 +7,5 @@ haskell_library(
     srcs = {"R.A": "R/A.hs"},
     packages = ["base"],
     compiler_flags = ["+RTS", "-A16m", "-RTS"],
-    per_module = PER_MODULE,
+    compile_granularity = COMPILE_GRANULARITY,
 )

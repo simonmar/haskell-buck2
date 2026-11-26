@@ -53,7 +53,7 @@ writeDepFiles r iface = do
     Nothing -> pure [moduleNameString m | Just m <- [usageLoadedModule u]]
   let reached = [m | m <- loaded, m `notElem` reqLoadable r]
   unless (null reached) $
-    throwGhcExceptionIO (ProgramError (modName ++ ": a splice ran code of " ++ unwords reached ++ ", which " ++ modName ++ " reaches only through hs-boot files, and per_module doesn't support that: build the target with per_module = False"))
+    throwGhcExceptionIO (ProgramError (modName ++ ": a splice ran code of " ++ unwords reached ++ ", which " ++ modName ++ " reaches only through hs-boot files, and per_module doesn't support that: build the target with compile_granularity = \"target\""))
   entries <- fmap concat . forM us $ \u -> case u of
     UsageHomeModule{usg_mod_name = m} -> existing [reqOutDir r </> modFile m <.> ext m]
     _ | Just m <- usageLoadedModule u -> existing [reqOutDir r </> modFile m <.> "abi"]

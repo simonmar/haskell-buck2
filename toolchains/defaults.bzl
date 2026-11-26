@@ -36,6 +36,9 @@ def default_haskell_toolchain(name, **kwargs):
     # here would read the toolchains cell's own (nonexistent) one.
     kwargs.setdefault("compiler_flags", read_root_config("haskell", "compiler_flags", "").split())
     kwargs.setdefault("linker_flags", read_root_config("haskell", "linker_flags", "").split())
+    # How targets that don't set compile_granularity are compiled, from the
+    # project's buckconfig: "target" (the default) or "module".
+    kwargs.setdefault("compile_granularity", read_root_config("haskell", "compile_granularity", "") or "target")
     # See prelude/haskell/per_module_worker.bzl.
     kwargs.setdefault("per_module_worker", toolchain_per_module_worker())
     # GHC_DYNAMIC is what `ghc --info` says of the configured GHC
