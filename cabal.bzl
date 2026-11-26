@@ -43,13 +43,19 @@
 #         "include_dirs": [str], "pkgconfig": [str],
 #         "hsc_options": [str],               # defines for hsc2hs's C compiler (the platform)
 #         "includes": [str],                  # headers that GHC includes in what is compiled against the library
+#         "install_includes": [install_include],  # libraries only: the headers that what is compiled against the library sees
 #         "exposed": bool,                    # False: the library's package isn't exposed (a library's)
-#         "generated_include_dir": str,       # the target of their directory
-#         "generated_headers": str,           # the headers that `./configure` generated: a target in cabal-buck2/autogen
+#         "generated_include_dir": str,       # the headers that `./configure` generated: the target of their directory, in cabal-buck2/autogen
 #         "test_args": [str],                 # test-suites only
 #       },
 #     ],
 #   }
+#
+# An install_include is {"path": str} for a header at that path in the
+# library's include directory, with "src": str, its file in the package, or
+# "generated": True, if it's among those that `./configure` generated. One
+# with neither is in a directory that the build provides (the component's
+# `provided_include_dir` override): see _install_include_dir().
 #
 # A tool is {"exe": str, "package": str} for an executable built by this
 # project, or {"exe": str, "external": True} for an installed one.
@@ -99,7 +105,7 @@ load("@third-party-haskell//:tools.bzl", TOOLS_CABAL_BUCK2_VERSION = "CABAL_BUCK
 load("//buck2:version.bzl", "CABAL_BUCK2_VERSION")
 load("//buck2:cmm.bzl", "cmm_library")
 load("//buck2:cxx.bzl", "cxx_binary", "cxx_library")
-load("//buck2:headers.bzl", "headers_of")
+load("//buck2:headers.bzl", "headers_of", "install_include_dir")
 load("//buck2:haskell.bzl", "haskell_binary", "haskell_library", "haskell_test")
 load("//buck2:variant.bzl", "variant")
 load("//cabal-buck2:packages.bzl", "DATA_PACKAGES", "DEFAULTS", "OVERRIDES", "PACKAGES", "PACKAGE_SETS", "PACKAGE_SET_MODIFIERS", "PACKAGE_SET_TRANSITIONS", "PACKAGE_TARGETS", "PROJECT_PACKAGE_SET")
@@ -249,23 +255,18 @@ def _with_foreign_sources(spec, c, provided, src_flags):
 def _include_flags(c, pkg_dir):
     # The -I flags of the component's include directories (see
     # _include_dirs()), which cabal_targets() made once for the component.
-    return c["_include_dirs"].flags
-
-def _generated_headers(c, pkg_dir):
-    # The target with the headers that the package's configure script
-    # generated, which are needed where its own include directories are.
-    if "generated_headers" not in c:
-        return []
-    return [_label(c["_autogen"], c["generated_headers"])]
+    return c["_include_flags"]
 
 # The files in an include directory that a C preprocessor may include.
 _HEADER_PATTERNS = ["**/*.h", "**/*.hh", "**/*.hpp", "**/*.hxx", "**/*.inc"]
 
 def _include_dirs(c, pkg_dir):
-    # Returns the component's include directories: the -I flags for them
-    # (`flags`), and the filegroups that hold their headers (`targets`).
-    # GHC needs the flags for CPP and for the C stubs of foreign imports,
-    # and the component's C needs them too.
+    # Returns the -I flags for the component's include directories, and for
+    # the directory of the headers that its configure script generated. GHC
+    # needs them for CPP and for the C stubs of foreign imports, and the
+    # component's C needs them too. They are only for the component's own
+    # compiles. What is compiled against a library sees its install-includes
+    # instead (see _install_include_dir()).
     #
     # Each include directory inside the package's directory becomes a
     # filegroup of its headers, and its flag names the filegroup's directory
@@ -273,18 +274,14 @@ def _include_dirs(c, pkg_dir):
     # the flag, and buck2 compiles it again when one of them changes. The
     # compiler also sees only those headers, so a compile that includes a
     # file the filegroup doesn't have fails here, and not only on a remote
-    # executor. A library's package registers the same filegroups (see
-    # _package_include_dirs()).
+    # executor.
     #
     # buck2 can only list the files of a package from its BUCK file, so an
     # include directory elsewhere in the project (`../include`, say) is named
     # by its path from the project root, which is where the compilers run.
     # Its headers aren't inputs. A directory outside the project
-    # (`/usr/include`, say) is the system's. The headers that the package's
-    # configure script generated are a target of their own (see
-    # _generated_headers()).
+    # (`/usr/include`, say) is the system's.
     flags = []
-    targets = []
     for i, d in enumerate(c.get("include_dirs", [])):
         d = paths.normalize(d)
         if d.startswith("/"):
@@ -308,15 +305,41 @@ def _include_dirs(c, pkg_dir):
             **c["_common"]
         )
         flags.append("-I$(location :{})".format(name))
-        targets.append(":" + name)
-    return struct(flags = _nub(flags), targets = targets)
+    if "generated_include_dir" in c:
+        flags.append("-I$(location {})".format(_label(c["_autogen"], c["generated_include_dir"])))
+    return _nub(flags)
 
-def _package_include_dirs(c, pkg_dir):
-    # The include directories of the library's package, as Cabal registers
-    # them in place: its own (the filegroups that _include_dirs() made), and
-    # the one its configure script generated headers in. One outside the
-    # package's directory isn't registered, because it isn't a target.
-    return c["_include_dirs"].targets + ([_label(c["_autogen"], c["generated_include_dir"])] if "generated_include_dir" in c else [])
+def _install_include_dir(c, provided_include_dir):
+    # Makes the library's include directory as Cabal installs it, with only
+    # its install-includes (see install_include_dir()), and returns its
+    # label. Returns None for a component without install-includes.
+    #
+    # Its package registers this directory as its include-dirs, and its C
+    # library exports it to what depends on the library. So what is compiled
+    # against the library sees only the headers that the package installs,
+    # as it would see an installed package, and not the package's private
+    # headers. The library's own compiles have all of its include
+    # directories (see _include_dirs()).
+    #
+    # `provided_include_dir` is a directory that the build makes, which has
+    # the headers that the package has neither in its sources nor among the
+    # headers its configure script generated.
+    install = c.get("install_includes", [])
+    if not install:
+        return None
+    generated = [h["path"] for h in install if h.get("generated")]
+    name = c["name"] + "-install-include"
+    install_include_dir(
+        name = name,
+        srcs = {h["path"]: h["src"] for h in install if "src" in h},
+        generated_dir = _label(c["_autogen"], c["generated_include_dir"]) if generated else None,
+        generated_headers = generated,
+        provided_dir = provided_include_dir,
+        provided_headers = [h["path"] for h in install if "src" not in h and not h.get("generated")],
+        visibility = ["PUBLIC"],
+        **c["_common"]
+    )
+    return ":" + name
 
 def _this_unit_id(flags):
     # The unit id that a package's options give its library, as those of a
@@ -493,11 +516,13 @@ def _cxx_library(c, packages, pkg_dir, pkgconfig_seen, overrides):
     headers_of(name = headers, deps = deps, **c["_common"])
     kwargs["deps"] = [":" + headers] + kwargs["deps"]
 
-    # The component's include directories are its dependents' too.
+    # The component's include directories are for its own C. What depends on
+    # a library sees its install-includes.
     include_flags = _include_flags(c, pkg_dir)
     if include_flags:
-        kwargs["exported_preprocessor_flags"] = include_flags
-    kwargs["exported_deps"] = _generated_headers(c, pkg_dir)
+        kwargs["preprocessor_flags"] = include_flags
+    if c.get("_install_include_dir"):
+        kwargs["exported_preprocessor_flags"] = ["-I$(location {})".format(c["_install_include_dir"])]
     # Like the C of a Cabal package, it is all part of the library of the
     # component's Haskell code (see `internal_deps` of haskell_library()):
     # the RTS's C, say, calls hidden functions of its Cmm, which only resolve
@@ -547,7 +572,6 @@ def _cxx_binary(c, packages, pkg_dir, pkgconfig_seen, overrides):
     include_flags = _include_flags(c, pkg_dir)
     if include_flags:
         kwargs["preprocessor_flags"] = include_flags
-    kwargs["deps"] = kwargs["deps"] + _generated_headers(c, pkg_dir)
     linker_flags = _lib_dir_flags(c, pkg_dir) + ["-l" + l for l in c.get("extra_libraries", [])] + c.get("ld_options", [])
     if linker_flags:
         kwargs["linker_flags"] = _nub(linker_flags)
@@ -573,7 +597,7 @@ def _cmm_library(c, spec, overrides):
     kwargs = {
         "srcs": list(c["cmm_sources"]),
         "flags": _haskell_flags(c, pkg_dir, list(spec.get("ghc_options", []))),
-        "deps": _generated_headers(c, pkg_dir) + _header_deps(c, _packages(spec))[0],
+        "deps": _header_deps(c, _packages(spec))[0],
         "visibility": ["PUBLIC"],
     }
     cmm_library(name = name, **_merge(_merge(kwargs, c["_common"]), overrides))
@@ -614,7 +638,7 @@ def _haskell_kwargs(c, spec, helpers):
     kind = c["kind"]
     project_packages = _packages(spec)
     packages, deps = _classify_deps(project_packages, c.get("deps", []))
-    deps = _nub(deps + _generated_headers(c, pkg_dir))
+    deps = _nub(deps)
     kwargs = {
         "name": c["name"],
         "srcs": _srcs(c, pkg_dir),
@@ -653,9 +677,8 @@ def _haskell_kwargs(c, spec, helpers):
         if helpers:
             kwargs["internal_deps"] = helpers
             kwargs["prof_internal_deps"] = [_profiled(c, h) for h in helpers]
-        include_dirs = _package_include_dirs(c, pkg_dir)
-        if include_dirs:
-            kwargs["include_dirs"] = include_dirs
+        if c.get("_install_include_dir"):
+            kwargs["include_dirs"] = [c["_install_include_dir"]]
         if c.get("includes"):
             kwargs["includes"] = list(c["includes"])
         kwargs["exposed"] = c.get("exposed", True)
@@ -866,7 +889,11 @@ def _cabal_targets_of_set(spec, defaults, overrides, transform, rules, extras):
         cxx_overrides = component_overrides.pop("cxx", {})
         cmm_overrides = component_overrides.pop("cmm", {})
         variants = component_overrides.pop("variants", {})
-        c = dict(c, _include_dirs = _include_dirs(c, pkg_dir))
+        c = dict(
+            c,
+            _include_flags = _include_dirs(c, pkg_dir),
+            _install_include_dir = _install_include_dir(c, component_overrides.pop("provided_include_dir", None)),
+        )
         if _foreign_main(c):
             _cxx_binary(c, _packages(spec), pkg_dir, pkgconfig_seen, _merge(component_overrides, cxx_overrides))
             continue
