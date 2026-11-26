@@ -803,6 +803,7 @@ def _dynamic_view(compiled: CompileResultInfo) -> CompileResultInfo:
         closures = compiled.closures,
         dynamic_objects = compiled.dynamic_objects,
         advice = compiled.advice,
+        diagnostics = compiled.diagnostics,
     )
 
 # The HaskellLibraryInfo fields that per-module compiles of a library's
