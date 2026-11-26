@@ -13,7 +13,6 @@
 #     "cabal_buck2": str,                    # the release of cabal-buck2 that wrote this; see version.bzl
 #     "package": {"name": str, "version": str},   # where it lives: see PACKAGES, below
 #     "ghc_options": [str],                   # supplied by the project, not the .cabal file
-#     "per_module": bool,                     # experimental: compile each module in its own action (see haskell_library's per_module)
 #     "data": {"dir": str, "files": [str]},   # the package's data-dir and data-files (patterns)
 #     "extra_source_files": [str],            # the package's extra-source-files (patterns)
 #     "components": [
@@ -84,7 +83,7 @@
 #   for its targets, in the form that cabal_targets() takes them. For example,
 #   this compiles every target of the project module by module:
 #
-#       DEFAULTS = {"*": {"*": {"per_module": True}}}
+#       DEFAULTS = {"*": {"*": {"compile_granularity": "module"}}}
 
 # This load has to come before the others: they load more from tools.bzl (the
 # fingerprints, the alex and happy targets...), which a tools.bzl written by
@@ -485,8 +484,6 @@ def _haskell_kwargs(c, spec, helpers):
     data_dirs = _data_dirs(c, spec)
     if data_dirs:
         kwargs["data_dirs"] = data_dirs
-    if spec.get("per_module", False):
-        kwargs["per_module"] = True
     if kind == "test-suite":
         kwargs["cwd"] = pkg_dir
         if c.get("test_args"):
