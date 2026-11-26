@@ -51,6 +51,9 @@ def build_ghc_api_tool(actions: AnalysisActions, name: str, compiler, compile_en
             "-package-env=-",
             "-hide-all-packages",
             [["-package", p] for p in packages],
+            # Leave out the debug information that the GHC library may have:
+            # with it, each tool can be a gigabyte.
+            "-optl-Wl,-S",
             flags,
             includes,
             main,
