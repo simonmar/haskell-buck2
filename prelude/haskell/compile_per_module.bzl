@@ -93,24 +93,24 @@ PerModuleClosures = provider(fields = {"by_module": provider_field(dict)})
 # directories of the --make dependencies with their library names, and
 # `early_names`, the names of the dependencies on their early dbs. The
 # compile tool needs both to find the interfaces that its dep file lists.
-def _package_dbs(libs: list, final: dict[str, bool], below_make: dict[str, bool], import_dirs_tag, runs_th: bool):
+def _package_dbs(libs: list, final: set[str], below_make: set[str], import_dirs_tag, runs_th: bool):
     packagedb_args = cmd_args()
-    packagedb_set = {}
+    packagedb_set = set()
     local_import_dirs = []
-    early_names = {}
+    early_names = set()
     native_libs = []
     for lib in libs:
         library_less = uses_library_less_db(lib, final)
         if library_less and lib.modules != None:
-            packagedb_set[lib.early_db] = None
-            early_names[lib.name] = True
+            packagedb_set.add(lib.early_db)
+            early_names.add(lib.name)
             if lib.name in below_make:
                 # A library built with --make depends on this one, and its
                 # interfaces refer to this one's: see Note [Compiling against
                 # dependencies module by module].
                 packagedb_args.add(import_dirs_tag.tag_artifacts(cmd_args(hidden = lib.import_dirs)))
             continue
-        packagedb_set[lib.early_db if library_less else lib.db] = None
+        packagedb_set.add(lib.early_db if library_less else lib.db)
         import_dirs = lib.import_dirs
         local_import_dirs += [(lib.name, d) for d in import_dirs if not d.is_source]
         # The interfaces are tagged, so that a compile's dep file can list
@@ -227,10 +227,10 @@ def _read_deps(label, deps: dict, nodes: list, module_libs: dict, prebuilt_names
 def _transitive_closure(order: list[str], imports: dict) -> dict:
     closure = {}
     for n in order:
-        c = {d: True for d in imports[n]}
+        c = set(imports[n])
         for d in imports[n]:
             for x in closure[d]:
-                c[x] = True
+                c.add(x)
         closure[n] = list(c)
     return closure
 
@@ -257,7 +257,7 @@ def _dependency_order(nodes: list, imports: dict) -> (list[str], list[str]):
             waiting[m] -= 1
             if waiting[m] == 0:
                 order.append(m)
-    done = {n: True for n in order}
+    done = set(order)
     return order, [n for n, _ in nodes if n not in done]
 
 # The nodes of the target's module graph, as (node name, source) pairs. A
@@ -415,7 +415,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     # A splice can run code of any prebuilt package, since all their
     # libraries are there from the start (see Note [Libraries of the early
     # package dbs]). So only local packages are checked here.
-    prebuilt = {name: True for name in s.prebuilt_names.values()}
+    prebuilt = set(s.prebuilt_names.values())
 
     # The package flags of a Template Haskell module. That is the target's
     # set, unless the module has explicit level imports, which may narrow it.
@@ -686,7 +686,7 @@ _PREPROCESSORS = ["alex", "happy", "hsc2hs"]
 # Identify build tools which aren't used in compiling any module, as far as we can tell.
 # `runs_tools` says whether the target is a program, which has run_tool_depends.
 def _unused_build_tools(tools: dict, runs_th: dict, program_nodes: dict, runs_tools: bool) -> dict:
-    run = {p: True for programs in program_nodes.values() for p in programs}
+    run = set([p for programs in program_nodes.values() for p in programs])
     splices = any(runs_th.values())
     findings = [
         {"tool": t, "certainty": "unless_a_splice_runs_it" if splices else "definite"}
@@ -756,7 +756,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     # --make depends on, found through the --make libraries' `below` sets
     # (see Note [Compiling against dependencies module by module]).
     below = ctx.actions.tset(HaskellLibraryInfoTSet, children = [lib.below for lib in dep_libs if lib.below != None])
-    below_make = {lib.name: True for lib in below.traverse() if lib.modules != None}
+    below_make = set([lib.name for lib in below.traverse() if lib.modules != None])
 
     # A module with explicit level imports calls this from the dynamic
     # output, with the packages that its splice imports need.
@@ -773,7 +773,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             data_dirs = {var: d for lib in dep_libs if lib.name in final for var, d in lib.data_dirs.items()},
         )
 
-    early_packages = packages({}, runs_th = False)
+    early_packages = packages(set(), runs_th = False)
 
     # Only the actions of Template Haskell modules depend on the
     # dependencies' libraries, because only those modules load them, and so
