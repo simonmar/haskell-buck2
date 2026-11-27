@@ -1,3 +1,7 @@
+# Build-wide configuration. Note that settings local to your build
+# should go into `.buckconfig.local` which is typically not a tracked
+# file.
+
 [cells]
   root = .
   prelude = buck2/prelude
@@ -20,3 +24,32 @@
 
 [build]
   execution_platforms = root//buck2/platforms:exec
+
+# Things that affect how Haskell code is built.
+[haskell]
+  # Extra flags
+  #
+  # You can add extra flags to compiles and links for the whole
+  # build. These flags will come early on the command line, so they
+  # will be overriden by target-specific flags.
+  #
+  #   compiler_flags = -I/opt/homebrew/include
+  #   linker_flags = -L/opt/homebrew/lib -L/opt/zlib/lib
+
+  # Per-module compilation
+  #
+  # See "Per-module compilation" in buck2/README.md for details.
+  #
+  # Use per-module for all targets:
+  #
+  #   compile_granularity = module
+  #
+  # By default per-module compiles use the persistent worker. To disable it:
+  #
+  #   per_module_worker = none
+  #
+  # Configure the persistent worker (see buck2/README.md):
+  #
+  #   per_module_worker_rts_options = -A64m -n4m -qn8 -I5
+  #   per_module_worker_sessions = 8
+  #   per_module_worker_session_mode = make
