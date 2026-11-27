@@ -38,14 +38,6 @@ load(
     "@prelude//linking:link_info.bzl",
     "LinkStyle",
 )
-load(
-    "@prelude//linking:shared_libraries.bzl",
-    "EMPTY_SHARED_LIBRARY_INFO",
-    "SharedLibraryInfo",
-    "create_shlib_symlink_tree",
-    "merge_shared_libraries",
-    "traverse_shared_library_info",
-)
 load("@prelude//utils:argfile.bzl", "at_argfile")
 
 # The type of the return value of the `_compile()` function.
@@ -505,15 +497,6 @@ def splice_objects_kind(ctx: AnalysisContext, enable_profiling: bool) -> str:
         return "own"
     return "from_non_profiled" if enable_profiling else "dynamic"
 
-# A tree of the shared libraries in `sets`, named by soname, or None if there
-# are none. Each library appears once, however many of the sets have it. A
-# splice finds them from `LD_LIBRARY_PATH`.
-def native_libs_tree(ctx: AnalysisContext, name: str, sets: list[SharedLibraryInfo]) -> [Artifact, None]:
-    sos = traverse_shared_library_info(merge_shared_libraries(ctx.actions, deps = sets), transformation_provider = None)
-    if not sos:
-        return None
-    return create_shlib_symlink_tree(actions = ctx.actions, out = name, shared_libs = sos)
-
 # Compile all the context's sources with `ghc --make`.
 #
 # For a profiled compile, `dynamic_from` is the non-profiled compile of the
@@ -523,11 +506,11 @@ def native_libs_tree(ctx: AnalysisContext, name: str, sets: list[SharedLibraryIn
 # this compile's -odir. With Cabal both compiles share a build directory, so
 # it's there. Here each compile has its own -odir, so we copy the .dyn_o
 # files in first.
-def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, native_libs: SharedLibraryInfo = EMPTY_SHARED_LIBRARY_INFO, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None) -> CompileResultInfo:
+def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None) -> CompileResultInfo:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     compile_cmd = cmd_args(haskell_toolchain.compiler)
 
-    splices = target_splice_env(ctx, link_style, enable_profiling, native_libs)
+    splices = target_splice_env(ctx, link_style, enable_profiling)
     args = compile_args(ctx, link_style, enable_profiling, pkgname, dynamic_too = dynamic_too, final = splices.final)
     import_dir = "hi-" + args.variant
     result = CompileResultInfo(
@@ -579,13 +562,11 @@ def compile(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool,
 # What the splices need in an action that runs GHC on all the target's
 # modules at once, such as the --make compile or haddock. This is the set of
 # libraries that the splices may run (`final`, see target_splice_libraries),
-# the native libraries of those libraries and of the target (`native_libs`),
 # and the data dirs that the splices may read (see splice_data_dirs).
-def target_splice_env(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, native_libs: SharedLibraryInfo):
+def target_splice_env(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool):
     final = target_splice_libraries(ctx, link_style, enable_profiling)
     return struct(
         final = final,
-        native_libs = [native_libs] + [lib.native_libs for lib in dependency_libs(ctx, link_style, enable_profiling).traverse() if lib.name in final],
         data_dirs = splice_data_dirs(ctx, link_style, enable_profiling, final),
     )
 
@@ -603,13 +584,12 @@ def target_splice_env(ctx: AnalysisContext, link_style: LinkStyle, enable_profil
 # that.
 def run_ghc(ctx: AnalysisContext, cmd: cmd_args, splices, variant: str, name: str, steps: str, step_args: list, category: str):
     env = ghc_env(ctx, "build-tool-depends-" + name)
-    native_dir = native_libs_tree(ctx, "native-libs-" + name, splices.native_libs)
     ctx.actions.run(
-        in_env(struct(script = env.script + "set -eu; " + steps, args = env.args + step_args), cmd_args(cmd, hidden = [native_dir] if native_dir != None else [])),
+        in_env(struct(script = env.script + "set -eu; " + steps, args = env.args + step_args), cmd),
         category = category,
         identifier = variant,
         no_outputs_cleanup = True,
-        env = splices.data_dirs | ({"LD_LIBRARY_PATH": cmd_args(native_dir)} if native_dir != None else {}),
+        env = splices.data_dirs,
     )
 
 # GHC's arguments `args` and the sources `srcs`, in a file named `name` if

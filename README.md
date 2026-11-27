@@ -162,7 +162,7 @@ whose result has `findings` gets a section too. For example:
 
 ```
 haskell_modules_outside_worker (1 target)
-  Modules that compile without the persistent worker, which is slower. A module compiles outside it if it may run build tools (tools), or if its splices may read data files (data_dirs) or load native libraries (native_libraries). A module that runs Template Haskell (template_haskell) is assumed to run any of its target's build tools.
+  Modules that compile without the persistent worker, which is slower. A module compiles outside it if it may run build tools (tools), or if its splices may read data files (data_dirs). A module that runs Template Haskell (template_haskell) is assumed to run any of its target's build tools.
   root//build-tools:own: BT.Own (runs bt-own); BT.OwnSplice (may run bt-own)
 
 haskell_unused_build_tools (2 targets)

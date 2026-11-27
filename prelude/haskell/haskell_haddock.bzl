@@ -16,7 +16,6 @@ load(
     "@prelude//haskell:util.bzl",
     "attr_deps",
 )
-load("@prelude//linking:shared_libraries.bzl", "SharedLibraryInfo")
 
 HaskellHaddockInfo = provider(
     fields = {
@@ -26,9 +25,8 @@ HaskellHaddockInfo = provider(
 )
 
 # The documentation of a library. `compiled` is the library's compile in
-# `link_style`, and `native_libs` are its own native libraries, as for
-# compile().
-def haskell_haddock_lib(ctx: AnalysisContext, pkgname: str, link_style: LinkStyle, compiled: CompileResultInfo, native_libs: SharedLibraryInfo) -> Provider:
+# `link_style`.
+def haskell_haddock_lib(ctx: AnalysisContext, pkgname: str, link_style: LinkStyle, compiled: CompileResultInfo) -> Provider:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
 
     iface = ctx.actions.declare_output("haddock-interface", has_content_based_path = False)
@@ -40,9 +38,9 @@ def haskell_haddock_lib(ctx: AnalysisContext, pkgname: str, link_style: LinkStyl
     # compile's do.
     from_interfaces = haddock_from_interfaces(ctx)
     if from_interfaces:
-        splices = struct(final = set(), native_libs = [], data_dirs = {})
+        splices = struct(final = set(), data_dirs = {})
     else:
-        splices = target_splice_env(ctx, link_style, False, native_libs)
+        splices = target_splice_env(ctx, link_style, False)
     args = compile_args(
         ctx,
         link_style,

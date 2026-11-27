@@ -6,7 +6,6 @@
 # of this source tree. You may select, at your option, one of the
 # above-listed licenses.
 
-load("@prelude//linking:shared_libraries.bzl", "EMPTY_SHARED_LIBRARY_INFO", "SharedLibraryInfo")
 
 # If the target is a haskell library, the HaskellLibraryProvider
 # contains its HaskellLibraryInfo. (in contrast to a HaskellLinkInfo,
@@ -76,11 +75,6 @@ HaskellLibraryInfo = record(
     # see Note [Compiling against dependencies module by module]
     # in compile_per_module.bzl.
     below = field(TransitiveSet | None, None),
-    # The shared libraries of the library's native dependencies, and of
-    # theirs in turn (see _native_libs in haskell.bzl). A compile whose
-    # splices may load the library has them on its LD_LIBRARY_PATH (see
-    # native_libs_tree in compile.bzl).
-    native_libs = field(SharedLibraryInfo, EMPTY_SHARED_LIBRARY_INFO),
     # The data dirs that the library's own Paths_<pkg> modules read, keyed by
     # environment variable. A splice that runs the library's code can only
     # read these (see Note [Data files of splices] in compile_per_module.bzl).
