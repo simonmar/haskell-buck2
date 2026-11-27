@@ -264,7 +264,7 @@ argv :: FilePath -> String -> FilePath -> Req -> [String]
 argv pkg ghc libdir r =
   [ "--request", "--contract", reqContract r, "--libdir", fromMaybe libdir (libdirOf r)
   , "--depfile", pkg </> "dep" </> node r <.> "dep", "--abi", abi, "--diagnostics", pkg </> "diag" </> node r <.> "diag", "--module", modPath r, "--source", src
-  , "--outdir", out, "--hisuf", "hi"
+  , "--outdir", out, "--hidir", out, "--hisuf", "hi"
   ] ++ ["--boot" | boot r] ++ ["--loadable=" ++ m | m <- loadable r]
   ++ ["--srcroot=" ++ pkg </> "src", "--mkdir=" ++ pkg </> "stubs" </> node r]
   ++ ["--", fromMaybe ghc (compiler r), "-hide-all-packages", "-package", "base", "-package-db", pkg </> "db", "-package", "p", "-fforce-recomp"] ++ determinism ++ extraFlags r

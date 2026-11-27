@@ -206,8 +206,8 @@ OWN = r"buck-out/v2/art/root/[0-9a-f]+/(?:[^ ]*/)?__([^/]+)__/"
 
 SHORT_NAMES = [
     # A module's outputs: lib:A.Mid.abi, boot-cycle:Cyc.B.abi-boot.
-    (OWN + r"per-module-[^/]+/out-[0-9]+/(.+)\.([a-z_]+(?:-boot)?)$", lambda m: "{}:{}.{}".format(m[1], m[2].replace("/", "."), m[3])),
-    (OWN + r"per-module-[^/]+/out-[0-9]+$", lambda m: m[1] + ":out"),
+    (OWN + r"per-module-[^/]+/out/(.+)\.([a-z_]+(?:-boot)?)$", lambda m: "{}:{}.{}".format(m[1], m[2].replace("/", "."), m[3])),
+    (OWN + r"per-module-[^/]+/out$", lambda m: m[1] + ":out"),
     (OWN + r"db-early-[^/]+(/.*)?$", lambda m: m[1] + ":early"),
     (OWN + r"db-nolib-[^/]+(/.*)?$", lambda m: m[1] + ":nolib"),
     (OWN + r"db-[^/]+(/.*)?$", lambda m: m[1] + ":final"),
@@ -236,7 +236,7 @@ def parse_compile(cmd):
     sep = args.index("--")
     script, rest = args[:sep], args[sep + 1:]
     session = rest[:rest.index("--")]
-    hidirs = {short(a[len("--hidir="):].split("=", 1)[1]) for a in script if a.startswith("--hidir=")}
+    hidirs = {short(a[len("--unit-hidir="):].split("=", 1)[1]) for a in script if a.startswith("--unit-hidir=")}
     dbs = {short(session[n + 1]) for n, a in enumerate(session) if a == "-package-db"}
     units = [session[n + 1] for n, a in enumerate(session) if a == "-this-unit-id"]
     return {"dbs": dbs, "hidirs": hidirs, "unit": units[-1] if units else None}

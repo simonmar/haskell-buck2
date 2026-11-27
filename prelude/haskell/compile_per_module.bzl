@@ -2,6 +2,7 @@
 # action per module instead of one `ghc --make` action per target. See the
 # Notes at the end of this file, starting with Note [Per-module compilation].
 
+load("@prelude//:paths.bzl", "paths")
 load(
     "@prelude//haskell:compile.bzl",
     "CompileResultInfo",
@@ -160,18 +161,53 @@ def per_module_dir(link_style: LinkStyle, enable_profiling: bool) -> str:
 
 # The directory, relative to the target's outputs, where the target's
 # modules write their objects and interfaces, for one combination of link
-# style and profiling. Every module's compile has it on its import path, and
-# it is the import directory of the target's early package db, which is how
-# dependents find the interfaces there too.
+# style and profiling.
+def per_module_out_dir(link_style: LinkStyle, enable_profiling: bool) -> str:
+    return per_module_dir(link_style, enable_profiling) + "out"
+
+# The target's interface view: a directory with a link to the interface of
+# each of the target's current modules, at the path it has in the output
+# directory (see per_module_out_dir). We give GHC the interface view to
+# search for the target's modules (as a `hidir`), so the view ensures
+# that GHC never sees any unexpected or stale interface files.
 #
-# It is named after the target's set of modules. buck2 doesn't delete the
-# outputs of an action that no longer exists, so if a module moved to another
-# target, GHC would still find its old interface here. A new set of modules
-# gets a fresh directory instead. The cost is that adding, removing or
-# renaming a module compiles the whole target again.
-def per_module_out_dir(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool) -> str:
-    names = " ".join(sorted([n for n, _ in _nodes(ctx)]))
-    return per_module_dir(link_style, enable_profiling) + "out-" + str(hash(names) & 0xffffffff)
+# In contrast, the output directory itself may hold stale interface files.
+# For example:
+#
+# 1. T has a module M.
+# 2. We compile T.
+# 3. M is moved from T to a dependency D.
+# 4. We compile T, and GHC would pick up the stale M.hi from step 2.
+#
+# buck2 won't clean up M.hi, because there is now no action that produces it.
+#
+# The links are made before any module compiles, so most of them dangle at
+# first, and GHC finds a module only once its interface is written.
+def _declare_interface_view(ctx: AnalysisContext, out_dir: str, variant: str, nodes: list, hisuf: str, dynamic_too: bool) -> struct:
+    # The view is beside the output directory.
+    base = paths.dirname(out_dir)
+    view = ctx.actions.declare_output(paths.join(base, "interface-view"), dir = True, has_content_based_path = False)
+    exts = [hisuf] + (["dyn_hi"] if dynamic_too and hisuf != "dyn_hi" else [])
+
+    # `targets` maps each directory of the view to the links in it. Each link
+    # points to the same path in the output directory. The script makes all
+    # of a directory's links with one `ln`, because running a program for
+    # each link takes seconds for a target of a thousand modules.
+    targets = {}
+    for n, _ in nodes:
+        for ext in exts:
+            f = _node_file(n, ext)
+            d = paths.dirname(f) or "."
+            targets.setdefault(d, []).append("../" * (f.count("/") + 1) + paths.basename(out_dir) + "/" + f)
+    script = ["mkdir -p " + " ".join(targets.keys())] + ["ln -s {} {}/".format(" ".join(ts), d) for d, ts in targets.items()]
+    links = ctx.actions.write(paths.join(base, "interface-view.sh"), script, has_content_based_path = False)
+    ctx.actions.run(
+        cmd_args("sh", "-c", 'script=$PWD/$2; mkdir -p "$1" && cd "$1" && sh -e "$script"', "sh", view.as_output(), links),
+        category = "haskell_view",
+        identifier = variant,
+    )
+    # The script that makes the links also lists the target's modules.
+    return struct(dir = view, links = links)
 
 # The directory to give GHC as an import or output directory, worked out
 # from one node's output file in it. `artifact` is the node's file with
@@ -325,7 +361,7 @@ def _splice_objects(ctx: AnalysisContext, out_dir: str, nodes: list, o_of: dict,
 # of the rules reports the mismatch rather than misreading the request. When
 # either the request or the worker's outputs change, bump this and the
 # version in tools/ghc-api/Contract.hs.
-_WORKER_CONTRACT = "6"
+_WORKER_CONTRACT = "7"
 
 # The dynamic output of a per-module compile. It runs once the deps tool has
 # written the module graph. It registers a compile action for each node,
@@ -363,6 +399,8 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     tag = s.tag
     producing_indices = s.producing_indices
     src_tree = s.src_tree
+    interface_view = s.interface_view.dir
+    module_list = s.interface_view.links
     base_cmd = s.base_cmd
     data_dirs = s.data_dirs
     worker_info = s.worker_info
@@ -452,14 +490,13 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     # run, for the haskell_modules_outside_worker check.
     outside_worker = {}
     for n in order:
-        # The module finds the interfaces it imports from this target in
-        # the target's output directory, which all the target's modules
-        # share, and which is on the module's import path. The interface
-        # files of the module's closure are tagged inputs, so the module
-        # waits for exactly those, and its dep file can list them. (Giving
-        # each module a symlink tree of just its own closure was tried, but
-        # the trees took longer to materialise than the compiles
-        # themselves.)
+        # The module finds the interfaces it imports from this target through
+        # the target's interface view (see _declare_interface_view).
+        # The interface files of the module's closure are tagged inputs, so
+        # the module waits for exactly those, and its dep file can list them.
+        #
+        # (Giving each module a symlink tree of just its own closure was tried, but
+        # the trees took longer to materialise than the compiles themselves.)
         closure_files = []
         for d in closure[n]:
             closure_files += [hi_of[d], abi_of[d]]
@@ -486,7 +523,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         # modules that it imports. See Note [Data files of splices].
         own_modules = [_module_of(d) for d in closure[n] if not _is_boot(d)]
         module_data_dirs = compile_data_dirs(data_dirs, mod_packages.data_dirs, own_modules, len(module_tools) > 0) if runs_th[n] else {}
-        hidirs = mod_packages.local_import_dirs + [(name, d) for name, d in module_lib_dirs.items() if name in mod_packages.early_names]
+        unit_hidirs = mod_packages.local_import_dirs + [(name, d) for name, d in module_lib_dirs.items() if name in mod_packages.early_names]
 
         # The flags specific to this module: its source and output files.
         # They go after the flags that all the target's modules share.
@@ -494,7 +531,13 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         module_flags = cmd_args("-c", src_of[n], "-o", out[o_of[n]], "-ohi", out[hi_of[n]], "-stubdir", stubdir.as_output())
         mkdirs = [stubdir.as_output()]
         if closure[n]:
-            module_flags.add(tag.tag_artifacts(cmd_args(_dir_of(hi_of[closure[n][0]], closure[n][0], hisuf), hidden = closure_files, format = "-i{}")))
+            module_flags.add(tag.tag_artifacts(cmd_args(hidden = closure_files)))
+        if program_nodes[n]:
+            # If the compile runs programs, such as a preprocessor that
+            # lists a directory (like hspec-discover), the program may write
+            # a module that depends on the target's set of modules. So we
+            # need to compile again whenever that set changes.
+            module_flags.add(cmd_args(hidden = module_list))
         # The interfaces that the module may read from dependencies compiled
         # per-module. A Template Haskell module also gets the interfaces of the
         # dependencies whose final dbs it compiles against, through those dbs.
@@ -536,6 +579,13 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             # The modules in the closure (not just boot files), whose objects
             # a splice may load (see Note [Template Haskell modules]).
             ["--loadable=" + d for d in closure[n] if not _is_boot(d)] if runs_th[n] else [],
+            # GHC finds the interfaces of the target's modules in the target's
+            # interface view (see _declare_interface_view). The view changes
+            # whenever the target's set of modules does, but that alone is no
+            # reason to compile again. So, like the interfaces of the closure,
+            # the view is a tagged input.
+            "--hidir",
+            tag.tag_artifacts(cmd_args(interface_view)),
             # Where each dependency's interfaces are, so that the tool can
             # turn the usages GHC records into dep file entries. These are
             # paths only, not inputs. The interfaces themselves are inputs
@@ -544,7 +594,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             # compiled per-module, the path is worked out from one of its
             # interface files, so as an input it would make the module wait
             # for that particular interface for no reason.
-            [cmd_args(d, format = "--hidir=" + unit + "={}", ignore_artifacts = True) for unit, d in hidirs],
+            [cmd_args(d, format = "--unit-hidir=" + unit + "={}", ignore_artifacts = True) for unit, d in unit_hidirs],
             tag.tag_artifacts(cmd_args(src_tree, format = "--srcroot={}")) if src_tree != None else [],
             cmd_args(mkdirs, format = "--mkdir={}"),
             # See Note [Data files of splices].
@@ -833,8 +883,9 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             has_content_based_path = False,
         )
 
-    out_dir = per_module_out_dir(ctx, link_style, enable_profiling)
+    out_dir = per_module_out_dir(link_style, enable_profiling)
     module_outputs = _declare_module_outputs(ctx, out_dir, nodes, osuf, hisuf, dynamic_too)
+    interface_view = _declare_interface_view(ctx, out_dir, variant, nodes, hisuf, dynamic_too)
     o_of = module_outputs.o
     hi_of = module_outputs.hi
     abi_of = module_outputs.abi
@@ -944,6 +995,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             tag = tag,
             producing_indices = producing_indices,
             src_tree = src_tree,
+            interface_view = interface_view,
             base_cmd = base_cmd,
             worker_info = worker_info,
             data_dirs = data_dirs_env(ctx),
@@ -1018,13 +1070,13 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 #   closures: a compile gets their modules whole, through their normal
 #   package dbs.
 # - Output directory: where all of a target's modules write their objects
-#   and interfaces. It is on the import path of every compile of the
-#   target. Its files are at fixed paths rather than content-based ones, so
-#   that GHC can find them by module name. A target has one output
-#   directory for each way it is compiled in (static, shared, profiled),
-#   named after its set of modules (see per_module_out_dir). The objects
-#   and hi directories that the rest of the rules use are built from the
-#   output directories with symlinked_dir.
+#   and interfaces. Compiles find the target's own interfaces there through
+#   the interface view (see _declare_interface_view). Its files are at fixed
+#   paths rather than content-based ones, so that GHC can find them by
+#   module name. A target has one output directory for each way it is
+#   compiled in (static, shared, profiled; see per_module_out_dir). The
+#   objects and hi directories that the rest of the rules use are built
+#   from the output directories with symlinked_dir.
 # - Early and final package db: a dependency compiled per-module is
 #   registered twice. Its "early" db names no library, and its interfaces
 #   appear one by one as its modules compile. Its "final" db is the normal

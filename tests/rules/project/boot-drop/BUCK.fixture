@@ -1,0 +1,17 @@
+load("//buck2:haskell.bzl", "haskell_library")
+
+# X.A and X.B import each other, through X.B's boot file. X.D imports X.C's
+# boot file. check_boot_file_removed removes X.C's boot file, and the
+# library still has X.B's.
+haskell_library(
+    name = "boot-drop",
+    srcs = {
+        "X.A": "X/A.hs",
+        "X.B": "X/B.hs",
+        "X.C": "X/C.hs",
+        "X.D": "X/D.hs",
+    },
+    boot_srcs = {"X.B": "X/B.hs-boot", "X.C": "X/C.hs-boot"},
+    packages = ["base"],
+    compile_granularity = "module",
+)

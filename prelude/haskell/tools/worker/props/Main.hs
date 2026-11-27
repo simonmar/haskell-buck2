@@ -689,9 +689,9 @@ workerBuild cfg h b mods lastOk libSeen stats = do
     request node@(i, boot) =
       [ "--request", "--contract", contract, "--libdir", cLibdir cfg
       , "--depfile", depFile node, "--abi", outDir i </> modName i <.> ("abi" ++ suffix node), "--diagnostics", outDir i </> modName i <.> ("diag" ++ suffix node), "--module", modName i
-      , "--source", source node, "--outdir", outDir i, "--hisuf", "hi", "--srcroot=" ++ srcDir i
+      , "--source", source node, "--outdir", outDir i, "--hidir", outDir i, "--hisuf", "hi", "--srcroot=" ++ srcDir i
       ] ++ ["--boot" | boot] ++ ["--loadable=" ++ modName k | not boot, isJust (mSplice (mods M.! i)), k <- closureOf mods i]
-      ++ ["--hidir=p=" ++ outDir pkgP | not (inP i)]
+      ++ ["--unit-hidir=p=" ++ outDir pkgP | not (inP i)]
       ++ ["--", cGhc cfg] ++ commonFlags h ++ nodeFlags mods node ++ ["-fforce-recomp"] ++ ["-fobject-determinism" | cObjects cfg]
       ++ ["--", "-c", source node, "-o", outDir i </> modName i <.> ("o" ++ suffix node), "-ohi", outDir i </> modName i <.> ("hi" ++ suffix node)]
 

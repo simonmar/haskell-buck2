@@ -35,7 +35,7 @@ main = handle failed $ do
   -- and its library paths on LD_LIBRARY_PATH (see Note [Data files of
   -- splices] and Note [Template Haskell modules] in compile_per_module.bzl).
   env <- withRequestEnv r <$> getEnvironment
-  (_, _, Just err, p) <- createProcess (proc (reqCompiler r) (reqSessionArgs r ++ reqModuleArgs r)){std_err = CreatePipe, env = Just env}
+  (_, _, Just err, p) <- createProcess (proc (reqCompiler r) (reqSessionArgs r ++ outputDirFlags r ++ reqModuleArgs r)){std_err = CreatePipe, env = Just env}
   createDirectoryIfMissing True (takeDirectory (reqDiagnostics r))
   withBinaryFile (reqDiagnostics r) WriteMode (relay err)
   code <- exitCode <$> waitForProcess p

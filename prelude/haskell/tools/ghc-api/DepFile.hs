@@ -59,7 +59,7 @@ writeDepFiles r iface = do
     _ | Just m <- usageLoadedModule u -> existing [reqOutDir r </> modFile m <.> "abi"]
     -- Looked up by its unit as well as its name, since a module of another
     -- unit may have the same name.
-    UsagePackageModule{usg_mod = m} -> firstExisting (concat [[d </> modFile (moduleName m) <.> "abi", d </> modFile (moduleName m) <.> reqHisuf r] | (unit, d) <- reqHidirs r, unit == unitString (moduleUnit m)])
+    UsagePackageModule{usg_mod = m} -> firstExisting (concat [[d </> modFile (moduleName m) <.> "abi", d </> modFile (moduleName m) <.> reqHisuf r] | (unit, d) <- reqUnitHidirs r, unit == unitString (moduleUnit m)])
     _ | Just path <- usageFile u -> do
       -- Files outside the project (the libraries of GHC's own package db)
       -- aren't inputs of the action.
