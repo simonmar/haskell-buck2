@@ -601,7 +601,7 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     # empty one is enough.
     actions.symlinked_dir(out[stubs], {}, has_content_based_path = False)
 
-    actions.write(out[s.advice["haskell_unused_build_tools"]], json.encode(_unused_build_tools(tools, runs_th, program_nodes, s.runs_tools)))
+    actions.write(out[s.advice["haskell_unused_build_tools"]], json.encode(_unused_build_tools(tools, runs_th, program_nodes)))
     actions.write(out[s.advice["haskell_template_haskell_from_flags"]], json.encode(_template_haskell_from_flags(th_nodes)))
     actions.write(out[s.advice["haskell_ann_pragmas"]], json.encode(_ann_pragmas(th_nodes)))
     actions.write(out[s.advice["haskell_modules_outside_worker"]], json.encode(_modules_outside_worker(outside_worker, runs_th)))
@@ -631,80 +631,77 @@ def advice_validations(compiled: CompileResultInfo) -> list[Provider]:
         for name, result in compiled.advice.items()
     ])]
 
-# Identify targets that turn on TemplateHaskell unconditionally.
+# Identify modules that compile as Template Haskell modules because their
+# target's flags turn on TemplateHaskell or QuasiQuotes.
 def _template_haskell_from_flags(th: dict) -> dict:
-    modules = sorted([n for n, why in th.items() if why == "flags"])
-    findings = [{"modules": len(modules)}] if modules else []
-    message = "the target's flags turn on TemplateHaskell or QuasiQuotes, so all {} of its modules must be compiled as if they use Template Haskell, which is slower. Turn the extensions on only in the modules that need them.".format(len(modules))
-    return _advice(findings, message)
+    modules = sorted([_module_of(n) for n, why in th.items() if why == "flags"])
+    return _advice(
+        [{"module": m} for m in modules],
+        "{} modules".format(len(modules)),
+        "Modules that compile as if they used Template Haskell, which is slower, because their target's flags turn on TemplateHaskell or QuasiQuotes. Turn the extensions on only in the modules that need them.",
+    )
 
 # Identify modules that use ANN pragmas (which implies TH).
 def _ann_pragmas(th: dict) -> dict:
     modules = sorted([_module_of(n) for n, why in th.items() if why == "ann"])
-    findings = [{"module": m} for m in modules]
-    one = len(modules) == 1
-    message = "{} {} ANN pragmas, which means we must compile {} as if {} Template Haskell, which is slower. For HLint's, write {{- HLINT ignore ... -}} comments instead.".format(
+    return _advice(
+        [{"module": m} for m in modules],
         ", ".join(modules),
-        "uses" if one else "use",
-        "it" if one else "them",
-        "it uses" if one else "they use",
+        "Modules that compile as if they used Template Haskell only because of ANN pragmas, which is slower. For HLint's, write {- HLINT ignore ... -} comments instead.",
     )
-    return _advice(findings, message)
-
-# Why a module has to compile outside the worker.
-def _outside_reason(why, runs_th: bool) -> str:
-    # A module that runs no Template Haskell must have been chosen because
-    # it runs build tools.
-    if not runs_th:
-        return "programs"
-    # If it does use TH, and it has tools, then we think that the TH
-    # may run the tools.
-    if why.tools:
-        return "template_haskell"
-    # Otherwise it's data directories or native libraries.
-    return "data_dirs" if why.data_dirs else "native_libraries"
 
 # Identify modules that are forced to compile outside the worker.
 def _modules_outside_worker(outside: dict, runs_th: dict) -> dict:
     findings = [
-        {"module": _module_of(n), "tools": sorted(why.tools), "reason": _outside_reason(why, runs_th[n])}
+        {
+            "module": _module_of(n),
+            "tools": sorted(why.tools),
+            "template_haskell": runs_th[n],
+            "data_dirs": why.data_dirs,
+            "native_libraries": why.native_libraries,
+        }
         for n, why in sorted(outside.items())
     ]
     def describe(f):
-        if f["reason"] == "data_dirs":
-            return "{} (its splices may read data files)".format(f["module"])
-        if f["reason"] == "native_libraries":
-            return "{} (its splices may load native libraries)".format(f["module"])
-        return "{} ({}{})".format(f["module"], ", ".join(f["tools"]), ", through Template Haskell" if f["reason"] == "template_haskell" else "")
-    message = "{} module(s) compile without the persistent worker, which is slower, because they may run build tools, or their splices may read data files or load native libraries: {}. We assume that a module that runs Template Haskell may run any of the target's build tools.".format(len(findings), "; ".join([describe(f) for f in findings]))
-    return _advice(findings, message)
+        why = []
+        if f["tools"]:
+            why.append(("may run " if f["template_haskell"] else "runs ") + ", ".join(f["tools"]))
+        if f["data_dirs"]:
+            why.append("its splices may read data files")
+        if f["native_libraries"]:
+            why.append("its splices may load native libraries")
+        return "{} ({})".format(f["module"], "; ".join(why))
+    return _advice(
+        findings,
+        "; ".join([describe(f) for f in findings]),
+        "Modules that compile without the persistent worker, which is slower. A module compiles outside it if it may run build tools (tools), or if its splices may read data files (data_dirs) or load native libraries (native_libraries). A module that runs Template Haskell (template_haskell) is assumed to run any of its target's build tools.",
+    )
 
 # We special-case the build tools that we run in actions of their own, so they're never run as part of a module's
 # actual compilation action.
 _PREPROCESSORS = ["alex", "happy", "hsc2hs"]
 
 # Identify build tools which aren't used in compiling any module, as far as we can tell.
-# `runs_tools` says whether the target is a program, which has run_tool_depends.
-def _unused_build_tools(tools: dict, runs_th: dict, program_nodes: dict, runs_tools: bool) -> dict:
+def _unused_build_tools(tools: dict, runs_th: dict, program_nodes: dict) -> dict:
     run = set([p for programs in program_nodes.values() for p in programs])
     splices = any(runs_th.values())
     findings = [
-        {"tool": t, "certainty": "unless_a_splice_runs_it" if splices else "definite"}
+        {"tool": t, "splices": splices}
         for t in sorted(tools)
         if t not in run and t not in _PREPROCESSORS
     ]
-    names = ", ".join([f["tool"] for f in findings])
-    message = "no module's compilation action runs the build tools {}{}. {}".format(
-        names,
-        " (unless a Template Haskell splice runs them)" if splices else "",
-        "If they are used by the program at runtime, list them in run_tool_depends rather than build_tool_depends." if runs_tools else "Remove them from build_tool_depends.",
+    return _advice(
+        findings,
+        ", ".join([f["tool"] for f in findings]) + (" (unless a splice runs them)" if splices else ""),
+        "Build tools that no module's compile runs, though where the target has Template Haskell splices (splices), a splice might. Remove them from build_tool_depends, or, for a program that runs them, move them to run_tool_depends.",
     )
-    return _advice(findings, message)
 
 # The result of an advice check. Advice checks always succeed, and the findings go in
-# the result's data.
-def _advice(findings: list, message: str) -> dict:
-    return {"version": 1, "data": {"status": "success", "message": message if findings else "nothing to report", "findings": findings}}
+# the result's data. `message` says what the check found in this target, and
+# `explanation`, which is the same for every target, says what the check
+# looks for and what to do about it.
+def _advice(findings: list, message: str, explanation: str) -> dict:
+    return {"version": 1, "data": {"status": "success", "message": message if findings else "nothing to report", "explanation": explanation, "findings": findings}}
 
 # Whether the target is compiled per-module: its compile granularity is
 # "module", and it has at least one Haskell module. A target without any
@@ -950,7 +947,6 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             tools = build_tools(ctx),
             compile_env = haskell_toolchain.compile_env,
             advice = advice,
-            runs_tools = hasattr(ctx.attrs, "run_tool_depends"),
         ),
         deps = deps,
         libdir = libdir,
@@ -972,8 +968,12 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # ADVICE_CHECKS), which the target returns in its ValidationInfo. A check
 # always succeeds, even when it has findings, so the advice never stops a
 # build. The findings are in the result's data, as a list under "findings",
-# and its message sums them up. The prelude's validation/audit_results.bxl
-# collects the results, and can pick checks out by name:
+# with a "message" that sums them up and an "explanation" of what the check
+# looks for and what to do about it. prelude//haskell/advice.bxl turns the
+# results into one report of what there is to act on, using only these
+# fields. The prelude's
+# validation/audit_results.bxl gives the paths of the results themselves,
+# and can pick checks out by name:
 #
 #     buck2 bxl prelude//validation/audit_results.bxl:main -- --take haskell_unused_build_tools --trim true --targets //...
 #

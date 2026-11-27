@@ -1,0 +1,64 @@
+# A report of the advice in a set of targets' validation results (see Note
+# [Advice] in compile_per_module.bzl): for each validation that found
+# something, its explanation, then the message of each target it found
+# something in. Validations and targets with nothing to report are left out.
+#
+#     cat $(buck2 bxl prelude//haskell/advice.bxl:main -- --targets //...)
+#
+# It prints the path of the report. The targets must have been built, or are
+# built by this.
+
+def _report_impl(bxl_ctx: bxl.Context, results: dict[Label, dict[str, ArtifactValue]], output: OutputArtifact):
+    by_name = {}
+    for target, validations in results.items():
+        for name, value in validations.items():
+            data = value.read_json()["data"]
+            if data.get("findings"):
+                by_name.setdefault(name, struct(explanation = data.get("explanation"), lines = []))
+                by_name[name].lines.append((str(target.raw_target()), data["message"]))
+    lines = []
+    for name, advice in sorted(by_name.items()):
+        if lines:
+            lines.append("")
+        lines.append("{} ({} {})".format(name, len(advice.lines), "target" if len(advice.lines) == 1 else "targets"))
+        if advice.explanation:
+            lines.append("  " + advice.explanation)
+        lines += ["  {}: {}".format(target, message) for target, message in sorted(advice.lines)]
+    if not lines:
+        lines = ["No advice for the {} {} checked.".format(len(results), "target" if len(results) == 1 else "targets")]
+    bxl_ctx.bxl_actions().actions.write(output, lines)
+    return [DefaultInfo()]
+
+_report = bxl.dynamic_actions(
+    impl = _report_impl,
+    attrs = {
+        "output": dynattrs.output(),
+        "results": dynattrs.dict(Label, dynattrs.dict(str, dynattrs.artifact_value())),
+    },
+)
+
+def _impl(ctx: bxl.Context):
+    lazy = ctx.lazy
+    nodes = lazy.join_all([lazy.configured_target_node(t, modifiers = ctx.modifiers).catch() for t in ctx.cli_args.targets]).resolve()
+    analyses = lazy.join_all([lazy.analysis(n.unwrap()).catch() for n in nodes if n.is_ok()]).resolve()
+
+    results = {}
+    for analysis in analyses:
+        if not analysis.is_ok():
+            continue
+        validation_info = analysis.unwrap().providers().get(ValidationInfo)
+        if not validation_info:
+            continue
+        results[analysis.unwrap().as_dependency().label] = {spec.name: spec.validation_result for spec in validation_info.validations}
+
+    actions = ctx.bxl_actions().actions
+    out = actions.declare_output("haskell-advice.txt", has_content_based_path = False)
+    actions.dynamic_output_new(_report(results = results, output = out.as_output()))
+    ctx.output.print(ctx.output.ensure(out).abs_path())
+
+main = bxl_main(
+    impl = _impl,
+    cli_args = {
+        "targets": cli_args.target_expr(),
+    },
+)
