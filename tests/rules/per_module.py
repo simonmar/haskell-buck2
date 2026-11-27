@@ -218,6 +218,36 @@ def check_boot_file_removed(st):
     expect("//boot-drop:boot-drop builds without X.C's boot file (got:\n{})".format(tail(p.stderr, 15)), p.returncode == 0)
 
 
+def check_transitive_db(st):
+    """A module added to a library compiles again only the modules whose
+    imports lead to the library, whether it is a direct dependency or not.
+    //transitive-db:app depends on //transitive-db:mid and
+    //transitive-db:alt, and on //transitive-db:base-lib only through mid.
+    Its Main and TD.UsesBase import mid, and its TD.AppOther only alt. A
+    module added to mid with the name of alt's TD.Alt makes TD.AppOther's
+    import ambiguous, so the build fails."""
+    build("//transitive-db:app")
+    with open("transitive-db/TD/Extra.hs", "w") as f:
+        f.write("module TD.Extra where\n")
+    replace("transitive-db/BUCK.fixture", '"TD.Base": "TD/Base.hs"}', '"TD.Base": "TD/Base.hs", "TD.Extra": "TD/Extra.hs"}')
+    build("//transitive-db:app")
+    ran = compiled_modules(what_ran())
+    expect_set("compiles after adding TD.Extra to base-lib", ran, {"base-lib:TD.Extra", "mid:TD.Mid", "app:Main", "app:TD.UsesBase"})
+    with open("transitive-db/TD/MidExtra.hs", "w") as f:
+        f.write("module TD.MidExtra where\n")
+    replace("transitive-db/BUCK.fixture", '"TD.Mid": "TD/Mid.hs"}', '"TD.Mid": "TD/Mid.hs", "TD.MidExtra": "TD/MidExtra.hs"}')
+    build("//transitive-db:app")
+    ran = compiled_modules(what_ran())
+    expect_set("compiles after adding TD.MidExtra to mid", ran, {"mid:TD.MidExtra", "app:Main", "app:TD.UsesBase"})
+    with open("transitive-db/TD/Alt.hs", "w") as f:
+        f.write("module TD.Alt where\n")
+    replace("transitive-db/BUCK.fixture", '"TD.MidExtra": "TD/MidExtra.hs"}', '"TD.MidExtra": "TD/MidExtra.hs", "TD.Alt": "TD/Alt.hs"}')
+    p = build("//transitive-db:app", keep_going=True)
+    replace("transitive-db/BUCK.fixture", '"TD.MidExtra": "TD/MidExtra.hs", "TD.Alt": "TD/Alt.hs"}', '"TD.MidExtra": "TD/MidExtra.hs"}')
+    expect("the build fails once mid has a TD.Alt too (got:\n{})".format(tail(p.stderr, 15)),
+           p.returncode != 0 and "Ambiguous module name" in p.stderr)
+
+
 def check_cross_package_dep_file(st):
     """B.M's dep file lists only the lib interfaces GHC recorded a usage of:
     A.Mid, which it imports (A.Base reaches it through A.Mid's ABI hash),

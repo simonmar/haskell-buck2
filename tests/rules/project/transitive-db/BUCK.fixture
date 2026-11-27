@@ -1,0 +1,34 @@
+load("//buck2:haskell.bzl", "haskell_binary", "haskell_library")
+
+# check_transitive_db adds modules to base-lib and mid. app depends on
+# base-lib only through mid. app's Main and TD.UsesBase import mid, and
+# TD.AppOther imports neither mid nor base-lib, only alt.
+haskell_library(
+    name = "base-lib",
+    srcs = {"TD.Base": "TD/Base.hs"},
+    packages = ["base"],
+    compile_granularity = "module",
+)
+
+haskell_library(
+    name = "mid",
+    srcs = {"TD.Mid": "TD/Mid.hs"},
+    packages = ["base"],
+    deps = [":base-lib"],
+    compile_granularity = "module",
+)
+
+haskell_library(
+    name = "alt",
+    srcs = {"TD.Alt": "alt/TD/Alt.hs"},
+    packages = ["base"],
+    compile_granularity = "module",
+)
+
+haskell_binary(
+    name = "app",
+    srcs = {"Main": "Main.hs", "TD.AppOther": "TD/AppOther.hs", "TD.UsesBase": "TD/UsesBase.hs"},
+    packages = ["base"],
+    deps = [":mid", ":alt"],
+    compile_granularity = "module",
+)
