@@ -23,10 +23,7 @@
 -- - On Linux, a splice may run p's code instead. The module's compile then
 --   gets p's final package db, which names p's library, and GHC's
 --   interpreter loads p's code from that library. The test links p's
---   library as the rules link a library. p has no native libraries, since
---   the rules compile a module whose splices load native libraries outside
---   the worker (see Note [Template Haskell modules] in
---   compile_per_module.bzl).
+--   library as the rules link a library. p has no native libraries.
 --
 -- Each build gets a fresh worker, as each buck2 build does. The test sends
 -- it the modules and boot files that buck2 would compile: those never

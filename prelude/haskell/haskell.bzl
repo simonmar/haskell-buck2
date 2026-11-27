@@ -411,6 +411,14 @@ shift 4
 "$@" register --package-conf "$DB" --no-expand-pkgroot $ALWAYS_USE_CACHE $FORCE "$PKGCONF"
 """
 
+# Shared libraries that GHC can load: a directory of them, and their names,
+# for `-lNAME` or a package's extra-libraries, in dependency order, each
+# after the ones it depends on.
+_NamedNativeLibs = record(
+    dir = Artifact,
+    names = list[str],
+)
+
 # Create a package
 #
 # The way we use packages is a bit strange. We're not using them
@@ -452,6 +460,10 @@ def _make_package(
     # See HaskellLibraryInfo.early_db
     early: bool = False,
     library_less: bool = False,
+    # The library's native libraries, which GHC's interpreter loads before
+    # the library (see Note [Native libraries in package dbs]). Like `lib`,
+    # they are ignored for an early or library-less package.
+    native_libs: [_NamedNativeLibs, None] = None,
 ) -> Artifact:
     variant = variant_name(link_style, enable_profiling)
     db_variant = ("early-" if early else "nolib-" if library_less else "") + variant
@@ -483,7 +495,8 @@ def _make_package(
         import_dirs = cmd_args('"${pkgroot}/' + import_dir + '"')
     else:
         import_dirs = cmd_args([pkgroot_path(d) for d in hi], delimiter = ", ")
-    library_dirs = cmd_args([pkgroot_path(l, parent = 1) for l in lib], delimiter = ", ")
+    native_dirs = [pkgroot_path(native_libs.dir)] if native_libs != None else []
+    library_dirs = cmd_args([pkgroot_path(l, parent = 1) for l in lib] + native_dirs, delimiter = ", ")
 
     # Reexports are identified by the unit ID they come from, and are sorted
     # by module name to match Cabal's behaviour.
@@ -510,8 +523,8 @@ def _make_package(
     if not early and not library_less:
         conf += [
             cmd_args("library-dirs: ", library_dirs, delimiter = ""),
-            "extra-libraries: " + libname,
-            cmd_args("dynamic-library-dirs: ", cmd_args([pkgroot_path(l, parent = 1) for l in dynamic_lib], delimiter = ", "), delimiter = ""),
+            "extra-libraries: " + ", ".join((native_libs.names if native_libs != None else []) + [libname]),
+            cmd_args("dynamic-library-dirs: ", cmd_args([pkgroot_path(l, parent = 1) for l in dynamic_lib] + native_dirs, delimiter = ", "), delimiter = ""),
         ]
     pkg_conf = ctx.actions.write("pkg-" + db_variant + ".conf", conf, has_content_based_path = False)
 
@@ -552,7 +565,7 @@ def _make_package(
                 haskell_toolchain.packager,
             ],
             # needs hi, because ghc-pkg checks that the .hi files exist
-            hidden = [] if early else hi if library_less else hi + lib + dynamic_lib,
+            hidden = [] if early else hi if library_less else hi + lib + dynamic_lib + ([native_libs.dir] if native_libs != None else []),
         ),
         category = "haskell_package",
         identifier = db_variant,
@@ -587,15 +600,11 @@ def _get_haskell_shared_library_name_linker_flags(linker_type: LinkerType, sonam
         fail("Unknown linker type '{}'.".format(linker_type))
 
 # The shared libraries of a target's native dependencies, and of their
-# dependencies in turn. A splice that runs the
-# target's code finds them through LD_LIBRARY_PATH (see native_libs_tree in
-# compile.bzl, and Note [Template Haskell modules] in compile_per_module.bzl).
+# dependencies in turn. A library's package db names them (see Note [Native
+# libraries in package dbs]).
 #
 # It leaves out the shared libraries of the target's Haskell dependencies,
-# which GHC loads by their paths in the package dbs, so that a compile that
-# loads them doesn't wait for any other Haskell library to be linked. The
-# Haskell dependencies have sets of their own, which a compile merges with
-# this one.
+# whose own package dbs name theirs.
 def _native_libs(ctx: AnalysisContext) -> SharedLibraryInfo:
     return merge_shared_libraries(ctx.actions, deps = [d[SharedLibraryInfo] for d in ctx.attrs.deps if SharedLibraryInfo in d and HaskellLinkInfo not in d])
 
@@ -714,8 +723,9 @@ def _register_library(
     pkgname: str,
     hlis: list[HaskellLinkInfo],  # haskell link infos from all deps
     enable_profiling: bool,
-    # The library's native libraries (see _native_libs).
-    native_libs: SharedLibraryInfo,
+    # The library's native libraries (see _native_libs), named for its
+    # package db (see Note [Native libraries in package dbs]).
+    native_libs: [_NamedNativeLibs, None],
     library: Library,
     # The splice variant of `library`: the variant whose code GHC loads when
     # a splice in a module compiled against `library` runs this library's
@@ -746,6 +756,11 @@ def _register_library(
     stub_dirs = unique([compiled.stubs, splice_variant.compiled.stubs])
     all_libs = unique(library.libs + splice_variant.libs)
 
+    # The library's native libraries are among its `libs`, so that whatever
+    # may load the library has them too.
+    if native_libs != None:
+        all_libs.append(native_libs.dir)
+
     db = _make_package(
         ctx,
         link_style,
@@ -758,6 +773,7 @@ def _register_library(
         enable_profiling = enable_profiling,
         import_dir = compiled.import_dir,
         all_hlis = all_hlis,
+        native_libs = native_libs,
     )
 
     hlib = HaskellLibraryInfo(
@@ -767,7 +783,6 @@ def _register_library(
         import_dirs = import_artifacts,
         stub_dirs = stub_dirs,
         libs = all_libs,
-        native_libs = native_libs,
         data_dirs = own_data_dirs(ctx),
         version = ctx.attrs.package_version or "1.0.0",
         is_prebuilt = False,
@@ -776,6 +791,40 @@ def _register_library(
     )
 
     return HaskellLibBuildOutput(library = library, hlib = hlib)
+
+# The shared libraries in `info`, each after the ones that it depends on.
+def _dependencies_first(info: SharedLibraryInfo) -> list:
+    if not info.set:
+        return []
+    seen = set()
+    libs = []
+    # A topological traversal visits each node before its children.
+    for node in reversed(list(info.set.traverse(ordering = "topological"))):
+        for lib in node.libraries:
+            soname = lib.soname.ensure_str()
+            if soname not in seen:
+                seen.add(soname)
+                libs.append(lib)
+    return libs
+
+# The shared libraries in `info`, named for GHC, or None if there are none.
+# GHC only finds a library as libNAME.so (on Linux), so each library is
+# linked into the directory under that form of its soname: libver.so.1, say,
+# as liblibver.so.1.so, named libver.so.1. The dynamic loader still knows a
+# loaded library by its soname, so it finds it loaded when another library
+# needs it.
+def _named_native_libs(ctx: AnalysisContext, info: SharedLibraryInfo) -> [_NamedNativeLibs, None]:
+    libs = _dependencies_first(info)
+    if not libs:
+        return None
+    ext = LINKERS[ctx.attrs._cxx_toolchain[CxxToolchainInfo].linker_info.type].default_shared_library_extension
+    names = []
+    links = {}
+    for lib in libs:
+        name = lib.soname.ensure_str().replace("/", "_")
+        names.append(name)
+        links["lib" + name + "." + ext] = lib.lib.output
+    return _NamedNativeLibs(dir = ctx.actions.symlinked_dir("native-libs", links, has_content_based_path = False), names = names)
 
 # The link style of the splice variant of a variant with this link style,
 # whether profiled or not (see Note [Link styles and profiling]). Where this
@@ -908,7 +957,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     libname = haskell_library_name(ctx.label)
     pkgname = ctx.attrs.unit_id or haskell_library_unit_id(ctx.label)
 
-    native_libs = _native_libs(ctx)
+    native_libs = _named_native_libs(ctx, _native_libs(ctx))
 
     link_styles = [legacy_output_style_to_link_style(o) for o in get_output_styles_for_linkage(preferred_linkage)]
 
@@ -1001,7 +1050,6 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
                 link_style,
                 enable_profiling = enable_profiling,
                 pkgname = pkgname,
-                native_libs = native_libs,
                 dynamic_too = build_shared_too and link_style == consumed_static_link_style and not enable_profiling,
                 dynamic_from = dynamic_from,
             )
@@ -1150,7 +1198,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
             shared_libs,
             shared_library_infos,
         ),
-        haskell_haddock_lib(ctx, pkgname, actual_link_style, hlib_compiled[actual_link_style], _native_libs(ctx)),
+        haskell_haddock_lib(ctx, pkgname, actual_link_style, hlib_compiled[actual_link_style]),
     ]
 
     if indexing_tsets:
@@ -1277,13 +1325,12 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     # otherwise, so we make one.
     dynamic_from = None
     if enable_profiling and compiles_per_module(ctx):
-        dynamic_from = compile_per_module(ctx, _splice_variant_style(ctx, link_style), enable_profiling = False, native_libs = _native_libs(ctx))
+        dynamic_from = compile_per_module(ctx, _splice_variant_style(ctx, link_style), enable_profiling = False)
 
     compiled = (compile_per_module if compiles_per_module(ctx) else compile)(
         ctx,
         link_style,
         enable_profiling = enable_profiling,
-        native_libs = _native_libs(ctx),
         dynamic_from = dynamic_from,
     )
 
@@ -1823,3 +1870,35 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
 #    external interpreter, and the two want different archives under the
 #    same name. This is from reading GHC's loader: the tests use a dynamic
 #    GHC.
+
+# Note [Native libraries in package dbs]
+#
+# A library's shared object needs the shared libraries of its native (C)
+# dependencies. They are `DT_NEEDED` entries with no rpath that finds them
+# in buck-out. So when GHC's interpreter loads the library, for a splice,
+# something must load them first.
+#
+# So a library's final db names them, as a Cabal-built package names its C
+# libraries: in `extra-libraries`, each after the ones it depends on and
+# all before the library itself, with their directory in `library-dirs` and
+# `dynamic-library-dirs`. The library's own Haskell library is the last
+# entry of `extra-libraries` too. GHC's interpreter loads a package's
+# `extra-libraries` by path, in that order, and the dynamic loader then
+# finds each one already loaded when a later one needs it.
+# (`extra-ghci-libraries` would be the wrong field: the interpreter loads it
+# instead of `extra-libraries`, not as well.)
+#
+# No link reads these fields: no link is given the package dbs or -package
+# flags of local libraries, which it links from their link infos.
+#
+# That needs nothing from the environment of the process that loads the
+# library, so a module whose splices load native libraries can compile in
+# the persistent worker.
+#
+# GHC only finds a library named in extra-libraries as libNAME.so, which a
+# library's soname needn't be (libver.so.1, say). So the db's directory has
+# a link of that form for each library (see _named_native_libs).
+#
+# In the persistent worker, loaded native libraries are shared by the
+# compiles of every target. Two different native libraries with the same
+# soname would clash there.

@@ -15,14 +15,12 @@ load(
     "ghc_flags",
     "has_modules",
     "in_env",
-    "native_libs_tree",
     "splice_dep_infos",
     "splice_libraries",
     "splice_objects_kind",
     "tools_env",
     "uses_library_less_db",
 )
-load("@prelude//linking:shared_libraries.bzl", "EMPTY_SHARED_LIBRARY_INFO", "SharedLibraryInfo")
 load(
     "@prelude//haskell:library_info.bzl",
     "HaskellLibraryInfoTSet",
@@ -80,9 +78,7 @@ PerModuleClosures = provider(fields = {"by_module": provider_field(dict)})
 #   interface directories as inputs.
 #
 # A module that runs Template Haskell (`runs_th`) also has the libraries of
-# its final dbs as inputs, because GHC's interpreter loads them. The trees of
-# the native libraries that those libraries depend on are in the result's
-# `native_libs`, for the module's LD_LIBRARY_PATH.
+# its final dbs as inputs, because GHC's interpreter loads them.
 # `below_make` names the dependencies compiled per-module that some
 # dependency built with --make depends on. Their whole interface
 # directories are inputs as well: see Note [Compiling against dependencies
@@ -98,7 +94,6 @@ def _package_dbs(libs: list, final: set[str], below_make: set[str], import_dirs_
     packagedb_set = set()
     local_import_dirs = []
     early_names = set()
-    native_libs = []
     for lib in libs:
         library_less = uses_library_less_db(lib, final)
         if library_less and lib.modules != None:
@@ -125,13 +120,11 @@ def _package_dbs(libs: list, final: set[str], below_make: set[str], import_dirs_
             import_dirs_tag.tag_artifacts(cmd_args(hidden = import_dirs)),
             lib.libs if loads else [],
         ]))
-        if loads:
-            native_libs.append(lib.native_libs)
 
     # These we need to add for all the packages/dependencies, i.e.
     # direct and transitive (e.g. `fbcode-common-hs-util-hs-array`)
     packagedb_args.add([cmd_args("-package-db", x) for x in packagedb_set])
-    return struct(packagedb_args = packagedb_args, local_import_dirs = local_import_dirs, early_names = early_names, native_libs = native_libs)
+    return struct(packagedb_args = packagedb_args, local_import_dirs = local_import_dirs, early_names = early_names)
 
 # The suffix that marks a boot source or interface (.hs-boot or
 # .hi-boot). A boot file's node name (its key in srcs) is
@@ -325,7 +318,7 @@ def _splice_objects(ctx: AnalysisContext, out_dir: str, nodes: list, o_of: dict,
 # of the rules reports the mismatch rather than misreading the request. When
 # either the request or the worker's outputs change, bump this and the
 # version in tools/ghc-api/Contract.hs.
-_WORKER_CONTRACT = "6"
+_WORKER_CONTRACT = "7"
 
 # The dynamic output of a per-module compile. It runs once the deps tool has
 # written the module graph. It registers a compile action for each node,
@@ -344,7 +337,6 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
     packages = s.packages
     early_packages = s.early_packages
     target_splice_packages = s.target_splice_packages
-    splice_native_libs_dir = s.splice_native_libs_dir
     dynamic_too = s.dynamic_too
     o_of = s.o_of
     hi_of = s.hi_of
@@ -550,7 +542,6 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
             # See Note [Data files of splices].
             [cmd_args(d, format = "--data-dir=" + var + "={}") for var, d in module_data_dirs.items()],
             # See Note [Template Haskell modules], section 4.
-            cmd_args(splice_native_libs_dir, format = "--library-path={}") if runs_th[n] and splice_native_libs_dir != None else [],
             "--",
             base_cmd,
             mod_packages.args,
@@ -564,17 +555,14 @@ def _register_modules_impl(actions: AnalysisActions, s: typing.Any, deps: Artifa
         # The worker cannot give a compile environment variables of its
         # own, since it is a single process. So a module whose splices need
         # the environment variables for the target's data dirs (see Note
-        # [Data files of splices]), or an LD_LIBRARY_PATH for native
-        # libraries that it loads (see Note [Template Haskell modules],
-        # section 4), must also compile outside the worker.
+        # [Data files of splices]) must also compile outside the worker.
         needs_data = len(module_data_dirs) > 0
-        needs_native = runs_th[n] and splice_native_libs_dir != None
         script = in_env(env_with(module_tools), cmd_args(compile_script))
         category = "haskell_compile"
         identifier = variant + "/" + n
-        in_worker = worker_info != None and not module_tools and not needs_data and not needs_native
+        in_worker = worker_info != None and not module_tools and not needs_data
         if worker_info != None and not in_worker:
-            outside_worker[n] = struct(tools = module_tools, data_dirs = needs_data, native_libraries = needs_native)
+            outside_worker[n] = struct(tools = module_tools, data_dirs = needs_data)
         # For allow_dep_file_cache_upload, see Note [Early cut-off by dep files], section 5.
         if in_worker:
             actions.run(request, exe = WorkerRunInfo(worker = worker_info, exe = script), category = category, identifier = identifier, dep_files = {"hs": tag}, allow_dep_file_cache_upload = True)
@@ -658,7 +646,6 @@ def _modules_outside_worker(outside: dict, runs_th: dict) -> dict:
             "tools": sorted(why.tools),
             "template_haskell": runs_th[n],
             "data_dirs": why.data_dirs,
-            "native_libraries": why.native_libraries,
         }
         for n, why in sorted(outside.items())
     ]
@@ -668,13 +655,11 @@ def _modules_outside_worker(outside: dict, runs_th: dict) -> dict:
             why.append(("may run " if f["template_haskell"] else "runs ") + ", ".join(f["tools"]))
         if f["data_dirs"]:
             why.append("its splices may read data files")
-        if f["native_libraries"]:
-            why.append("its splices may load native libraries")
         return "{} ({})".format(f["module"], "; ".join(why))
     return _advice(
         findings,
         "; ".join([describe(f) for f in findings]),
-        "Modules that compile without the persistent worker, which is slower. A module compiles outside it if it may run build tools (tools), or if its splices may read data files (data_dirs) or load native libraries (native_libraries). A module that runs Template Haskell (template_haskell) is assumed to run any of its target's build tools.",
+        "Modules that compile without the persistent worker, which is slower. A module compiles outside it if it may run build tools (tools), or if its splices may read data files (data_dirs). A module that runs Template Haskell (template_haskell) is assumed to run any of its target's build tools.",
     )
 
 # We special-case the build tools that we run in actions of their own, so they're never run as part of a module's
@@ -720,13 +705,10 @@ def _compile_granularity(ctx: AnalysisContext) -> str:
 
 # Compile the target's sources with one action per module (see Note
 # [Per-module compilation]). It takes the same arguments as compile(), so
-# that the two are interchangeable, but ignores native_libs. A splice finds
-# the native libraries of the libraries it can run through a tree of their
-# own (see Note [Template Haskell modules], section 4). A splice can't call
-# the target's own native libraries, as with --make. A profiled compile gets
-# the dynamic objects its splices load from dynamic_from (see
-# _splice_objects).
-def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, native_libs: SharedLibraryInfo = EMPTY_SHARED_LIBRARY_INFO, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None) -> CompileResultInfo:
+# that the two are interchangeable. A splice can't call the target's own
+# native libraries, as with --make. A profiled compile gets the dynamic
+# objects its splices load from dynamic_from (see _splice_objects).
+def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profiling: bool, pkgname: str | None = None, dynamic_too: bool = False, dynamic_from: [CompileResultInfo, None] = None) -> CompileResultInfo:
     haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
     variant = variant_name(link_style, enable_profiling)
     osuf, hisuf = output_extensions(link_style, enable_profiling)
@@ -763,7 +745,6 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             args = cmd_args(exposed_package_args, dbs.packagedb_args),
             local_import_dirs = dbs.local_import_dirs,
             early_names = dbs.early_names,
-            native_libs = dbs.native_libs,
             final = final,
             # The data dirs that the Paths_<pkg> modules of the libraries in
             # `final` read (see Note [Data files of splices]).
@@ -780,10 +761,6 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
     # [Explicit level imports]).
     splice_infos = splice_dep_infos(ctx, link_style, enable_profiling)
     target_splice_packages = packages(splice_libraries(ctx.actions, splice_infos))
-    # One tree of native libraries for every Template Haskell module: those
-    # of the libraries in the target's set. A module whose set is narrowed
-    # gets it too, since its native libraries are among them.
-    splice_native_libs_dir = native_libs_tree(ctx, prefix + "native-libs", target_splice_packages.native_libs)
     module_libs = {lib.name: lib for lib in dep_libs if lib.modules != None}
     this_pkg = pkgname or haskell_library_unit_id(ctx.label)
 
@@ -922,7 +899,6 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
             packages = packages,
             early_packages = early_packages,
             target_splice_packages = target_splice_packages,
-            splice_native_libs_dir = splice_native_libs_dir,
             dynamic_too = dynamic_too,
             o_of = o_of,
             hi_of = hi_of,
@@ -1215,32 +1191,11 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # 4. Native libraries
 #
 # A library that buck2 links refers to the native libraries it was linked
-# against by soname, but it has no RUNPATH to find them. So when a splice
-# loads such a library, the dynamic loader can only find the libraries it
-# needs if they are on LD_LIBRARY_PATH.
-#
-# Each library has the set of the shared libraries of its native
-# dependencies, and of theirs in turn (see _native_libs in haskell.bzl).
-# The target makes one tree, named by soname, of the sets of the libraries
-# that its Template Haskell modules may load (see native_libs_tree in
-# compile.bzl). Their requests name the tree with --library-path. The tree
-# is an input of their compiles, and the compile tool puts it on GHC's
-# LD_LIBRARY_PATH. So the modules wait for those native libraries, but not
-# for any others.
-#
-# The dynamic loader reads LD_LIBRARY_PATH once, when a process starts, so
-# the persistent worker can't give a compile action its own library path.
-# A module that needs a different library path (i.e. one which has to load
-# a buck2-built native library, rare without --source-deps) must compile
-# outside the worker.
-#
-# A possible alternative: the package dbs could name the native libraries for
-# GHC's interpreter, in dependency order, in extra-ghci-libraries. GHC
-# would then load each one by path before the libraries that need it, and
-# the dynamic loader would reuse the one already loaded. That lets the
-# worker compile those modules too, but it only works for ELF libraries
-# whose sonames GHC can look up, and relies on the order GHC loads
-# libraries in.
+# against by soname, but it has no RUNPATH to find them. So a splice that
+# loads such a library relies on its package db naming them, for GHC's
+# interpreter to load first (see Note [Native libraries in package dbs] in
+# haskell.bzl). A Template Haskell module needs nothing from its
+# environment for them, so it can compile in the persistent worker.
 #
 # 5. Splices in the persistent worker
 #
@@ -1264,8 +1219,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # The rules' tests have some expected-failure tests for these cases.
 #
 # Some modules really need a different environment (e.g. they need data
-# files, or need to load buck2-built native libraries). So these have to be
-# compiled outside the worker currently.
+# files). So these have to be compiled outside the worker currently.
 #
 # A target compiled with -fexternal-interpreter (in its compiler_flags, or
 # the toolchain's) runs its splices in external interpreters instead. In the
@@ -1282,13 +1236,11 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # so the compiles of a session that run splices take turns (see
 # interpreterLock in the worker).
 #
-# An external interpreter doesn't yet work for every splice. In a static or
-# profiled build (the opt and prof modes), the interpreter is static or
-# profiled too. It loads a local library's archive with GHC's own linker,
-# which doesn't load the shared libraries of the library's native
-# dependencies, so a splice that calls them fails. That happens with --make
-# as well. The package dbs would have to name those libraries for the
-# interpreter.
+# In a static or profiled build (the opt and prof modes), the interpreter
+# is static or profiled too. It loads a local library's archive with GHC's
+# own linker, and the shared libraries of the library's native dependencies
+# because its package db names them (see Note [Native libraries in package
+# dbs] in haskell.bzl).
 #
 # 6. Splices that run the target's own modules
 #
@@ -1500,9 +1452,7 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # A module's compile has only its own tools on PATH, and so a change to a
 # build tool recompiles only the modules that may run it. A Template Haskell
 # module may also need environment variables for the libraries its splices
-# run: their data dirs (see Note [Data files of splices]), and the
-# directories of their native libraries on LD_LIBRARY_PATH (see Note
-# [Template Haskell modules], section 4).
+# run: their data dirs (see Note [Data files of splices]).
 #
 # A module with any tools is compiled without a worker, by its own `ghc -c`.
 # Giving each such target a worker of its own, running in the target's

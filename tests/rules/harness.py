@@ -284,6 +284,18 @@ def append(path, text):
         f.write(text)
 
 
+def restoring(path, check):
+    """Runs check, then puts back the file at path as it was, so that later
+    checks find the source they expect."""
+    with open(path) as f:
+        original = f.read()
+    try:
+        check()
+    finally:
+        with open(path, "w") as f:
+            f.write(original)
+
+
 def replace(path, old, new):
     with open(path) as f:
         s = f.read()

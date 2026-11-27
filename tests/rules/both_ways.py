@@ -28,6 +28,7 @@ from harness import (
     module_of,
     parse_conf,
     replace,
+    restoring,
     short,
     tail,
     what_ran,
@@ -254,7 +255,6 @@ def check_own_native_libraries_for_splices(st):
         expect_output(configured("//th-own-native:show", c), "compiled {}".format(c), "(9,11)")
 
 
-@known_failure("with -fexternal-interpreter, the static and profiled interpreters don't load a local library's native dependencies")
 def check_external_interpreter_native_splices(st):
     """With -fexternal-interpreter in the toolchain's compiler flags, splices
     that call native libraries run in the opt and prof modes too: U.V's and
@@ -263,8 +263,8 @@ def check_external_interpreter_native_splices(st):
 
     In those modes the external interpreter is static or profiled, and it
     loads ffi-import's archive with GHC's own linker. Only the libraries that
-    ffi-import's package db names are loaded, and the db doesn't name
-    c-lib, so the splices can't find its symbols."""
+    ffi-import's package db names are loaded, so this relies on the db
+    naming c-lib."""
     for mode in ["opt", "prof"]:
         buck2("build", "-c", "haskell.compiler_flags=-fexternal-interpreter", configured("//th-ffi-splice:th-ffi-splice", "make", mode))
 
@@ -285,11 +285,13 @@ def check_native_library_change(st):
     //c-lib:c-base. After a change to c-lib, the splices run the new code.
     This check runs with --make alone, and
     check_native_library_change_recompiles checks the same per-module."""
-    for c in ["make"]:
-        expect_output(configured("//th-ffi-splice:show", c), "before the edit to //c-lib:c-lib, compiled {}".format(c), "(7,7)")
-    replace("c-lib/cl.c", "return 7", "return 8")
-    for c in ["make"]:
-        expect_output(configured("//th-ffi-splice:show", c), "after the edit to //c-lib:c-lib, compiled {}".format(c), "(8,8)")
+    def check():
+        for c in ["make"]:
+            expect_output(configured("//th-ffi-splice:show", c), "before the edit to //c-lib:c-lib, compiled {}".format(c), "(7,7)")
+        replace("c-lib/cl.c", "return 7", "return 8")
+        for c in ["make"]:
+            expect_output(configured("//th-ffi-splice:show", c), "after the edit to //c-lib:c-lib, compiled {}".format(c), "(8,8)")
+    restoring("c-lib/cl.c", check)
 
 
 def check_haddock(st):

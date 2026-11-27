@@ -4,7 +4,6 @@ modules compile again after an edit."""
 
 import json
 import re
-import sys
 
 from harness import (
     DEV_STYLE,
@@ -27,6 +26,7 @@ from harness import (
     parse_conf,
     raw_dep_file,
     replace,
+    restoring,
     tail,
     target_name,
     what_ran,
@@ -56,9 +56,9 @@ def check_workers(st):
     and as a process of its own if not. That includes the compiles of the
     Template Haskell modules whose splices need nothing from their target's
     environment, which is all of those in the clean build's targets. (A
-    module whose splices need data files or native libraries compiles
-    outside the worker. check_data_dirs and
-    check_native_libraries_outside_worker check those.)
+    module whose splices need data files compiles outside the worker.
+    check_data_dirs checks those, and check_native_libraries_in_worker that
+    one whose splices load native libraries compiles in it.)
 
     A module compiles without the worker if it may run one of its target's
     build tools. It may run one if GHC runs a program for it that it finds
@@ -206,17 +206,20 @@ def check_early_db_conf(st):
     expect("lib's final db conf names its library (fields: {})".format(sorted(final)), "extra-libraries" in final)
 
 
-@known_failure("on macOS, a splice can't load a local library's native dependencies, with --make as well", when=lambda st: sys.platform == "darwin")
-def check_native_libraries_outside_worker(st):
+def check_native_libraries_in_worker(st):
     """U.V's and U.W's splices run code of //ffi-import:ffi-import (U.W's
     through //ffi-import:ffi-wrap), which depends on //c-lib:c-lib's shared
-    library. A splice finds that through LD_LIBRARY_PATH, which the worker
-    can't set for one compile, so both modules compile outside the worker
-    even when the project has one, and haskell_modules_outside_worker says
-    why."""
+    library. ffi-import's package db names c-lib, so GHC's interpreter loads
+    it without anything from the compile's environment, and both modules
+    compile in the worker when the project has one."""
+    build("//th-ffi-splice:th-ffi-splice")
+    ran = {module_of(e): e["reproducer"].get("executor", "") for e in what_ran_entries() if is_module_compile(e)}
+    # The first compile that buck2 sends to a worker has the executor
+    # WorkerInit rather than Worker, because it also starts the worker.
+    executors = {{"WorkerInit": "Worker"}.get(ran.get(m), ran.get(m)) for m in ["th-ffi-splice:U.V", "th-ffi-splice:U.W"]}
+    expect_set("how U.V and U.W compiled", executors, {"Worker" if st.worker else "Local"})
     found = advice("haskell_modules_outside_worker", "//th-ffi-splice:th-ffi-splice")
-    expected = {("U.V", True), ("U.W", True)} if st.worker else set()
-    expect_set("the modules of th-ffi-splice compiled outside the worker", {(f["module"], f["native_libraries"]) for f in found["th-ffi-splice"]}, expected)
+    expect_set("the modules of th-ffi-splice compiled outside the worker", {f["module"] for f in found["th-ffi-splice"]}, set())
 
 
 def check_compile_granularity(st):
@@ -310,10 +313,10 @@ def check_th_modules_dbs(st):
 
 def check_static_native_libraries(st):
     """SC.Splice in //th-static-c:th-static-c only needs static-c-user,
-    which uses //c-lib:c-static, a C library linked only statically. So its
-    splices need no library path, and it compiles in the worker when there
-    is one, even though the target's other dependency,
-    //ffi-import:ffi-import, has a shared C library."""
+    which uses //c-lib:c-static, a C library linked only statically, so
+    static-c-user's package db names no native library. SC.Splice compiles
+    in the worker when there is one, as every Template Haskell module whose
+    splices need no data files does."""
     build("//th-static-c:th-static-c")
     ran = {module_of(e): e["reproducer"].get("executor", "") for e in what_ran_entries() if is_module_compile(e)}
     # The first compile that buck2 sends to a worker has the executor
@@ -560,18 +563,6 @@ def check_cutoff_abi_mid(st):
                {"lib:A.Mid", "lib-user:B.M", "lib-user:B.Safe", "th-local-splice:C.Plain"} | ({"eli-reexport:ER.M"} if st.eli else set()))
 
 
-def restoring(path, check):
-    """Runs check, then puts back the file at path as it was, so that later
-    checks find the source they expect."""
-    with open(path) as f:
-        original = f.read()
-    try:
-        check()
-    finally:
-        with open(path, "w") as f:
-            f.write(original)
-
-
 def bump_literal(path, by):
     """Adds `by` to the integerL literal in the given Template Haskell
     generator."""
@@ -580,7 +571,6 @@ def bump_literal(path, by):
     replace(path, "integerL {}".format(n), "integerL {}".format(n + by))
 
 
-@known_failure("on macOS, a splice can't load a local library's native dependencies, with --make as well", when=lambda st: sys.platform == "darwin")
 def check_native_library_change_recompiles(st):
     """A change to a native library that splices call compiles the splicing
     modules again, and the splices then run the new code. Nothing in those
@@ -692,14 +682,13 @@ def check_own_splices_static(st):
         expect_output("//th-internal-splice:own", "in {} mode".format(mode), shown, mode)
 
 
-@known_failure("on macOS, a splice can't load a local library's native dependencies, with --make as well; and with -fexternal-interpreter, the static and profiled interpreters don't load them", when=lambda st: sys.platform == "darwin" or st.external_interpreter)
 def check_native_splices_in_modes(st):
     """Splices that call native libraries run in the opt and prof modes too:
     U.V's, U.W's and V.S's splices (one of them calls a library with the
-    soname libver.so.1) compile. A static or profiled external interpreter
-    loads a local library's archive with GHC's own linker, which doesn't
-    know about the library's native dependencies, so with
-    -fexternal-interpreter these fail, with --make too."""
+    soname libver.so.1) compile. With -fexternal-interpreter, the static or
+    profiled interpreter loads a local library's archive with GHC's own
+    linker, and the library's native dependencies because its package db
+    names them."""
     for mode in ["opt", "prof"]:
         build("//th-ffi-splice:th-ffi-splice", "//th-native-soname:th-native-soname", mode=mode)
         ran = compiled_modules(what_ran())
