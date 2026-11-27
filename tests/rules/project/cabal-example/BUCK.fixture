@@ -1,0 +1,3 @@
+load(":BUCK.cabal.bzl", "generated_targets")
+
+generated_targets()

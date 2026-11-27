@@ -11,6 +11,7 @@ sources.
 - per_module.py: what the per-module rules decide for each module.
 - both_ways.py: what holds both per-module and with --make.
 - other_rules.py: haskell_test, linking, the toolchains and a remote cache.
+- cabal.py: the targets that cabal.bzl generates from a build spec.
 """
 
 import argparse
@@ -45,6 +46,7 @@ from both_ways import (
     check_toolchain_index,
     check_toolchain_th,
 )
+from cabal import check_cabal_targets, check_cabal_test
 from harness import CheckFailed, Skipped, State
 from other_rules import (
     check_data_files,
@@ -174,6 +176,8 @@ CHECKS = [
     check_toolchain_th,
     check_toolchain_index,
     check_toolchain_paths,
+    check_cabal_targets,
+    check_cabal_test,
     check_cache,
 ]
 
@@ -185,12 +189,13 @@ def main():
     ap.add_argument("--ghc-version", required=True, help="the version of the GHC under test")
     ap.add_argument("--worker", action="store_true", help="the project compiles in a persistent worker")
     ap.add_argument("--external-interpreter", action="store_true", help="the project compiles with -fexternal-interpreter")
+    ap.add_argument("--accept-golden", action="store_true", help="rewrite the golden files with what the checks that compare with them find")
     args = ap.parse_args()
     unknown = set(args.only or []) - {check.__name__[len("check_"):] for check in CHECKS}
     if unknown:
         ap.error("no such check: " + " ".join(sorted(unknown)))
     major, minor = (int(x) for x in args.ghc_version.split(".")[:2])
-    st = State(bazel_remote=args.bazel_remote, eli=(major, minor) >= (9, 14), worker=args.worker, external_interpreter=args.external_interpreter, haddock_reads_interfaces=(major, minor) >= (9, 12))
+    st = State(bazel_remote=args.bazel_remote, eli=(major, minor) >= (9, 14), worker=args.worker, external_interpreter=args.external_interpreter, haddock_reads_interfaces=(major, minor) >= (9, 12), accept_golden=args.accept_golden)
     failed = []
     for check in CHECKS:
         name = check.__name__[len("check_"):]

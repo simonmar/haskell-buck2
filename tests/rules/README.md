@@ -9,6 +9,9 @@ Builds a small project (`project/`) and checks what the rules do:
   builds its fixtures both per-module and with `--make`, and says where the
   two differ.
 - `other_rules.py`: `haskell_test`, linking and the toolchains.
+- `cabal.py`: the targets that `cabal.bzl` generates from a build spec. The
+  fixture packages under `project/cabal-*/` have specs written by hand, as
+  `cabal buck2` would write them.
 
 Only GHC's own packages are used (`base`, `template-haskell`, `process`), so
 neither Hackage nor cabal-buck2 is needed.
@@ -48,6 +51,11 @@ With `EXTERNAL_INTERPRETER=true`, `run.sh` adds `-fexternal-interpreter` to
 the toolchain's `[haskell] compiler_flags`, so splices run in external
 interpreters. The checks that are known to fail in the worker because its
 splices share its process then pass.
+
+`check_cabal_targets` compares the attributes of the generated targets that
+differ from their defaults with a golden file (`golden/`). After a change to
+`cabal.bzl` or the rules that changes them on purpose, update the file with
+`-- --only cabal_targets --accept-golden`, and check its diff.
 
 Each check prints `PASS` or `FAIL` (with the missing and unexpected members
 of the set it compared) or `SKIP` (a check of what the platform doesn't
