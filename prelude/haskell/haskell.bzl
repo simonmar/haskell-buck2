@@ -57,6 +57,9 @@ load(
     "@prelude//haskell:compile.bzl",
     "CompileResultInfo",
     "compile",
+    "compile_args",
+    "ghc_env",
+    "in_env",
     "data_dirs_env",
     "own_data_dirs",
     "dependency_libs",
@@ -118,6 +121,7 @@ load(
     "LinkArgs",
     "LinkInfo",
     "LinkInfos",
+    "ObjectsLinkable",
     "LinkOrdering",
     "LinkStyle",
     "LinkedObject",
@@ -130,11 +134,16 @@ load(
     "get_output_styles_for_linkage",
     "get_own_link_infos",
     "legacy_output_style_to_link_style",
+    "map_to_link_infos",
     "process_link_strategy_for_pic_behavior",
     "process_output_style_for_pic_behavior",
+    "set_link_info_link_whole",
     "to_link_strategy",
     "unpack_link_args",
 )
+load("@prelude//cxx:link.bzl", "cxx_link_shared_library")
+load("@prelude//cxx:link_types.bzl", "link_options")
+load("@prelude//linking:execution_preference.bzl", "LinkExecutionPreference")
 load(
     "@prelude//linking:linkable_graph.bzl",
     "LinkableGraph",
@@ -792,6 +801,113 @@ def _register_library(
 
     return HaskellLibBuildOutput(library = library, hlib = hlib)
 
+# `flags`, GHC's flags, split into those for GHC itself and the sections
+# for its runtime system (`+RTS ... -RTS`).
+def _split_rts(flags: list) -> (list, list):
+    ghc = []
+    rts = []
+    in_rts = False
+    for f in flags:
+        # A target's compiler_flags may have macros, so they are compared as
+        # text, which str() puts in quotes.
+        text = str(f).strip('"')
+        if text == "+RTS":
+            in_rts = True
+        if in_rts:
+            rts.append(f)
+        else:
+            ghc.append(f)
+        if text == "-RTS":
+            in_rts = False
+    return ghc, rts
+
+# The [repl] sub-target of a target, with `unit_id` as its unit id (see
+# Note [REPL units]). 
+
+# Its output is a GHC response file with the options of the target as one 
+# home unit of a GHCi or HLS session. `buck2 run` starts
+# GHCi on the target alone. `native_libs` are the target's own native
+# libraries, named for GHC (see _named_native_libs).
+def _repl(ctx: AnalysisContext, unit_id: str, native_libs: [_NamedNativeLibs, None]) -> list[Provider]:
+    args = compile_args(ctx, _splice_variant_style(ctx, LinkStyle("static")), False, unit_id)
+    haskell_toolchain = ctx.attrs._haskell_toolchain[HaskellToolchainInfo]
+
+    # GHC reads options for its runtime system (`+RTS ... -RTS`) only from its
+    # command line, not from a response file, so [repl] passes them there.
+    # A session of several units, from repl.bxl, has none.
+    ghc_flags, rts_flags = _split_rts(list(haskell_toolchain.compiler_flags) + list(ctx.attrs.compiler_flags))
+
+    # The roots of the sources, which GHC searches for the unit's modules.
+    # This is where HLS finds a home unit's modules. A source whose path
+    # doesn't end in its module's path (Main.hs for module Main.Util, say)
+    # has no root that GHC could find it under.
+    roots = {}
+    for m, src in srcs_to_pairs(ctx.attrs.srcs):
+        module_path = m.replace(".", "/")
+        stem = paths.split_extension(src.short_path)[0]
+        if is_haskell_src(src) and stem.endswith(module_path):
+            roots[stem.removesuffix(module_path)] = cmd_args(src, parent = len(m.split(".")), format = "-i{}")
+
+    # GHCi loads the target's own native libraries, since the target has no
+    # package to name them. For its normal Haskell dependencies, they are
+    # found via the package dbs (see Note [Native libraries in package dbs]).
+    native_flags = [cmd_args(native_libs.dir, format = "-L{}")] + ["-l" + n for n in native_libs.names] if native_libs != None else []
+    static_lib = _repl_static_c(ctx, unit_id)
+    if static_lib != None:
+        native_flags += [cmd_args(static_lib, parent = 1, format = "-L{}"), "-lrepl-" + unit_id]
+
+    unit_args = cmd_args(ghc_flags, args.args_for_file, roots.values(), native_flags, args.srcs)
+    unit, _ = ctx.actions.write("repl/" + unit_id + ".rsp", unit_args, allow_args = True, with_inputs = True)
+
+    # GHCi runs with the target's build tools on PATH, and the variables of
+    # its data dirs, which its Paths_<pkg> modules and those of its
+    # dependencies read, as `cabal repl` does. The unit's paths are relative
+    # to the project's root, so GHCi runs there. `buck2 run` gives the unit
+    # file's absolute path, whose part before buck-out is the root.
+    env = ghc_env(ctx, "repl-tools")
+    data_dirs = data_dirs_env(ctx)
+    script = env.script + "".join(['export {}="$1"; shift; '.format(var) for var in data_dirs])
+    run = in_env(
+        struct(script = script + 'case "$1" in /*) cd "${1%%/buck-out/*}";; esac; shift; ', args = env.args + data_dirs.values() + [unit]),
+        cmd_args(haskell_toolchain.compiler, "--interactive", rts_flags, cmd_args(unit, format = "@{}"), hidden = unit_args),
+    )
+    return [DefaultInfo(default_output = unit, other_outputs = [unit_args]), RunInfo(args = run)]
+
+# A shared library of the target's own C code that is linked statically:
+#
+# GHCi can't load a static library, so the REPL loads this
+# instead, or None if there is nothing to put in it. A library's own shared
+# library has this code in it, so a REPL that loads the library as a package
+# doesn't need it.
+def _repl_static_c(ctx: AnalysisContext, unit_id: str) -> [Artifact, None]:
+    # The objects of the internal_deps, as for a static_pic library, which
+    # every library builds.
+    internal = _internal_objects(ctx, LinkStyle("static_pic")) if getattr(ctx.attrs, "internal_deps", None) else []
+    nlis = [d[MergedLinkInfo] for d in ctx.attrs.deps if MergedLinkInfo in d and HaskellLinkInfo not in d]
+    linker_info = ctx.attrs._cxx_toolchain[CxxToolchainInfo].linker_info
+    dep_infos = map_to_link_infos([get_link_args_for_strategy(ctx.actions, ctx.label, linker_info, nlis, to_link_strategy(LinkStyle("shared")), prefer_stripped = False, transformation_spec_context = None)]) if nlis else []
+    # A dependency with a shared library links as that, which GHCi loads
+    # itself. Only archives and objects need this library.
+    static = [l for i in dep_infos for l in i.linkables if hasattr(l, "archive") or hasattr(l, "objects")]
+    if not internal and not static:
+        return None
+    infos = ([LinkInfo(linkables = [ObjectsLinkable(objects = internal, linker_type = linker_info.type)])] if internal else []) + dep_infos
+    libfile = "librepl-" + unit_id + "." + LINKERS[linker_info.type].default_shared_library_extension
+    linked = cxx_link_shared_library(
+        ctx = ctx,
+        output = "repl/" + libfile,
+        name = libfile,
+        opts = link_options(
+            # Nothing in the library refers to its archives, so they are
+            # linked whole, or the linker would leave them out.
+            links = [LinkArgs(infos = [set_link_info_link_whole(i) for i in infos])],
+            link_execution_preference = LinkExecutionPreference("any"),
+            category_suffix = "haskell_repl",
+            identifier = unit_id,
+        ),
+    )
+    return linked.linked_object.output
+
 # The shared libraries in `info`, each after the ones that it depends on.
 def _dependencies_first(info: SharedLibraryInfo) -> list:
     if not info.set:
@@ -1171,6 +1287,7 @@ def haskell_library_impl(ctx: AnalysisContext) -> list[Provider]:
     # The interfaces of the default output's compile, and its messages when
     # it is compiled per-module.
     sub_targets["interfaces"] = [DefaultInfo(default_output = hlib_compiled[actual_link_style].hi)]
+    sub_targets["repl"] = _repl(ctx, pkgname, native_libs)
     if hlib_compiled[actual_link_style].modules != None:
         sub_targets["diagnostics.txt"] = [DefaultInfo(default_output = _diagnostics(ctx, hlib_compiled[actual_link_style]))]
 
@@ -1670,7 +1787,7 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
     providers = [
         DefaultInfo(
             default_output = output,
-            sub_targets = {"interfaces": [DefaultInfo(default_output = compiled.hi)]} | (
+            sub_targets = {"interfaces": [DefaultInfo(default_output = compiled.hi)], "repl": _repl(ctx, haskell_library_unit_id(ctx.label), _named_native_libs(ctx, _native_libs(ctx)))} | (
                 {"diagnostics.txt": [DefaultInfo(default_output = _diagnostics(ctx, compiled))]} if compiled.modules != None else {}
             ),
         ),
@@ -1871,12 +1988,46 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
 #    same name. This is from reading GHC's loader: the tests use a dynamic
 #    GHC.
 
+# Note [REPL units]
+#
+# GHC can load several home units into one session, each from a response
+# file of its options given as `-unit @FILE`. GHCi and HLS (through a
+# hie-bios "bios" cradle) take a session in that form, and then an edit to
+# one home unit shows in the others without a build.
+#
+# The output of a target's [repl] sub-target is the response file of the target as one
+# home unit: its compile flags, with `-this-unit-id` set to its unit id,
+# the roots of its sources, and the package dbs and exposure of its
+# dependencies, as for a --make compile. The dbs are of the splice variants,
+# the variants whose code GHC loads, because GHCi runs code from them and
+# HLS runs splices. Building the sub-target builds them.
+#
+# prelude//haskell/repl.bxl chooses the home units of a session: the
+# owners of some files, and every Haskell target on a dependency path
+# between two of them, since GHC needs the home units to be closed under
+# dependency. A home unit still lists the dbs of its dependencies that are
+# home units too. GHC takes the home unit rather than the package of the
+# same id, so the files don't depend on which units are loaded together.
+#
+# GHCi also needs the C code that the unit's code calls. A Haskell library
+# loaded as a package brings its own (see Note [Native libraries in
+# package dbs]). But a home unit has no package, so the unit names its C
+# code itself: `-l` for the shared libraries of its C dependencies, and
+# for a shared library that [repl] links of the C code that would
+# otherwise be linked statically (its internal_deps, say), since GHCi can't
+# load a static library.
+#
+# The source roots matter for HLS: it finds a home unit's modules by
+# searching them, not among the unit's targets. GHCi in a multi-unit
+# session can load and reload, but its prompt can't bring a home unit's
+# modules into scope (`:module` is "not supported (yet) in multi-mode").
+
 # Note [Native libraries in package dbs]
 #
 # A library's shared object needs the shared libraries of its native (C)
 # dependencies. They are `DT_NEEDED` entries with no rpath that finds them
-# in buck-out. So when GHC's interpreter loads the library, for a splice,
-# something must load them first.
+# in buck-out. So when GHC's interpreter loads the library, for a splice or
+# in GHCi, something must load them first.
 #
 # So a library's final db names them, as a Cabal-built package names its C
 # libraries: in `extra-libraries`, each after the ones it depends on and
@@ -1893,7 +2044,9 @@ def haskell_binary_impl(ctx: AnalysisContext) -> list[Provider]:
 #
 # That needs nothing from the environment of the process that loads the
 # library, so a module whose splices load native libraries can compile in
-# the persistent worker.
+# the persistent worker, and HLS can load them too. A home unit of a REPL
+# session has no package, so [repl] names the unit's own native libraries
+# itself (see Note [REPL units]).
 #
 # GHC only finds a library named in extra-libraries as libNAME.so, which a
 # library's soname needn't be (libver.so.1, say). So the db's directory has

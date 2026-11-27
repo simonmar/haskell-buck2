@@ -12,6 +12,7 @@ sources.
 - both_ways.py: what holds both per-module and with --make.
 - other_rules.py: haskell_test, linking, the toolchains and a remote cache.
 - cabal.py: the targets that cabal.bzl generates from a build spec.
+- repl.py: the GHC sessions of the [repl] sub-targets and repl.bxl.
 """
 
 import argparse
@@ -48,6 +49,7 @@ from both_ways import (
 )
 from cabal import check_cabal_targets, check_cabal_test
 from harness import CheckFailed, Skipped, State
+from repl import check_repl_c, check_repl_closure, check_repl_environment, check_repl_hie_bios, check_repl_home_units, check_repl_run, check_repl_splices, check_repl_targets, check_repl_unit
 from other_rules import (
     check_data_files,
     check_haddock_build_tools,
@@ -178,6 +180,15 @@ CHECKS = [
     check_toolchain_paths,
     check_cabal_targets,
     check_cabal_test,
+    check_repl_unit,
+    check_repl_run,
+    check_repl_environment,
+    check_repl_c,
+    check_repl_home_units,
+    check_repl_closure,
+    check_repl_targets,
+    check_repl_splices,
+    check_repl_hie_bios,
     check_cache,
 ]
 
