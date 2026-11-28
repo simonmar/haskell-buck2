@@ -615,7 +615,7 @@ def advice_validations(compiled: CompileResultInfo) -> list[Provider]:
     if not compiled.advice:
         return []
     return [ValidationInfo(validations = [
-        ValidationSpec(name = name, validation_result = result)
+        ValidationSpec(name = name, validation_result = result, optional = True)
         for name, result in compiled.advice.items()
     ])]
 
@@ -956,6 +956,13 @@ def compile_per_module(ctx: AnalysisContext, link_style: LinkStyle, enable_profi
 # A check's result is written by the dynamic output that registers the
 # target's compiles, which has the deps tool's results already, so a check
 # costs no action of its own.
+#
+# The validations are optional, so an ordinary build doesn't run them.
+# buck2 runs a target's validations whenever it builds any of the target's
+# outputs, and a check's result needs the deps tool. Otherwise, a build of
+# a sub-target that needs no module graph would still wait for the deps
+# tool after every edit. advice.bxl and audit_results.bxl build the results
+# that they read.
 
 # Note [Per-module compilation]
 #

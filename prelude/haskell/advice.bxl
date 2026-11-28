@@ -5,8 +5,8 @@
 #
 #     cat $(buck2 bxl prelude//haskell/advice.bxl:main -- --targets //...)
 #
-# It prints the path of the report. The targets must have been built, or are
-# built by this.
+# It prints the path of the report. It builds the validations' results, which
+# an ordinary build doesn't, since the advice checks are optional.
 
 def _report_impl(bxl_ctx: bxl.Context, results: dict[Label, dict[str, ArtifactValue]], output: OutputArtifact):
     by_name = {}
