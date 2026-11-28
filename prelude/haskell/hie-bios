@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# The program of a hie-bios "bios" cradle (see the README): it writes the
+# options of a GHC session for the files that HLS loads together, with the
+# Haskell targets that own them as home units (see repl.bxl).
+#
+# hie-bios passes the file to load as the first argument, and, when it loads
+# several components at once, names a file in HIE_BIOS_MULTI_ARG that lists
+# all the files to load, separated by NUL characters. It names the files
+# to write the options and the cradle's dependencies to in HIE_BIOS_OUTPUT
+# and HIE_BIOS_DEPS.
+set -euo pipefail
+files=("$1")
+if [ -n "${HIE_BIOS_MULTI_ARG:-}" ] && [ -s "$HIE_BIOS_MULTI_ARG" ]; then
+  # A loop rather than mapfile, which macOS's bash 3.2 doesn't have. The
+  # last file may have no NUL after it.
+  files=()
+  while IFS= read -r -d '' f || [ -n "$f" ]; do files+=("$f"); done < "$HIE_BIOS_MULTI_ARG"
+fi
+args=()
+for f in "${files[@]}"; do args+=(--file "$f"); done
+# The session's options, then an empty line, then the files whose change
+# should make HLS load the session again.
+out=$(buck2 bxl prelude//haskell/repl.bxl:main -- --deps true "${args[@]}")
+printf '%s\n' "$out" | sed '/^$/,$d' > "$HIE_BIOS_OUTPUT"
+if [ -n "${HIE_BIOS_DEPS:-}" ]; then
+  printf '%s\n' "$out" | sed '1,/^$/d' > "$HIE_BIOS_DEPS"
+fi

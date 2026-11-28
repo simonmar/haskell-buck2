@@ -144,6 +144,50 @@ With `per_module`, `[interfaces]` (above) doesn't link the target's
 dependencies either, because a module's compile needs only the interfaces of
 its imports.
 
+# REPLs and HLS
+
+To start GHCi on one Haskell target, with its dependencies built:
+
+```
+buck2 run //pkg:target[repl]
+```
+
+Arguments after `--` go to GHCi. Building `[repl]` rather than running it
+gives the GHC response file behind it, with the target's options as one
+home unit of a GHC session.
+
+`prelude//haskell/repl.bxl` gives the options of a session with several
+targets as home units: the targets given (`--target`), the owners of the
+files given (`--file`), and every target on a dependency path between two of
+those. An edit to one of them is then seen by the others on `:reload`,
+without a build:
+
+```
+ghci $(buck2 bxl prelude//haskell/repl.bxl:main -- --target //app:app --target //lib:)
+```
+
+GHCi's prompt can't bring the modules of a session with several home units
+into scope (`:module` is "not supported (yet) in multi-mode"), but it can
+load and reload them.
+
+For Haskell Language Server, put this `hie.yaml` at the root of the project:
+
+```yaml
+cradle:
+  bios:
+    program: buck2/prelude/haskell/hie-bios
+```
+
+HLS then loads the files it has open with their targets as home units, and
+adds a target's units as you open its files. HLS must be built for exactly
+the project's GHC.
+
+`[repl]` runs GHCi with the target's build tools on `PATH` and its data
+dirs' variables set, as `cabal repl` does for one component. A session from
+`repl.bxl`, by hand or in HLS, has neither, as with Cabal's multi-component
+REPL and HLS: a module that a build tool preprocesses (`-F -pgmF
+hspec-discover`, say), or code that reads data files, won't work there.
+
 # Advice
 
 The rules can spot some ways of declaring a target that

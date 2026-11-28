@@ -1,0 +1,56 @@
+# The options of a GHC session with Haskell targets as its home units, for
+# GHCi or for HLS through a hie-bios "bios" cradle (see Note [REPL units] in
+# haskell.bzl). It prints them one per line: a `-unit @FILE` for each home
+# unit, where FILE is the unit's [repl] sub-target.
+#
+#     buck2 bxl prelude//haskell/repl.bxl:main -- --file lib/A/Mid.hs --target //app:app
+#
+# The home units are the targets given, the owners of the files given, and
+# every Haskell target on a dependency path between two of those: GHC needs
+# the home units to be closed under dependency. The targets' dependencies
+# outside the session come from their package dbs, which this builds.
+#
+# With --deps true, it then prints an empty line, and the build files of the
+# home units, since a change to one of them could change the session.
+
+_HASKELL_RULES = ["haskell_binary", "haskell_library", "haskell_test"]
+
+def _haskell(nodes):
+    return [n for n in nodes if n.rule_type.split(":")[-1] in _HASKELL_RULES]
+
+def _impl(ctx: bxl.Context):
+    # A relative path is taken from the project's root: BXL would take it
+    # from this file's cell.
+    files = [f if f.startswith("/") else ctx.root() + "/" + f for f in ctx.cli_args.file]
+    labels = [t.label for f in files for t in ctx.uquery().owner(f)]
+    # Each --target is a pattern, such as //pkg:target or //pkg:, which
+    # stands for a list of targets.
+    labels += [t for pattern in ctx.cli_args.target for t in pattern]
+    roots = _haskell(ctx.configured_targets(labels))
+    if not roots:
+        fail("no Haskell target is given or owns any of the files given")
+    # allpaths(R, R) is every node on a dependency path from one root to
+    # another, the roots included. A path through a build tool goes into the
+    # execution configuration, where nothing is a GHC dependency of the
+    # roots, so only the roots' configurations count.
+    configs = set([str(r.label.config()) for r in roots])
+    units = [u for u in _haskell(ctx.cquery().allpaths(roots, roots)) if str(u.label.config()) in configs]
+    # Building each [repl] sub-target builds what its unit needs.
+    ctx.output.ensure_multiple([a for r in ctx.build([u.label.with_sub_target("repl") for u in units]).values() for a in r.artifacts()])
+    for u in units:
+        unit = ctx.analysis(u).providers()[DefaultInfo].sub_targets["repl"][DefaultInfo].default_outputs[0]
+        ctx.output.print("-unit")
+        ctx.output.print("@", ctx.output.ensure(unit).abs_path(), sep = "")
+    if ctx.cli_args.deps:
+        ctx.output.print("")
+        for f in ctx.cquery().buildfile(units):
+            ctx.output.print(ctx.root() + "/" + f.path)
+
+main = bxl_main(
+    impl = _impl,
+    cli_args = {
+        "deps": cli_args.bool(False),
+        "file": cli_args.list(cli_args.string(), default = []),
+        "target": cli_args.list(cli_args.target_expr(), default = []),
+    },
+)
